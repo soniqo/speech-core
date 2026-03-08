@@ -22,6 +22,10 @@ public:
     /// Add an assistant message (typically from LLM).
     void add_assistant_message(const std::string& text, double timestamp = 0.0);
 
+    /// Add a tool result message.
+    void add_tool_message(const std::string& tool_name, const std::string& output,
+                          double timestamp = 0.0);
+
     /// Get all messages for LLM input (including system prompt).
     const std::vector<Message>& messages() const { return messages_; }
 

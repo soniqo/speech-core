@@ -32,6 +32,13 @@ void ConversationContext::add_assistant_message(const std::string& text, double 
     }
 }
 
+void ConversationContext::add_tool_message(
+    const std::string& tool_name, const std::string& output, double timestamp)
+{
+    std::string content = "[" + tool_name + "] " + output;
+    messages_.push_back({MessageRole::Tool, content, timestamp});
+}
+
 size_t ConversationContext::turn_count() const {
     size_t count = 0;
     for (const auto& m : messages_) {

@@ -421,6 +421,96 @@ void test_max_utterance_force_split() {
     printf("  PASS: max_utterance_force_split\n");
 }
 
+void test_tool_call_in_pipeline() {
+    MockSTT stt;
+    MockTTS tts;
+    MockLLM llm;
+    MockVAD vad;
+
+    // STT returns "what time is it"
+    stt.next_text = "what time is it";
+
+    // LLM should get the tool result in context
+    llm.response = "The time is 3:30 PM";
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    AgentConfig config;
+    config.mode = AgentConfig::Mode::Pipeline;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    // Register a time tool
+    ToolDefinition time_tool;
+    time_tool.name = "tell_time";
+    time_tool.triggers = {"what time"};
+    time_tool.command = "echo 3:30 PM";
+    time_tool.cooldown = 0;
+    pipeline.tool_registry().add(time_tool);
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+
+    // Tool should have been called
+    assert(log.has(EventType::ToolCallStarted));
+    assert(log.has(EventType::ToolCallCompleted));
+
+    // LLM should have been called with tool result
+    assert(llm.call_count == 1);
+
+    // TTS should speak the LLM response
+    assert(tts.call_count == 1);
+    assert(tts.last_text == "The time is 3:30 PM");
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: tool_call_in_pipeline\n");
+}
+
+void test_tool_no_match_falls_through() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    stt.next_text = "how are you";
+
+    AgentConfig config;
+    config.mode = AgentConfig::Mode::Echo;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    // Register a tool that won't match
+    ToolDefinition tool;
+    tool.name = "tell_time";
+    tool.triggers = {"what time"};
+    tool.command = "echo time";
+    tool.cooldown = 0;
+    pipeline.tool_registry().add(tool);
+
+    pipeline.start();
+    pipeline.push_text("how are you");
+
+    // No tool call events
+    assert(!log.has(EventType::ToolCallStarted));
+
+    // Should fall through to echo mode
+    assert(tts.call_count == 1);
+    assert(tts.last_text == "how are you");
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: tool_no_match_falls_through\n");
+}
+
 void test_not_running_ignores_input() {
     MockSTT stt;
     MockTTS tts;
@@ -458,6 +548,8 @@ int main() {
     test_tts_error_propagation();
     test_interruption();
     test_max_utterance_force_split();
+    test_tool_call_in_pipeline();
+    test_tool_no_match_falls_through();
     test_not_running_ignores_input();
     printf("All pipeline E2E tests passed.\n");
     return 0;

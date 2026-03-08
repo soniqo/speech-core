@@ -41,6 +41,10 @@ enum class EventType {
     // Conversation
     ConversationItemCreated,
 
+    // Tool calling
+    ToolCallStarted,
+    ToolCallCompleted,
+
     // Error
     Error
 };

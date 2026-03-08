@@ -12,6 +12,9 @@
 #include "speech_core/pipeline/speech_queue.h"
 #include "speech_core/pipeline/turn_detector.h"
 #include "speech_core/protocol/events.h"
+#include "speech_core/tools/intent_matcher.h"
+#include "speech_core/tools/tool_executor.h"
+#include "speech_core/tools/tool_registry.h"
 
 namespace speech_core {
 
@@ -75,6 +78,9 @@ public:
     /// Whether the pipeline is running.
     bool is_running() const { return running_.load(); }
 
+    /// Access the tool registry for adding tools.
+    ToolRegistry& tool_registry() { return tool_registry_; }
+
 private:
     STTInterface& stt_;
     TTSInterface& tts_;
@@ -86,6 +92,9 @@ private:
     SpeechQueue speech_queue_;
     ConversationContext context_;
 
+    ToolRegistry tool_registry_;
+    ToolExecutor tool_executor_;
+
     std::atomic<State> state_{State::Idle};
     std::atomic<bool> running_{false};
     mutable std::mutex mutex_;
@@ -94,6 +103,7 @@ private:
     void process_utterance(const std::string& transcript);
     void speak(const std::string& text);
     void emit_error(const std::string& message);
+    bool try_tool_call(const std::string& transcript);
 };
 
 }  // namespace speech_core
