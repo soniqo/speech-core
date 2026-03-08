@@ -4,7 +4,7 @@ The `VoicePipeline` is the central orchestrator. It connects STT, TTS, LLM, and 
 
 ## Modes
 
-### Pipeline (default)
+### VoicePipeline (default)
 
 Full voice agent loop:
 
