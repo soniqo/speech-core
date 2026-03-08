@@ -26,6 +26,18 @@ ML inference is **not** in this library. Consumers implement the abstract interf
                     └───────────────────────────┘
 ```
 
+## Pipeline Modes
+
+| Mode | Flow | Use case |
+|---|---|---|
+| **VoicePipeline** | audio → VAD → STT → LLM → TTS → audio | Full voice agent with conversational AI |
+| **Echo** | audio → VAD → STT → TTS → audio | Testing — speaks back what the user said |
+| **TranscribeOnly** | audio → VAD → STT → text | Speech-to-text only, no response |
+
+In **VoicePipeline** mode, tools are checked before the LLM — if a transcript matches a tool trigger, the tool executes and its result is injected into the LLM context for a natural response.
+
+See [`docs/pipeline.md`](docs/pipeline.md) for detailed state machine, turn detection, and interruption handling documentation.
+
 ## Pipeline State Machine
 
 The voice pipeline manages the full conversational loop:
