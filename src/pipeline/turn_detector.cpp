@@ -14,7 +14,6 @@ TurnDetector::TurnDetector(
       on_event_(std::move(on_event)) {}
 
 void TurnDetector::push_audio(const float* samples, size_t count) {
-    // Accumulate into utterance buffer when speech is active
     size_t chunk_size = vad_.chunk_size();
     size_t offset = 0;
 
@@ -26,9 +25,11 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             if (vad_event.type == VADEvent::SpeechStarted) {
                 utterance_buffer_.clear();
                 utterance_start_ = vad_event.start_time;
+                in_speech_ = true;
 
                 // If agent is speaking, this is an interruption
                 if (agent_speaking_ && config_.allow_interruptions) {
+                    interruption_time_ = vad_event.start_time;
                     TurnEvent interrupt;
                     interrupt.type = TurnEvent::Interruption;
                     interrupt.time = vad_event.start_time;
@@ -41,29 +42,64 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 on_event_(started);
 
             } else if (vad_event.type == VADEvent::SpeechEnded) {
-                TurnEvent ended;
-                ended.type = TurnEvent::UserSpeechEnded;
-                ended.time = vad_event.end_time;
-                ended.audio = utterance_buffer_;
-                on_event_(ended);
-                utterance_buffer_.clear();
+                in_speech_ = false;
+
+                // Check for interruption recovery
+                if (interruption_time_ >= 0.0f &&
+                    config_.interruption_recovery_timeout > 0.0f &&
+                    (vad_event.end_time - interruption_time_) <
+                        config_.interruption_recovery_timeout) {
+                    // Brief interruption — recover
+                    TurnEvent recovered;
+                    recovered.type = TurnEvent::InterruptionRecovered;
+                    recovered.time = vad_event.end_time;
+                    on_event_(recovered);
+                    interruption_time_ = -1.0f;
+                    utterance_buffer_.clear();
+                } else {
+                    // Normal speech ended
+                    interruption_time_ = -1.0f;
+                    TurnEvent ended;
+                    ended.type = TurnEvent::UserSpeechEnded;
+                    ended.time = vad_event.end_time;
+                    ended.audio = utterance_buffer_;
+                    on_event_(ended);
+                    utterance_buffer_.clear();
+                }
             }
         }
 
-        // Buffer audio during speech
-        if (!utterance_buffer_.empty() ||
-            streaming_vad_.current_time() - utterance_start_ >= 0) {
-            // Check if we're in a speech state by seeing if buffer is accumulating
-            // Simple heuristic: buffer if we got a SpeechStarted but no SpeechEnded yet
-        }
+        // Buffer audio only during speech
+        if (in_speech_) {
+            utterance_buffer_.insert(utterance_buffer_.end(),
+                                     samples + offset,
+                                     samples + offset + chunk_size);
 
-        // Always buffer — TurnDetector trims on SpeechEnded
-        utterance_buffer_.insert(utterance_buffer_.end(),
-                                 samples + offset,
-                                 samples + offset + chunk_size);
+            // Force-split if utterance exceeds max duration
+            float elapsed = streaming_vad_.current_time() - utterance_start_;
+            if (config_.max_utterance_duration > 0.0f &&
+                elapsed >= config_.max_utterance_duration) {
+                force_end_utterance(streaming_vad_.current_time());
+            }
+        }
 
         offset += chunk_size;
     }
+}
+
+void TurnDetector::force_end_utterance(float time) {
+    in_speech_ = false;
+
+    TurnEvent ended;
+    ended.type = TurnEvent::UserSpeechEnded;
+    ended.time = time;
+    ended.audio = utterance_buffer_;
+    on_event_(ended);
+    utterance_buffer_.clear();
+
+    // Reset VAD state so it can detect new speech
+    streaming_vad_.reset();
+    vad_.reset();
 }
 
 void TurnDetector::set_agent_speaking(bool speaking) {
@@ -74,6 +110,7 @@ void TurnDetector::flush() {
     auto events = streaming_vad_.flush();
     for (const auto& vad_event : events) {
         if (vad_event.type == VADEvent::SpeechEnded) {
+            in_speech_ = false;
             TurnEvent ended;
             ended.type = TurnEvent::UserSpeechEnded;
             ended.time = vad_event.end_time;
@@ -90,6 +127,8 @@ void TurnDetector::reset() {
     utterance_buffer_.clear();
     utterance_start_ = 0.0f;
     agent_speaking_ = false;
+    in_speech_ = false;
+    interruption_time_ = -1.0f;
 }
 
 }  // namespace speech_core

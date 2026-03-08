@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "speech_core/interfaces.h"
@@ -78,7 +79,6 @@ private:
     STTInterface& stt_;
     TTSInterface& tts_;
     LLMInterface* llm_;
-    VADInterface& vad_;
     AgentConfig config_;
     EventCallback on_event_;
 
@@ -88,10 +88,12 @@ private:
 
     std::atomic<State> state_{State::Idle};
     std::atomic<bool> running_{false};
+    mutable std::mutex mutex_;
 
     void on_turn_event(const TurnEvent& event);
     void process_utterance(const std::string& transcript);
     void speak(const std::string& text);
+    void emit_error(const std::string& message);
 };
 
 }  // namespace speech_core

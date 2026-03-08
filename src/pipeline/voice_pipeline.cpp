@@ -1,6 +1,8 @@
 #include "speech_core/pipeline/voice_pipeline.h"
 #include "speech_core/audio/pcm_codec.h"
 
+#include <stdexcept>
+
 namespace speech_core {
 
 VoicePipeline::VoicePipeline(
@@ -13,7 +15,6 @@ VoicePipeline::VoicePipeline(
     : stt_(stt),
       tts_(tts),
       llm_(llm),
-      vad_(vad),
       config_(config),
       on_event_(std::move(on_event)),
       turn_detector_(vad, config,
@@ -25,11 +26,13 @@ VoicePipeline::~VoicePipeline() {
 }
 
 void VoicePipeline::start() {
+    std::lock_guard<std::mutex> lock(mutex_);
     running_.store(true);
     state_.store(State::Idle);
 }
 
 void VoicePipeline::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
     running_.store(false);
     tts_.cancel();
     if (llm_) llm_->cancel();
@@ -39,15 +42,18 @@ void VoicePipeline::stop() {
 
 void VoicePipeline::push_audio(const float* samples, size_t count) {
     if (!running_.load()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     turn_detector_.push_audio(samples, count);
 }
 
 void VoicePipeline::push_text(const std::string& text) {
     if (!running_.load()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     process_utterance(text);
 }
 
 void VoicePipeline::on_turn_event(const TurnEvent& event) {
+    // Called from push_audio with mutex already held
     switch (event.type) {
     case TurnEvent::UserSpeechStarted: {
         state_.store(State::Listening);
@@ -62,19 +68,24 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
         state_.store(State::Transcribing);
 
         // Transcribe the utterance
-        auto result = stt_.transcribe(
-            event.audio.data(), event.audio.size(),
-            stt_.input_sample_rate());
+        try {
+            auto result = stt_.transcribe(
+                event.audio.data(), event.audio.size(),
+                stt_.input_sample_rate());
 
-        PipelineEvent transcript_event;
-        transcript_event.type = EventType::TranscriptionCompleted;
-        transcript_event.text = result.text;
-        transcript_event.start_time = event.time;
-        on_event_(transcript_event);
+            PipelineEvent transcript_event;
+            transcript_event.type = EventType::TranscriptionCompleted;
+            transcript_event.text = result.text;
+            transcript_event.start_time = event.time;
+            on_event_(transcript_event);
 
-        if (!result.text.empty()) {
-            process_utterance(result.text);
-        } else {
+            if (!result.text.empty()) {
+                process_utterance(result.text);
+            } else {
+                state_.store(State::Idle);
+            }
+        } catch (const std::exception& ex) {
+            emit_error(std::string("STT failed: ") + ex.what());
             state_.store(State::Idle);
         }
         break;
@@ -85,11 +96,14 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
         tts_.cancel();
         speech_queue_.cancel_all();
         turn_detector_.set_agent_speaking(false);
+        state_.store(State::Listening);
         break;
     }
 
     case TurnEvent::InterruptionRecovered:
-        // Resume paused speech (not yet implemented — needs timer)
+        // Brief interruption — user stopped quickly, could resume playback
+        // For now, pipeline stays in current state; platform layer handles
+        // resuming audio playback.
         break;
     }
 }
@@ -101,29 +115,31 @@ void VoicePipeline::process_utterance(const std::string& transcript) {
 
     switch (config_.mode) {
     case AgentConfig::Mode::Echo:
-        // Echo mode: speak back what the user said
         response_text = transcript;
         break;
 
     case AgentConfig::Mode::TranscribeOnly:
-        // No response, just transcription
         state_.store(State::Idle);
         return;
 
     case AgentConfig::Mode::Pipeline:
         if (!llm_) {
-            // No LLM configured, fall back to echo
             response_text = transcript;
         } else {
             state_.store(State::Thinking);
 
-            // Collect LLM response
-            std::string accumulated;
-            llm_->chat(context_.messages(),
-                [&accumulated](const std::string& token, bool is_final) {
-                    accumulated += token;
-                });
-            response_text = accumulated;
+            try {
+                std::string accumulated;
+                llm_->chat(context_.messages(),
+                    [&accumulated](const std::string& token, bool /*is_final*/) {
+                        accumulated += token;
+                    });
+                response_text = accumulated;
+            } catch (const std::exception& ex) {
+                emit_error(std::string("LLM failed: ") + ex.what());
+                state_.store(State::Idle);
+                return;
+            }
         }
         break;
     }
@@ -147,27 +163,40 @@ void VoicePipeline::speak(const std::string& text) {
     response_created.type = EventType::ResponseCreated;
     on_event_(response_created);
 
-    tts_.synthesize(text, config_.language,
-        [this, speech_id](const float* samples, size_t length, bool is_final) {
-            // Emit audio chunks as events
-            auto pcm = PCMCodec::float_to_pcm16(samples, length);
+    try {
+        tts_.synthesize(text, config_.language,
+            [this, speech_id](const float* samples, size_t length, bool is_final) {
+                auto pcm = PCMCodec::float_to_pcm16(samples, length);
 
-            PipelineEvent audio_event;
-            audio_event.type = EventType::ResponseAudioDelta;
-            audio_event.audio_data = std::move(pcm);
-            on_event_(audio_event);
+                PipelineEvent audio_event;
+                audio_event.type = EventType::ResponseAudioDelta;
+                audio_event.audio_data = std::move(pcm);
+                on_event_(audio_event);
 
-            if (is_final) {
-                speech_queue_.mark_done(speech_id);
-                turn_detector_.set_agent_speaking(false);
+                if (is_final) {
+                    speech_queue_.mark_done(speech_id);
+                    turn_detector_.set_agent_speaking(false);
 
-                PipelineEvent done;
-                done.type = EventType::ResponseDone;
-                on_event_(done);
+                    PipelineEvent done;
+                    done.type = EventType::ResponseDone;
+                    on_event_(done);
 
-                state_.store(State::Idle);
-            }
-        });
+                    state_.store(State::Idle);
+                }
+            });
+    } catch (const std::exception& ex) {
+        speech_queue_.mark_done(speech_id);
+        turn_detector_.set_agent_speaking(false);
+        emit_error(std::string("TTS failed: ") + ex.what());
+        state_.store(State::Idle);
+    }
+}
+
+void VoicePipeline::emit_error(const std::string& message) {
+    PipelineEvent error;
+    error.type = EventType::Error;
+    error.text = message;
+    on_event_(error);
 }
 
 }  // namespace speech_core

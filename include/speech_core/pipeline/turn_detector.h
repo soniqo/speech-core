@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -65,8 +66,12 @@ private:
     EventCallback on_event_;
 
     bool agent_speaking_ = false;
+    bool in_speech_ = false;
     std::vector<float> utterance_buffer_;
     float utterance_start_ = 0.0f;
+    float interruption_time_ = -1.0f;
+
+    void force_end_utterance(float time);
 };
 
 }  // namespace speech_core
