@@ -1,6 +1,6 @@
 # Speech Core
 
-Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — turn detection, interruption handling, speech queuing, and protocol handling.
+Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, speech queuing, and protocol handling.
 
 ML inference is **not** in this library. Consumers implement the abstract interfaces (STT, TTS, LLM, VAD) with their own models.
 
