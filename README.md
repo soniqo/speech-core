@@ -219,25 +219,6 @@ speech-core/
 | `soniqo/speech-android` (planned) | Kotlin | Android app — QNN inference, Oboe audio, Compose |
 | [`soniqo/soniqo-web`](https://github.com/soniqo/soniqo-web) | HTML | Documentation site at [soniqo.audio](https://soniqo.audio) |
 
-## Tracking
-
-This repo implements (or will implement) the core logic for several [speech-swift](https://github.com/soniqo/speech-swift) issues:
-
-| Issue | Status | speech-core component |
-|---|---|---|
-| [#72 — Composable voice pipeline: VAD→ASR→LLM→TTS](https://github.com/soniqo/speech-swift/issues/72) | Scaffold done | `VoicePipeline`, `TurnDetector`, `SpeechQueue` |
-| [#76 — Tool-calling intent engine](https://github.com/soniqo/speech-swift/issues/76) | Planned | `ToolRegistry`, `IntentMatcher` (not yet built) |
-| [#80 — Streaming ASR with real-time diarization](https://github.com/soniqo/speech-swift/issues/80) | Planned | `DiarizedPipeline` variant (not yet built) |
-
-### Remaining work for #72
-
-- [ ] C wrapper (`speech_core_c.h`) for Swift/Kotlin FFI
-- [ ] Swift adapters in speech-swift (`VoiceAgent` target)
-- [ ] At least one `LLMInterface` implementation (Ollama HTTP)
-- [ ] Wire into `AudioServer` WebSocket handler
-- [ ] CLI command: `audio converse`
-- [ ] End-to-end test: mic → VAD → ASR → LLM → TTS → speaker
-
 ## Design Principles
 
 - **No ML inference** — this library never loads models or runs neural networks. Platform implementations do that.
