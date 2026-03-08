@@ -108,6 +108,32 @@ class VADInterface {
 };
 ```
 
+### Tools (`include/speech_core/tools/`)
+
+| File | Purpose |
+|---|---|
+| `tool_types.h` | `ToolDefinition` and `ToolResult` structs |
+| `tool_registry.h` | Registry — add tools programmatically or load from JSON |
+| `intent_matcher.h` | Regex pattern matching on transcripts (case-insensitive) |
+| `tool_executor.h` | Shell command execution with cooldown enforcement |
+
+Tool definitions:
+
+```json
+[
+  {
+    "name": "tell_time",
+    "description": "Tell the current time",
+    "triggers": ["what time", "current time"],
+    "command": "date '+%I:%M %p'",
+    "timeout": 5,
+    "cooldown": 30
+  }
+]
+```
+
+When a transcript matches a trigger pattern, the pipeline executes the tool command, injects the result as a `Tool` message into the conversation context, and passes it to the LLM for a natural response.
+
 ### C API (`include/speech_core/speech_core_c.h`)
 
 C wrapper for FFI — vtable-based interface bridging for Swift, Kotlin, etc.
