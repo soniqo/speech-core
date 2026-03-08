@@ -16,6 +16,7 @@ set(SOURCES
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
     src/protocol/realtime_protocol.cpp
+    src/speech_core_c.cpp
 )
 
 add_library(speech_core ${SOURCES})

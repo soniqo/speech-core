@@ -1,19 +1,14 @@
 # speech-core
 
-Cross-platform voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — turn detection, interruption handling, speech queuing, and protocol handling — shared between [speech-swift](https://github.com/soniqo/speech-swift) (iOS/macOS) and speech-android (Android).
+Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — turn detection, interruption handling, speech queuing, and protocol handling.
 
-ML inference is **not** in this library. Each platform implements the abstract interfaces using its native accelerator:
-
-| Platform | Inference | Hardware |
-|---|---|---|
-| iOS / macOS | CoreML | Apple Neural Engine |
-| Android | Qualcomm AI Engine (QNN) | Hexagon NPU |
+ML inference is **not** in this library. Consumers implement the abstract interfaces (STT, TTS, LLM, VAD) with their own models.
 
 ## Architecture
 
 ```
-                        speech-core (this repo)
                     ┌───────────────────────────┐
+                    │       speech-core          │
                     │                           │
                     │   VoicePipeline           │  STT -> LLM -> TTS orchestration
                     │   TurnDetector            │  VAD-driven turn boundaries
@@ -22,23 +17,13 @@ ML inference is **not** in this library. Each platform implements the abstract i
                     │   StreamingVAD            │  Hysteresis state machine
                     │   AudioBuffer             │  Ring buffer, resampler, PCM
                     │                           │
-                    │   STTInterface  ──────────┤── implemented per-platform
-                    │   TTSInterface  ──────────┤── implemented per-platform
-                    │   LLMInterface  ──────────┤── implemented per-platform
-                    │   VADInterface  ──────────┤── implemented per-platform
-                    │   EnhancerInterface ──────┤── implemented per-platform
+                    │   STTInterface            │  Abstract speech-to-text
+                    │   TTSInterface            │  Abstract text-to-speech
+                    │   LLMInterface            │  Abstract language model
+                    │   VADInterface            │  Abstract voice activity detection
+                    │   EnhancerInterface       │  Abstract speech enhancement
                     │                           │
-                    └─────────┬─────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼                               ▼
-    ┌──────────────────┐           ┌──────────────────┐
-    │  speech-swift    │           │  speech-android   │
-    │                  │           │                   │
-    │  CoreML models   │           │  QNN models       │
-    │  AVAudioEngine   │           │  Oboe audio       │
-    │  SwiftUI         │           │  Jetpack Compose   │
-    └──────────────────┘           └──────────────────┘
+                    └───────────────────────────┘
 ```
 
 ## Pipeline State Machine
@@ -101,11 +86,11 @@ The voice pipeline manages the full conversational loop:
 
 ### Interfaces (`include/speech_core/interfaces.h`)
 
-Abstract classes implemented per-platform:
+Abstract classes:
 
 ```cpp
 class STTInterface {
-    virtual std::string transcribe(const float* audio, size_t len, int sampleRate) = 0;
+    virtual TranscriptionResult transcribe(const float* audio, size_t len, int sampleRate) = 0;
 };
 
 class TTSInterface {
@@ -123,6 +108,10 @@ class VADInterface {
 };
 ```
 
+### C API (`include/speech_core/speech_core_c.h`)
+
+C wrapper for FFI — vtable-based interface bridging for Swift, Kotlin, etc.
+
 ## Build
 
 ```bash
@@ -133,101 +122,14 @@ cmake --build build
 cd build && ctest
 ```
 
-### Integration
-
-**iOS / macOS** (as .xcframework):
-```bash
-cmake -B build-ios \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/ios.toolchain.cmake \
-  -DPLATFORM=OS64COMBINED \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-ios
-```
-
-Consumed by speech-swift as a binary `.xcframework` or via CMake + SPM C interop.
-
-**Android** (as .so via NDK):
-```bash
-cmake -B build-android \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-26 \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-android
-```
-
-Consumed by speech-android via JNI.
-
-## Project Structure
-
-```
-speech-core/
-├── CMakeLists.txt
-├── README.md
-├── LICENSE
-├── include/
-│   └── speech_core/
-│       ├── speech_core.h            # Top-level include
-│       ├── interfaces.h             # Abstract STT/TTS/LLM/VAD/Enhancer
-│       ├── pipeline/
-│       │   ├── voice_pipeline.h
-│       │   ├── turn_detector.h
-│       │   ├── speech_queue.h
-│       │   ├── conversation_context.h
-│       │   └── agent_config.h
-│       ├── vad/
-│       │   ├── streaming_vad.h
-│       │   └── vad_config.h
-│       ├── audio/
-│       │   ├── audio_buffer.h
-│       │   ├── resampler.h
-│       │   └── pcm_codec.h
-│       └── protocol/
-│           ├── realtime_protocol.h
-│           └── events.h
-├── src/
-│   ├── pipeline/
-│   │   ├── voice_pipeline.cpp
-│   │   ├── turn_detector.cpp
-│   │   ├── speech_queue.cpp
-│   │   └── conversation_context.cpp
-│   ├── vad/
-│   │   └── streaming_vad.cpp
-│   ├── audio/
-│   │   ├── audio_buffer.cpp
-│   │   ├── resampler.cpp
-│   │   └── pcm_codec.cpp
-│   └── protocol/
-│       └── realtime_protocol.cpp
-├── tests/
-│   ├── test_streaming_vad.cpp
-│   ├── test_turn_detector.cpp
-│   ├── test_speech_queue.cpp
-│   ├── test_audio_buffer.cpp
-│   ├── test_pcm_codec.cpp
-│   └── test_realtime_protocol.cpp
-└── cmake/
-    └── ios.toolchain.cmake
-```
-
-## Relationship to Other Repos
-
-| Repo | Language | Role |
-|---|---|---|
-| [`soniqo/speech-swift`](https://github.com/soniqo/speech-swift) | Swift | iOS/macOS app — CoreML inference, AVAudioEngine, SwiftUI |
-| `soniqo/speech-core` (this) | C++ | Shared pipeline engine — orchestration, VAD, protocol |
-| `soniqo/speech-android` (planned) | Kotlin | Android app — QNN inference, Oboe audio, Compose |
-| [`soniqo/soniqo-web`](https://github.com/soniqo/soniqo-web) | HTML | Documentation site at [soniqo.audio](https://soniqo.audio) |
-
 ## Design Principles
 
-- **No ML inference** — this library never loads models or runs neural networks. Platform implementations do that.
-- **No platform dependencies** — pure C++17, no Apple/Android/OS-specific APIs. Builds on any platform.
-- **No network I/O** — protocol layer parses and serializes messages, but doesn't own the transport (WebSocket, HTTP).
-- **No audio I/O** — audio buffer and resampler operate on float arrays. Mic/speaker is platform-specific.
-- **Callback-driven** — pipeline emits events via `std::function` callbacks. Platform layer decides how to dispatch (main thread, async, etc.).
-- **Header-only option** — small enough that header-only distribution is viable for simple integrations.
+- **No ML inference** — this library never loads models or runs neural networks.
+- **No platform dependencies** — pure C++17, no OS-specific APIs.
+- **No network I/O** — protocol layer parses and serializes messages, but doesn't own the transport.
+- **No audio I/O** — audio buffer and resampler operate on float arrays.
+- **Callback-driven** — pipeline emits events via `std::function` callbacks.
 
 ## License
 
-Private. All rights reserved.
+Apache License 2.0 — see [LICENSE](LICENSE).
