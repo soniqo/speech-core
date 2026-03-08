@@ -1,4 +1,4 @@
-# speech-core
+# Speech Core
 
 Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — turn detection, interruption handling, speech queuing, and protocol handling.
 
