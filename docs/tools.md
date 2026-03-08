@@ -1,28 +1,27 @@
 # Tool Calling
 
-The tool engine adds function-calling capabilities to the voice pipeline. When a user says something that matches a tool trigger, the pipeline executes the tool and uses the result to generate a response.
+The tool engine adds function-calling capabilities to the voice pipeline. The **LLM decides** when to call tools — the pipeline executes them and feeds results back.
 
 ## Flow
 
 ```
-transcript → IntentMatcher → match? ─yes─→ ToolExecutor → result
-                                │                            │
-                                no                    inject into context
-                                │                            │
-                                ▼                            ▼
-                          normal LLM path              LLM with tool result
-                                │                            │
-                                ▼                            ▼
-                              TTS                          TTS
+transcript → LLM (with tool definitions)
+                │
+                ├─ text response → TTS → audio
+                │
+                └─ tool_call(name, args) → ToolExecutor → result
+                                                            │
+                                                    inject into context
+                                                            │
+                                                    LLM (with result) → TTS → audio
 ```
 
-1. After STT produces a transcript, `IntentMatcher` checks all registered tool triggers
-2. If a trigger matches, `ToolExecutor` runs the shell command
-3. The tool result is injected as a `Tool` message in `ConversationContext`
-4. The LLM receives the full conversation including the tool result
-5. The LLM generates a natural response incorporating the tool output
-
-If no LLM is configured, the tool output is spoken directly.
+1. Tool definitions are passed to the LLM via `set_tools()`
+2. The LLM receives the conversation and decides whether to call a tool
+3. If the LLM returns `ToolCall` requests, the pipeline executes the matching commands
+4. Tool results are injected as `Tool` messages in the conversation
+5. The LLM is called again with the updated conversation
+6. The final text response is spoken via TTS
 
 ## Tool Definition
 
@@ -30,7 +29,7 @@ If no LLM is configured, the tool output is spoken directly.
 ToolDefinition tool;
 tool.name = "tell_time";
 tool.description = "Tell the current time";
-tool.triggers = {"what time", "current time"};  // regex patterns
+tool.triggers = {};  // optional, for standalone IntentMatcher use
 tool.command = "date '+%I:%M %p'";
 tool.timeout = 5;   // seconds (advisory)
 tool.cooldown = 30;  // seconds between invocations
@@ -45,15 +44,15 @@ Tools can be loaded from JSON:
   {
     "name": "tell_time",
     "description": "Tell the current time",
-    "triggers": ["what time", "current time"],
+    "triggers": [],
     "command": "date '+%I:%M %p'",
     "timeout": 5,
     "cooldown": 30
   },
   {
     "name": "weather",
-    "description": "Current weather",
-    "triggers": ["weather|forecast", "how.*outside"],
+    "description": "Current weather conditions",
+    "triggers": [],
     "command": "curl -s wttr.in/?format='%t+%C'",
     "timeout": 10,
     "cooldown": 60
@@ -66,29 +65,38 @@ ToolRegistry registry;
 registry.load_json(json_string);
 ```
 
-## Trigger Patterns
+## LLM Interface
 
-Triggers are matched as regex patterns (case-insensitive) against the full transcript. If a regex is invalid, it falls back to plain substring matching.
+The `LLMInterface::chat()` returns an `LLMResponse` containing text and/or tool calls:
 
-Examples:
-- `"what time"` — matches "What time is it?", "Do you know what time it is?"
-- `"weather|forecast"` — matches "What's the weather?" or "Show me the forecast"
-- `"how.*outside"` — matches "How is it outside?"
+```cpp
+struct ToolCall {
+    std::string name;       // tool name
+    std::string arguments;  // JSON arguments
+};
 
-First matching tool wins. Tools are checked in registration order.
+struct LLMResponse {
+    std::string text;
+    std::vector<ToolCall> tool_calls;
+};
+```
+
+The LLM implementation decides when to call tools based on the conversation and tool definitions provided via `set_tools()`.
 
 ## Cooldown
 
 Each tool has a `cooldown` period (in seconds). After execution, the same tool cannot be triggered again until the cooldown expires. Set `cooldown = 0` to disable.
 
-When a tool is on cooldown, `try_tool_call()` returns false and the pipeline falls through to normal LLM processing.
+## IntentMatcher (standalone)
+
+`IntentMatcher` is available as a standalone component for regex-based pattern matching — useful outside the pipeline for quick intent classification. The pipeline itself does **not** use it; the LLM decides tool calls.
 
 ## Events
 
 | Event | When | Payload |
 |---|---|---|
-| `ToolCallStarted` | Trigger matched, execution beginning | `text` = tool name |
-| `ToolCallCompleted` | Execution finished | `text` = command output |
+| `ToolCallStarted` | LLM requested a tool call | `text` = tool name |
+| `ToolCallCompleted` | Tool execution finished | `text` = command output |
 
 ## Usage
 
@@ -98,12 +106,8 @@ VoicePipeline pipeline(stt, tts, &llm, vad, config, on_event);
 // Register tools
 pipeline.tool_registry().add({
     "tell_time", "Tell the current time",
-    {"what time", "current time"},
-    "date '+%I:%M %p'", 5, 30
+    {}, "date '+%I:%M %p'", 5, 30
 });
-
-// Or load from JSON
-pipeline.tool_registry().load_json(tools_json);
 
 pipeline.start();
 ```

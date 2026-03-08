@@ -111,11 +111,6 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
 void VoicePipeline::process_utterance(const std::string& transcript) {
     context_.add_user_message(transcript);
 
-    // Check for tool match before LLM
-    if (try_tool_call(transcript)) {
-        return;  // Tool handled the response
-    }
-
     std::string response_text;
 
     switch (config_.mode) {
@@ -134,12 +129,7 @@ void VoicePipeline::process_utterance(const std::string& transcript) {
             state_.store(State::Thinking);
 
             try {
-                std::string accumulated;
-                llm_->chat(context_.messages(),
-                    [&accumulated](const std::string& token, bool /*is_final*/) {
-                        accumulated += token;
-                    });
-                response_text = accumulated;
+                response_text = call_llm_with_tools();
             } catch (const std::exception& ex) {
                 emit_error(std::string("LLM failed: ") + ex.what());
                 state_.store(State::Idle);
@@ -157,67 +147,54 @@ void VoicePipeline::process_utterance(const std::string& transcript) {
     }
 }
 
-bool VoicePipeline::try_tool_call(const std::string& transcript) {
-    if (tool_registry_.size() == 0) return false;
-
-    IntentMatcher matcher(tool_registry_);
-    std::string tool_name = matcher.match(transcript);
-    if (tool_name.empty()) return false;
-
-    const auto* tool = tool_registry_.find(tool_name);
-    if (!tool) return false;
-
-    // Emit tool call started
-    PipelineEvent tool_started;
-    tool_started.type = EventType::ToolCallStarted;
-    tool_started.text = tool_name;
-    on_event_(tool_started);
-
-    // Execute the tool
-    auto result = tool_executor_.execute(*tool);
-
-    // Emit tool call completed
-    PipelineEvent tool_completed;
-    tool_completed.type = EventType::ToolCallCompleted;
-    tool_completed.text = result.output;
-    on_event_(tool_completed);
-
-    if (result.on_cooldown) {
-        // Tool on cooldown — fall through to normal processing
-        return false;
+std::string VoicePipeline::call_llm_with_tools() {
+    // Pass tool definitions to LLM if tools are registered
+    if (tool_registry_.size() > 0) {
+        llm_->set_tools(tool_registry_.tools());
     }
 
-    if (result.success && !result.output.empty()) {
-        // Inject tool result into conversation
-        context_.add_tool_message(tool_name, result.output);
+    std::string accumulated;
+    auto response = llm_->chat(context_.messages(),
+        [&accumulated](const std::string& token, bool /*is_final*/) {
+            accumulated += token;
+        });
 
-        if (llm_ && config_.mode == AgentConfig::Mode::Pipeline) {
-            // Let LLM incorporate the tool result
-            state_.store(State::Thinking);
-            try {
-                std::string accumulated;
-                llm_->chat(context_.messages(),
-                    [&accumulated](const std::string& token, bool /*is_final*/) {
-                        accumulated += token;
-                    });
-                if (!accumulated.empty()) {
-                    context_.add_assistant_message(accumulated);
-                    speak(accumulated);
-                    return true;
-                }
-            } catch (const std::exception& ex) {
-                emit_error(std::string("LLM failed: ") + ex.what());
-                state_.store(State::Idle);
-                return true;
+    // Handle tool calls from LLM
+    if (!response.tool_calls.empty()) {
+        for (const auto& tc : response.tool_calls) {
+            // Emit tool call started
+            PipelineEvent tool_started;
+            tool_started.type = EventType::ToolCallStarted;
+            tool_started.text = tc.name;
+            on_event_(tool_started);
+
+            // Find and execute the tool
+            const auto* tool = tool_registry_.find(tc.name);
+            if (tool) {
+                auto result = tool_executor_.execute(*tool);
+
+                PipelineEvent tool_completed;
+                tool_completed.type = EventType::ToolCallCompleted;
+                tool_completed.text = result.output;
+                on_event_(tool_completed);
+
+                // Inject tool result into conversation
+                context_.add_tool_message(tc.name,
+                    result.success ? result.output : "Tool execution failed");
+            } else {
+                context_.add_tool_message(tc.name, "Unknown tool");
             }
         }
 
-        // No LLM — speak the tool output directly
-        speak(result.output);
-        return true;
+        // Call LLM again with tool results in context
+        accumulated.clear();
+        response = llm_->chat(context_.messages(),
+            [&accumulated](const std::string& token, bool /*is_final*/) {
+                accumulated += token;
+            });
     }
 
-    return false;
+    return response.text.empty() ? accumulated : response.text;
 }
 
 void VoicePipeline::speak(const std::string& text) {

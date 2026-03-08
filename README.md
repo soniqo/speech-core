@@ -34,7 +34,7 @@ ML inference is **not** in this library. Consumers implement the abstract interf
 | **Echo** | audio → VAD → STT → TTS → audio | Testing — speaks back what the user said |
 | **TranscribeOnly** | audio → VAD → STT → text | Speech-to-text only, no response |
 
-In **VoicePipeline** mode, tools are checked before the LLM — if a transcript matches a tool trigger, the tool executes and its result is injected into the LLM context for a natural response.
+In **VoicePipeline** mode, the LLM decides when to call tools — if it returns tool call requests, the pipeline executes them and calls the LLM again with the results.
 
 See [`docs/pipeline.md`](docs/pipeline.md) for detailed state machine, turn detection, and interruption handling documentation.
 
@@ -144,7 +144,7 @@ Tool definitions:
 ]
 ```
 
-When a transcript matches a trigger pattern, the pipeline executes the tool command, injects the result as a `Tool` message into the conversation context, and passes it to the LLM for a natural response.
+The LLM decides when to call tools. When the LLM returns a `ToolCall`, the pipeline executes the matching command, injects the result into the conversation, and calls the LLM again for a final response.
 
 ### C API (`include/speech_core/speech_core_c.h`)
 

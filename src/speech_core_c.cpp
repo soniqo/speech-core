@@ -86,8 +86,8 @@ class CLLMAdapter : public LLMInterface {
 public:
     explicit CLLMAdapter(sc_llm_vtable_t vt) : vt_(vt) {}
 
-    void chat(const std::vector<Message>& messages,
-              LLMTokenCallback on_token) override
+    LLMResponse chat(const std::vector<Message>& messages,
+                     LLMTokenCallback on_token) override
     {
         // Convert C++ messages to C array
         std::vector<sc_message_t> c_msgs(messages.size());
@@ -103,6 +103,8 @@ public:
                 (*fn)(std::string(token), is_final);
             },
             &on_token);
+
+        return {};  // C API doesn't support tool calls yet
     }
 
     void cancel() override {

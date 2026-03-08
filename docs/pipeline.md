@@ -14,9 +14,9 @@ audio → VAD → STT → [tools?] → LLM → TTS → audio
 
 1. VAD detects user speech via `TurnDetector`
 2. On speech end, the buffered audio is sent to `STTInterface.transcribe()`
-3. Transcript is checked against registered tools (see [Tools](#tools))
-4. If no tool matches (or no tools registered), transcript + conversation history are sent to `LLMInterface.chat()`
-5. LLM response is sent to `TTSInterface.synthesize()` for audio output
+3. Transcript + conversation history are sent to `LLMInterface.chat()`
+4. If the LLM returns tool calls, the pipeline executes them, injects results, and calls the LLM again
+5. Final LLM response is sent to `TTSInterface.synthesize()` for audio output
 6. Pipeline emits audio chunks as `ResponseAudioDelta` events
 
 ### Echo

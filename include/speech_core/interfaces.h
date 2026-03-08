@@ -8,6 +8,8 @@
 
 namespace speech_core {
 
+struct ToolDefinition;  // forward declaration, defined in tools/tool_types.h
+
 // ---------------------------------------------------------------------------
 // Message types for conversation context
 // ---------------------------------------------------------------------------
@@ -78,6 +80,18 @@ public:
 // LLM — Language Model
 // ---------------------------------------------------------------------------
 
+/// A tool call request from the LLM.
+struct ToolCall {
+    std::string name;       // tool name
+    std::string arguments;  // JSON arguments string
+};
+
+/// LLM response — either text or a tool call.
+struct LLMResponse {
+    std::string text;                // accumulated text response
+    std::vector<ToolCall> tool_calls;  // tool calls requested by the LLM
+};
+
 /// Called for each token during streaming generation.
 /// @param token  Text token
 /// @param is_final True if generation is complete
@@ -88,9 +102,16 @@ public:
     virtual ~LLMInterface() = default;
 
     /// Generate a response given conversation history.
-    virtual void chat(
+    /// The implementation should populate tool_calls if the LLM decides
+    /// to call tools, or stream text tokens via on_token.
+    /// @return LLM response with text and/or tool calls
+    virtual LLMResponse chat(
         const std::vector<Message>& messages,
         LLMTokenCallback on_token) = 0;
+
+    /// Provide tool definitions to the LLM.
+    /// Called once when tools are registered. Default: no-op.
+    virtual void set_tools(const std::vector<ToolDefinition>& /*tools*/) {}
 
     /// Cancel any in-progress generation. Thread-safe.
     virtual void cancel() {}

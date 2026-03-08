@@ -12,7 +12,6 @@
 #include "speech_core/pipeline/speech_queue.h"
 #include "speech_core/pipeline/turn_detector.h"
 #include "speech_core/protocol/events.h"
-#include "speech_core/tools/intent_matcher.h"
 #include "speech_core/tools/tool_executor.h"
 #include "speech_core/tools/tool_registry.h"
 
@@ -103,7 +102,7 @@ private:
     void process_utterance(const std::string& transcript);
     void speak(const std::string& text);
     void emit_error(const std::string& message);
-    bool try_tool_call(const std::string& transcript);
+    std::string call_llm_with_tools();
 };
 
 }  // namespace speech_core

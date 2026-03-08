@@ -58,14 +58,22 @@ public:
 class MockLLM : public LLMInterface {
 public:
     std::string response = "I heard you";
+    std::vector<ToolCall> next_tool_calls;
     int call_count = 0;
 
-    void chat(const std::vector<Message>& /*messages*/,
-              LLMTokenCallback on_token) override
+    LLMResponse chat(const std::vector<Message>& /*messages*/,
+                     LLMTokenCallback on_token) override
     {
         call_count++;
         if (should_throw) throw std::runtime_error("LLM inference error");
         on_token(response, true);
+
+        LLMResponse r;
+        r.text = response;
+        r.tool_calls = next_tool_calls;
+        // Clear tool calls after first use (second call is with tool results)
+        next_tool_calls.clear();
+        return r;
     }
 
     void cancel() override { cancelled = true; }
@@ -421,16 +429,16 @@ void test_max_utterance_force_split() {
     printf("  PASS: max_utterance_force_split\n");
 }
 
-void test_tool_call_in_pipeline() {
+void test_llm_driven_tool_call() {
     MockSTT stt;
     MockTTS tts;
     MockLLM llm;
     MockVAD vad;
 
-    // STT returns "what time is it"
     stt.next_text = "what time is it";
 
-    // LLM should get the tool result in context
+    // LLM first returns a tool call, second call (with result) returns text
+    llm.next_tool_calls = {{"tell_time", "{}"}};
     llm.response = "The time is 3:30 PM";
 
     vad.probs = {
@@ -446,10 +454,9 @@ void test_tool_call_in_pipeline() {
     VoicePipeline pipeline(stt, tts, &llm, vad, config,
         [&log](const PipelineEvent& e) { log.on_event(e); });
 
-    // Register a time tool
+    // Register the tool that LLM will request
     ToolDefinition time_tool;
     time_tool.name = "tell_time";
-    time_tool.triggers = {"what time"};
     time_tool.command = "echo 3:30 PM";
     time_tool.cooldown = 0;
     pipeline.tool_registry().add(time_tool);
@@ -458,57 +465,59 @@ void test_tool_call_in_pipeline() {
     auto audio = make_audio(vad.probs.size());
     pipeline.push_audio(audio.data(), audio.size());
 
-    // Tool should have been called
+    // LLM should have been called twice (first returns tool call, second with result)
+    assert(llm.call_count == 2);
+
+    // Tool events emitted
     assert(log.has(EventType::ToolCallStarted));
     assert(log.has(EventType::ToolCallCompleted));
 
-    // LLM should have been called with tool result
-    assert(llm.call_count == 1);
-
-    // TTS should speak the LLM response
+    // TTS speaks the final LLM response
     assert(tts.call_count == 1);
-    assert(tts.last_text == "The time is 3:30 PM");
     assert(log.has(EventType::ResponseDone));
 
     pipeline.stop();
-    printf("  PASS: tool_call_in_pipeline\n");
+    printf("  PASS: llm_driven_tool_call\n");
 }
 
-void test_tool_no_match_falls_through() {
+void test_no_tool_calls_normal_flow() {
     MockSTT stt;
     MockTTS tts;
+    MockLLM llm;
     MockVAD vad;
 
     stt.next_text = "how are you";
+    llm.response = "I'm doing well";
+    // No tool calls — LLM responds directly
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
 
     AgentConfig config;
-    config.mode = AgentConfig::Mode::Echo;
+    config.mode = AgentConfig::Mode::Pipeline;
 
     EventLog log;
-    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
         [&log](const PipelineEvent& e) { log.on_event(e); });
 
-    // Register a tool that won't match
-    ToolDefinition tool;
-    tool.name = "tell_time";
-    tool.triggers = {"what time"};
-    tool.command = "echo time";
-    tool.cooldown = 0;
-    pipeline.tool_registry().add(tool);
-
     pipeline.start();
-    pipeline.push_text("how are you");
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
 
-    // No tool call events
+    // LLM called once, no tool events
+    assert(llm.call_count == 1);
     assert(!log.has(EventType::ToolCallStarted));
 
-    // Should fall through to echo mode
+    // Normal response
     assert(tts.call_count == 1);
-    assert(tts.last_text == "how are you");
+    assert(tts.last_text == "I'm doing well");
     assert(log.has(EventType::ResponseDone));
 
     pipeline.stop();
-    printf("  PASS: tool_no_match_falls_through\n");
+    printf("  PASS: no_tool_calls_normal_flow\n");
 }
 
 void test_not_running_ignores_input() {
@@ -548,8 +557,8 @@ int main() {
     test_tts_error_propagation();
     test_interruption();
     test_max_utterance_force_split();
-    test_tool_call_in_pipeline();
-    test_tool_no_match_falls_through();
+    test_llm_driven_tool_call();
+    test_no_tool_calls_normal_flow();
     test_not_running_ignores_input();
     printf("All pipeline E2E tests passed.\n");
     return 0;
