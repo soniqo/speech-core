@@ -40,8 +40,19 @@ void VoicePipeline::stop() {
     state_.store(State::Idle);
 }
 
+void VoicePipeline::resume_listening() {
+    if (!running_.load()) return;
+    if (state_.load() == State::Cooldown) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        turn_detector_.reset();
+        state_.store(State::Idle);
+    }
+}
+
 void VoicePipeline::push_audio(const float* samples, size_t count) {
     if (!running_.load()) return;
+    // Suppress input during cooldown (waiting for playback to finish)
+    if (state_.load() == State::Cooldown) return;
     std::lock_guard<std::mutex> lock(mutex_);
     turn_detector_.push_audio(samples, count);
 }
@@ -226,7 +237,8 @@ void VoicePipeline::speak(const std::string& text) {
                     done.type = EventType::ResponseDone;
                     on_event_(done);
 
-                    state_.store(State::Idle);
+                    // Enter cooldown — audio suppressed until platform calls resume_listening()
+                    state_.store(State::Cooldown);
                 }
             });
     } catch (const std::exception& ex) {

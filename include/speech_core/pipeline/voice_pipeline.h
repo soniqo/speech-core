@@ -63,7 +63,8 @@ public:
         Listening,
         Transcribing,
         Thinking,
-        Speaking
+        Speaking,
+        Cooldown  // post-response — audio suppressed until resume_listening()
     };
 
     State state() const { return state_.load(); }
@@ -73,6 +74,11 @@ public:
 
     /// Stop the pipeline (cancels any in-progress work).
     void stop();
+
+    /// Signal that response playback has finished.
+    /// Transitions from Cooldown back to Listening.
+    /// Call this from the platform layer after speaker output ends.
+    void resume_listening();
 
     /// Whether the pipeline is running.
     bool is_running() const { return running_.load(); }

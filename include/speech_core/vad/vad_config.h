@@ -16,14 +16,19 @@ struct VADConfig {
     /// Minimum silence duration in seconds before ending speech.
     float min_silence_duration = 0.1f;
 
+    /// Pre-speech audio buffer duration in seconds.
+    /// Audio from before onset confirmation is kept and prepended to the utterance.
+    /// Set to 0 to disable. Default: 0.5s (captures ~500ms before speech onset).
+    float pre_speech_buffer_duration = 0.6f;
+
     /// Default configuration for Silero VAD v5 streaming.
     static constexpr VADConfig silero_default() {
-        return {0.5f, 0.35f, 0.25f, 0.1f};
+        return {0.5f, 0.35f, 0.25f, 0.1f, 0.6f};
     }
 
     /// Default configuration for Pyannote segmentation.
     static constexpr VADConfig pyannote_default() {
-        return {0.767f, 0.377f, 0.136f, 0.067f};
+        return {0.767f, 0.377f, 0.136f, 0.067f, 0.6f};
     }
 };
 

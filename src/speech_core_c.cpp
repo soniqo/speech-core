@@ -159,6 +159,7 @@ sc_config_t sc_config_default(void) {
     c.allow_interruptions = true;
     c.interruption_recovery_timeout = 0.4f;
     c.max_utterance_duration = 15.0f;
+    c.pre_speech_buffer_duration = 0.6f;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -191,6 +192,7 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.vad.offset = config.vad_offset;
     agent_config.vad.min_speech_duration = config.min_speech_duration;
     agent_config.vad.min_silence_duration = config.min_silence_duration;
+    agent_config.vad.pre_speech_buffer_duration = config.pre_speech_buffer_duration;
     agent_config.allow_interruptions = config.allow_interruptions;
     agent_config.interruption_recovery_timeout = config.interruption_recovery_timeout;
     agent_config.max_utterance_duration = config.max_utterance_duration;
@@ -232,6 +234,10 @@ void sc_pipeline_push_audio(sc_pipeline_t pipeline,
                             const float* samples, size_t count)
 {
     if (pipeline) pipeline->pipeline->push_audio(samples, count);
+}
+
+void sc_pipeline_resume_listening(sc_pipeline_t pipeline) {
+    if (pipeline) pipeline->pipeline->resume_listening();
 }
 
 void sc_pipeline_push_text(sc_pipeline_t pipeline, const char* text) {

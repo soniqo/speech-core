@@ -1,6 +1,7 @@
 build/
 build-*/
 cmake-build-*/
+dist/
 .cache/
 compile_commands.json
 *.o

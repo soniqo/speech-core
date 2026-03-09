@@ -1,0 +1,41 @@
+name: Release XCFramework
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-xcframework:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build XCFramework
+        run: ./scripts/build_xcframework.sh
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          cd dist
+          CHECKSUM=$(swift package compute-checksum SpeechCore.xcframework.zip)
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "Checksum: $CHECKSUM"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SpeechCore.xcframework.zip
+          body: |
+            ## SpeechCore XCFramework
+
+            **Checksum:** `${{ steps.checksum.outputs.checksum }}`
+
+            ### Usage in Package.swift
+            ```swift
+            .binaryTarget(
+                name: "CSpeechCore",
+                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SpeechCore.xcframework.zip",
+                checksum: "${{ steps.checksum.outputs.checksum }}"
+            )
+            ```

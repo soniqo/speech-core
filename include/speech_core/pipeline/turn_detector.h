@@ -71,6 +71,10 @@ private:
     float utterance_start_ = 0.0f;
     float interruption_time_ = -1.0f;
 
+    /// Ring buffer keeping recent audio for pre-speech capture.
+    std::vector<float> pre_speech_ring_;
+    size_t pre_speech_capacity_ = 0;  // max samples in ring buffer
+
     void force_end_utterance(float time);
 };
 

@@ -30,7 +30,8 @@ typedef enum {
     SC_STATE_LISTENING = 1,
     SC_STATE_TRANSCRIBING = 2,
     SC_STATE_THINKING = 3,
-    SC_STATE_SPEAKING = 4
+    SC_STATE_SPEAKING = 4,
+    SC_STATE_COOLDOWN = 5
 } sc_state_t;
 
 typedef enum {
@@ -73,6 +74,7 @@ typedef struct {
     bool allow_interruptions;
     float interruption_recovery_timeout;
     float max_utterance_duration;
+    float pre_speech_buffer_duration;
     const char* language;
     sc_mode_t mode;
 } sc_config_t;
@@ -173,6 +175,10 @@ void sc_pipeline_push_audio(sc_pipeline_t pipeline,
 
 /// Inject text directly (bypasses STT, sent to LLM).
 void sc_pipeline_push_text(sc_pipeline_t pipeline, const char* text);
+
+/// Signal that response playback has finished.
+/// Transitions from Cooldown back to Listening.
+void sc_pipeline_resume_listening(sc_pipeline_t pipeline);
 
 /// Get current pipeline state.
 sc_state_t sc_pipeline_state(sc_pipeline_t pipeline);

@@ -11,7 +11,14 @@ TurnDetector::TurnDetector(
       streaming_vad_(config.vad,
                      static_cast<float>(vad.chunk_size()) /
                      static_cast<float>(vad.input_sample_rate())),
-      on_event_(std::move(on_event)) {}
+      on_event_(std::move(on_event)) {
+    // Pre-speech ring buffer: holds last N seconds of audio
+    if (config.vad.pre_speech_buffer_duration > 0.0f) {
+        pre_speech_capacity_ = static_cast<size_t>(
+            config.vad.pre_speech_buffer_duration *
+            static_cast<float>(vad.input_sample_rate()));
+    }
+}
 
 void TurnDetector::push_audio(const float* samples, size_t count) {
     size_t chunk_size = vad_.chunk_size();
@@ -23,7 +30,9 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
 
         for (const auto& vad_event : events) {
             if (vad_event.type == VADEvent::SpeechStarted) {
-                utterance_buffer_.clear();
+                // Prepend pre-speech audio to capture onset
+                utterance_buffer_ = pre_speech_ring_;
+                pre_speech_ring_.clear();
                 utterance_start_ = vad_event.start_time;
                 in_speech_ = true;
 
@@ -69,8 +78,8 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             }
         }
 
-        // Buffer audio only during speech
         if (in_speech_) {
+            // Buffer audio during speech
             utterance_buffer_.insert(utterance_buffer_.end(),
                                      samples + offset,
                                      samples + offset + chunk_size);
@@ -80,6 +89,17 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             if (config_.max_utterance_duration > 0.0f &&
                 elapsed >= config_.max_utterance_duration) {
                 force_end_utterance(streaming_vad_.current_time());
+            }
+        } else if (pre_speech_capacity_ > 0) {
+            // Maintain rolling pre-speech buffer
+            pre_speech_ring_.insert(pre_speech_ring_.end(),
+                                    samples + offset,
+                                    samples + offset + chunk_size);
+            if (pre_speech_ring_.size() > pre_speech_capacity_) {
+                pre_speech_ring_.erase(
+                    pre_speech_ring_.begin(),
+                    pre_speech_ring_.begin() +
+                        static_cast<long>(pre_speech_ring_.size() - pre_speech_capacity_));
             }
         }
 
@@ -125,6 +145,7 @@ void TurnDetector::reset() {
     streaming_vad_.reset();
     vad_.reset();
     utterance_buffer_.clear();
+    pre_speech_ring_.clear();
     utterance_start_ = 0.0f;
     agent_speaking_ = false;
     in_speech_ = false;
