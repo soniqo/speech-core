@@ -22,6 +22,7 @@ public:
         auto r = vt_.transcribe(vt_.context, audio, length, sample_rate);
         return {
             r.text ? std::string(r.text) : "",
+            r.language ? std::string(r.language) : "",
             r.confidence,
             r.start_time,
             r.end_time
@@ -137,8 +138,11 @@ static sc_event_type_t map_event_type(EventType type) {
         case EventType::SpeechEnded:              return SC_EVENT_SPEECH_ENDED;
         case EventType::TranscriptionCompleted:   return SC_EVENT_TRANSCRIPTION_COMPLETED;
         case EventType::ResponseCreated:          return SC_EVENT_RESPONSE_CREATED;
+        case EventType::ResponseInterrupted:      return SC_EVENT_RESPONSE_INTERRUPTED;
         case EventType::ResponseAudioDelta:       return SC_EVENT_RESPONSE_AUDIO_DELTA;
         case EventType::ResponseDone:             return SC_EVENT_RESPONSE_DONE;
+        case EventType::ToolCallStarted:          return SC_EVENT_TOOL_CALL_STARTED;
+        case EventType::ToolCallCompleted:        return SC_EVENT_TOOL_CALL_COMPLETED;
         case EventType::Error:                    return SC_EVENT_ERROR;
         default:                                  return SC_EVENT_ERROR;
     }
@@ -157,9 +161,14 @@ sc_config_t sc_config_default(void) {
     c.min_speech_duration = 0.25f;
     c.min_silence_duration = 0.1f;
     c.allow_interruptions = true;
+    c.min_interruption_duration = 1.0f;
     c.interruption_recovery_timeout = 0.4f;
     c.max_utterance_duration = 15.0f;
     c.pre_speech_buffer_duration = 0.6f;
+    c.max_response_duration = 10.0f;
+    c.post_playback_guard = 0.3f;
+    c.eager_stt = true;
+    c.warmup_stt = true;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -194,8 +203,13 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.vad.min_silence_duration = config.min_silence_duration;
     agent_config.vad.pre_speech_buffer_duration = config.pre_speech_buffer_duration;
     agent_config.allow_interruptions = config.allow_interruptions;
+    agent_config.min_interruption_duration = config.min_interruption_duration;
     agent_config.interruption_recovery_timeout = config.interruption_recovery_timeout;
     agent_config.max_utterance_duration = config.max_utterance_duration;
+    agent_config.max_response_duration = config.max_response_duration;
+    agent_config.post_playback_guard = config.post_playback_guard;
+    agent_config.eager_stt = config.eager_stt;
+    agent_config.warmup_stt = config.warmup_stt;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);
 

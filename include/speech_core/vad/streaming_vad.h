@@ -11,7 +11,9 @@ namespace speech_core {
 struct VADEvent {
     enum Type {
         SpeechStarted,  ///< Speech detected and confirmed (duration >= min_speech_duration)
-        SpeechEnded     ///< Speech ended (silence >= min_silence_duration)
+        SpeechEnded,    ///< Speech ended (silence >= min_silence_duration)
+        SpeechPaused,   ///< Speech → PendingSilence transition (silence just began)
+        SpeechResumed   ///< PendingSilence → Speech (speech resumed before silence confirmed)
     };
 
     Type type;

@@ -15,7 +15,6 @@ set(SOURCES
     src/audio/audio_buffer.cpp
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
-    src/protocol/realtime_protocol.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp

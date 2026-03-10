@@ -77,6 +77,7 @@ std::vector<VADEvent> StreamingVAD::process_prob(float prob, float time) {
         if (prob < config_.offset) {
             silence_start_ = time;
             state_ = State::PendingSilence;
+            events.push_back({VADEvent::SpeechPaused, speech_start_, time});
         }
         break;
 
@@ -84,6 +85,7 @@ std::vector<VADEvent> StreamingVAD::process_prob(float prob, float time) {
         if (prob >= config_.onset) {
             // Speech resumed
             state_ = State::Speech;
+            events.push_back({VADEvent::SpeechResumed, speech_start_, time});
         } else if (next_time - silence_start_ >= config_.min_silence_duration) {
             // Silence confirmed
             events.push_back({VADEvent::SpeechEnded, speech_start_, silence_start_});

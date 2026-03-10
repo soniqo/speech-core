@@ -1,6 +1,6 @@
 # Speech Core
 
-Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, speech queuing, and protocol handling.
+Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, and speech queuing.
 
 ML inference is **not** in this library. Consumers implement the abstract interfaces (STT, TTS, LLM, VAD) with their own models.
 
@@ -13,7 +13,6 @@ ML inference is **not** in this library. Consumers implement the abstract interf
                     │   VoicePipeline           │  STT -> LLM -> TTS orchestration
                     │   TurnDetector            │  VAD-driven turn boundaries
                     │   SpeechQueue             │  Priority queue, cancel/resume
-                    │   RealtimeProtocol        │  OpenAI Realtime API messages
                     │   StreamingVAD            │  Hysteresis state machine
                     │   AudioBuffer             │  Ring buffer, resampler, PCM
                     │                           │
@@ -54,13 +53,17 @@ The voice pipeline manages the full conversational loop:
        │                            ┌─────▼──────────┐
        │                            │ THINKING        │
        │                            └─────┬──────────┘
-       │                                  │ LLM tokens
+       │                                  │ LLM response
        │                            ┌─────▼──────────┐
-       │  TTS done / interrupted    │ SPEAKING        │
+       │  resume_listening()        │ SPEAKING        │◄── user barge-in ──► LISTENING
        └────────────────────────────┴────────────────┘
 ```
 
+The pipeline stays in SPEAKING after TTS finishes, waiting for the platform to call `resume_listening()` after audio playback ends.
+
 **Interruption handling**: when the user speaks while the agent is in SPEAKING state, the pipeline cancels TTS output and transitions back to LISTENING. False-interruption recovery pauses playback briefly and resumes if the user stops within a configurable window.
+
+**Post-playback guard**: after `resume_listening()`, the turn detector suppresses VAD events for a configurable window (`post_playback_guard`, default 0.3s) to let AEC residual echo settle.
 
 ## Components
 
@@ -93,7 +96,6 @@ The voice pipeline manages the full conversational loop:
 
 | File | Purpose |
 |---|---|
-| `realtime_protocol.h` | OpenAI Realtime API message parser and serializer |
 | `events.h` | Event type definitions (speech_started, transcript, audio_delta, etc.) |
 
 ### Interfaces (`include/speech_core/interfaces.h`)
@@ -102,21 +104,29 @@ Abstract classes:
 
 ```cpp
 class STTInterface {
-    virtual TranscriptionResult transcribe(const float* audio, size_t len, int sampleRate) = 0;
+    virtual TranscriptionResult transcribe(const float* audio, size_t length, int sample_rate) = 0;
+    virtual int input_sample_rate() const = 0;
 };
 
 class TTSInterface {
-    virtual void synthesize(const std::string& text,
-                           std::function<void(const float*, size_t, bool)> onChunk) = 0;
+    virtual void synthesize(const std::string& text, const std::string& language,
+                            TTSChunkCallback on_chunk) = 0;
+    virtual int output_sample_rate() const = 0;
+    virtual void cancel() {}
 };
 
 class LLMInterface {
-    virtual void chat(const std::vector<Message>& messages,
-                     std::function<void(const std::string&, bool)> onToken) = 0;
+    virtual LLMResponse chat(const std::vector<Message>& messages,
+                             LLMTokenCallback on_token) = 0;
+    virtual void set_tools(const std::vector<ToolDefinition>& tools) {}
+    virtual void cancel() {}
 };
 
 class VADInterface {
-    virtual float processChunk(const float* samples, size_t len) = 0;
+    virtual float process_chunk(const float* samples, size_t length) = 0;
+    virtual void reset() = 0;
+    virtual int input_sample_rate() const = 0;
+    virtual size_t chunk_size() const = 0;
 };
 ```
 
@@ -164,7 +174,7 @@ cd build && ctest
 
 - **No ML inference** — this library never loads models or runs neural networks.
 - **No platform dependencies** — pure C++17, no OS-specific APIs.
-- **No network I/O** — protocol layer parses and serializes messages, but doesn't own the transport.
+- **No network I/O** — no sockets, no HTTP, no WebSocket.
 - **No audio I/O** — audio buffer and resampler operate on float arrays.
 - **Callback-driven** — pipeline emits events via `std::function` callbacks.
 

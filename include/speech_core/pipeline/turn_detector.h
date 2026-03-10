@@ -53,10 +53,16 @@ public:
     /// This enables interruption detection.
     void set_agent_speaking(bool speaking);
 
+    /// Suppress VAD events for the given duration (seconds).
+    /// Audio still feeds through the VAD model to keep its RNN warm,
+    /// but no turn events fire until the guard expires. Used after
+    /// agent playback to let AEC residual echo settle.
+    void set_post_playback_guard(float seconds);
+
     /// Flush any pending turn at end of stream.
     void flush();
 
-    /// Reset all state.
+    /// Reset all state (clears any active post-playback guard).
     void reset();
 
 private:
@@ -67,6 +73,8 @@ private:
 
     bool agent_speaking_ = false;
     bool in_speech_ = false;
+    bool interruption_confirmed_ = false;  // true once min_interruption_duration met
+    bool eager_utterance_sent_ = false;    // true when eager STT fired early
     std::vector<float> utterance_buffer_;
     float utterance_start_ = 0.0f;
     float interruption_time_ = -1.0f;
@@ -74,6 +82,9 @@ private:
     /// Ring buffer keeping recent audio for pre-speech capture.
     std::vector<float> pre_speech_ring_;
     size_t pre_speech_capacity_ = 0;  // max samples in ring buffer
+
+    /// Post-playback guard: remaining samples to suppress before resuming VAD.
+    size_t guard_remaining_samples_ = 0;
 
     void force_end_utterance(float time);
 };

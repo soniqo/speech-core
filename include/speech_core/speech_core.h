@@ -14,5 +14,4 @@
 #include "speech_core/audio/audio_buffer.h"
 #include "speech_core/audio/resampler.h"
 #include "speech_core/audio/pcm_codec.h"
-#include "speech_core/protocol/realtime_protocol.h"
 #include "speech_core/protocol/events.h"

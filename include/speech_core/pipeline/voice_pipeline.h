@@ -1,10 +1,13 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "speech_core/interfaces.h"
 #include "speech_core/pipeline/agent_config.h"
@@ -63,8 +66,7 @@ public:
         Listening,
         Transcribing,
         Thinking,
-        Speaking,
-        Cooldown  // post-response — audio suppressed until resume_listening()
+        Speaking  // stays in Speaking after TTS until resume_listening()
     };
 
     State state() const { return state_.load(); }
@@ -76,12 +78,16 @@ public:
     void stop();
 
     /// Signal that response playback has finished.
-    /// Transitions from Cooldown back to Listening.
+    /// Transitions from Speaking back to Idle.
     /// Call this from the platform layer after speaker output ends.
     void resume_listening();
 
     /// Whether the pipeline is running.
     bool is_running() const { return running_.load(); }
+
+    /// Block until the worker thread has processed all pending utterances.
+    /// Useful for testing — in production, events arrive asynchronously.
+    void wait_idle();
 
     /// Access the tool registry for adding tools.
     ToolRegistry& tool_registry() { return tool_registry_; }
@@ -102,11 +108,24 @@ private:
 
     std::atomic<State> state_{State::Idle};
     std::atomic<bool> running_{false};
-    mutable std::mutex mutex_;
+    mutable std::mutex mutex_;  // protects turn_detector_ and push_audio
 
+    // Worker thread for STT/LLM/TTS — keeps push_audio non-blocking
+    struct PendingUtterance {
+        std::vector<float> audio;
+        float time;
+    };
+    std::thread worker_thread_;
+    std::mutex worker_mutex_;
+    std::condition_variable worker_cv_;
+    std::condition_variable worker_idle_cv_;  // signaled when worker finishes processing
+    std::vector<PendingUtterance> pending_utterances_;
+    std::atomic<bool> worker_busy_{false};
+
+    void worker_loop();
     void on_turn_event(const TurnEvent& event);
-    void process_utterance(const std::string& transcript);
-    void speak(const std::string& text);
+    void process_utterance(const std::string& transcript, const std::string& language = "");
+    void speak(const std::string& text, const std::string& language = "");
     void emit_error(const std::string& message);
     std::string call_llm_with_tools();
 };

@@ -28,6 +28,7 @@ struct Message {
 
 struct TranscriptionResult {
     std::string text;
+    std::string language;  // detected language (e.g. "russian", "english"), empty if unknown
     float confidence = 1.0f;
     float start_time = 0.0f;  // seconds
     float end_time = 0.0f;

@@ -26,6 +26,15 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
 
     while (offset + chunk_size <= count) {
         float prob = vad_.process_chunk(samples + offset, chunk_size);
+
+        // Post-playback guard: keep VAD model warm but suppress events
+        if (guard_remaining_samples_ > 0) {
+            size_t dec = std::min(guard_remaining_samples_, chunk_size);
+            guard_remaining_samples_ -= dec;
+            offset += chunk_size;
+            continue;
+        }
+
         auto events = streaming_vad_.process(prob);
 
         for (const auto& vad_event : events) {
@@ -35,14 +44,19 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 pre_speech_ring_.clear();
                 utterance_start_ = vad_event.start_time;
                 in_speech_ = true;
+                interruption_confirmed_ = false;
 
-                // If agent is speaking, this is an interruption
+                // If agent is speaking, defer interruption until min duration met
                 if (agent_speaking_ && config_.allow_interruptions) {
                     interruption_time_ = vad_event.start_time;
-                    TurnEvent interrupt;
-                    interrupt.type = TurnEvent::Interruption;
-                    interrupt.time = vad_event.start_time;
-                    on_event_(interrupt);
+                    // If min_interruption_duration <= 0, fire immediately
+                    if (config_.min_interruption_duration <= 0.0f) {
+                        interruption_confirmed_ = true;
+                        TurnEvent interrupt;
+                        interrupt.type = TurnEvent::Interruption;
+                        interrupt.time = vad_event.start_time;
+                        on_event_(interrupt);
+                    }
                 }
 
                 TurnEvent started;
@@ -50,11 +64,67 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 started.time = vad_event.start_time;
                 on_event_(started);
 
+            } else if (vad_event.type == VADEvent::SpeechPaused) {
+                // Eager STT: emit UserSpeechEnded immediately when silence
+                // begins, saving ~0.5s of silence confirmation latency.
+                // If speech resumes, the early result is discarded.
+                if (config_.eager_stt && in_speech_ && !agent_speaking_
+                    && !eager_utterance_sent_) {
+                    eager_utterance_sent_ = true;
+                    in_speech_ = false;
+                    interruption_time_ = -1.0f;
+
+                    TurnEvent ended;
+                    ended.type = TurnEvent::UserSpeechEnded;
+                    ended.time = vad_event.end_time;
+                    ended.audio = utterance_buffer_;
+                    on_event_(ended);
+                    utterance_buffer_.clear();
+                }
+
+            } else if (vad_event.type == VADEvent::SpeechResumed) {
+                // Speech resumed after a pause — if we sent an eager utterance,
+                // that's already being processed. Treat resumed speech as a
+                // new utterance (prepend pre-speech ring for context).
+                if (eager_utterance_sent_) {
+                    eager_utterance_sent_ = false;
+                    in_speech_ = true;
+                    utterance_buffer_ = pre_speech_ring_;
+                    pre_speech_ring_.clear();
+                    utterance_start_ = vad_event.end_time;
+
+                    TurnEvent started;
+                    started.type = TurnEvent::UserSpeechStarted;
+                    started.time = vad_event.end_time;
+                    on_event_(started);
+                }
+
             } else if (vad_event.type == VADEvent::SpeechEnded) {
                 in_speech_ = false;
 
+                // If eager STT already fired, silence just confirmed it — skip
+                if (eager_utterance_sent_) {
+                    eager_utterance_sent_ = false;
+                    utterance_buffer_.clear();
+                    interruption_time_ = -1.0f;
+                }
+                // During agent speaking: discard speech that was too short
+                // to confirm interruption (AEC residual echo)
+                else if (agent_speaking_ && !interruption_confirmed_) {
+                    // False trigger (AEC residual echo) — restore audio to
+                    // pre-speech ring so onset context is preserved for the
+                    // next real utterance.
+                    pre_speech_ring_ = std::move(utterance_buffer_);
+                    if (pre_speech_ring_.size() > pre_speech_capacity_) {
+                        pre_speech_ring_.erase(
+                            pre_speech_ring_.begin(),
+                            pre_speech_ring_.begin() +
+                                static_cast<long>(pre_speech_ring_.size() - pre_speech_capacity_));
+                    }
+                    interruption_time_ = -1.0f;
+                }
                 // Check for interruption recovery
-                if (interruption_time_ >= 0.0f &&
+                else if (interruption_time_ >= 0.0f &&
                     config_.interruption_recovery_timeout > 0.0f &&
                     (vad_event.end_time - interruption_time_) <
                         config_.interruption_recovery_timeout) {
@@ -83,6 +153,19 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             utterance_buffer_.insert(utterance_buffer_.end(),
                                      samples + offset,
                                      samples + offset + chunk_size);
+
+            // Check deferred interruption — fire once speech exceeds min duration
+            if (agent_speaking_ && config_.allow_interruptions &&
+                !interruption_confirmed_ && interruption_time_ >= 0.0f) {
+                float speech_duration = streaming_vad_.current_time() - interruption_time_;
+                if (speech_duration >= config_.min_interruption_duration) {
+                    interruption_confirmed_ = true;
+                    TurnEvent interrupt;
+                    interrupt.type = TurnEvent::Interruption;
+                    interrupt.time = interruption_time_;
+                    on_event_(interrupt);
+                }
+            }
 
             // Force-split if utterance exceeds max duration
             float elapsed = streaming_vad_.current_time() - utterance_start_;
@@ -126,6 +209,11 @@ void TurnDetector::set_agent_speaking(bool speaking) {
     agent_speaking_ = speaking;
 }
 
+void TurnDetector::set_post_playback_guard(float seconds) {
+    guard_remaining_samples_ = static_cast<size_t>(
+        seconds * static_cast<float>(vad_.input_sample_rate()));
+}
+
 void TurnDetector::flush() {
     auto events = streaming_vad_.flush();
     for (const auto& vad_event : events) {
@@ -143,13 +231,20 @@ void TurnDetector::flush() {
 
 void TurnDetector::reset() {
     streaming_vad_.reset();
-    vad_.reset();
+    // Do NOT reset vad_ model state — its internal RNN needs ~0.5-1s to
+    // re-warm after reset, causing missed speech right after resume.
+    // Only reset turn-tracking state.
     utterance_buffer_.clear();
-    pre_speech_ring_.clear();
+    // Keep pre_speech_ring_ — it holds recent audio that may overlap with
+    // the onset of the next utterance. Clearing it after resume_listening()
+    // discards context that the STT model needs for accurate transcription.
     utterance_start_ = 0.0f;
     agent_speaking_ = false;
     in_speech_ = false;
     interruption_time_ = -1.0f;
+    interruption_confirmed_ = false;
+    eager_utterance_sent_ = false;
+    guard_remaining_samples_ = 0;
 }
 
 }  // namespace speech_core

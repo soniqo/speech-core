@@ -30,8 +30,7 @@ typedef enum {
     SC_STATE_LISTENING = 1,
     SC_STATE_TRANSCRIBING = 2,
     SC_STATE_THINKING = 3,
-    SC_STATE_SPEAKING = 4,
-    SC_STATE_COOLDOWN = 5
+    SC_STATE_SPEAKING = 4
 } sc_state_t;
 
 typedef enum {
@@ -40,8 +39,11 @@ typedef enum {
     SC_EVENT_SPEECH_ENDED,
     SC_EVENT_TRANSCRIPTION_COMPLETED,
     SC_EVENT_RESPONSE_CREATED,
+    SC_EVENT_RESPONSE_INTERRUPTED,
     SC_EVENT_RESPONSE_AUDIO_DELTA,
     SC_EVENT_RESPONSE_DONE,
+    SC_EVENT_TOOL_CALL_STARTED,
+    SC_EVENT_TOOL_CALL_COMPLETED,
     SC_EVENT_ERROR
 } sc_event_type_t;
 
@@ -72,15 +74,21 @@ typedef struct {
     float min_speech_duration;
     float min_silence_duration;
     bool allow_interruptions;
+    float min_interruption_duration;
     float interruption_recovery_timeout;
     float max_utterance_duration;
     float pre_speech_buffer_duration;
+    float max_response_duration;
+    float post_playback_guard;
+    bool eager_stt;
+    bool warmup_stt;
     const char* language;
     sc_mode_t mode;
 } sc_config_t;
 
 typedef struct {
-    const char* text;   // valid until next transcribe call on same context
+    const char* text;       // valid until next transcribe call on same context
+    const char* language;   // detected language (e.g. "russian"), NULL if unknown
     float confidence;
     float start_time;
     float end_time;
@@ -177,7 +185,7 @@ void sc_pipeline_push_audio(sc_pipeline_t pipeline,
 void sc_pipeline_push_text(sc_pipeline_t pipeline, const char* text);
 
 /// Signal that response playback has finished.
-/// Transitions from Cooldown back to Listening.
+/// Transitions from Speaking back to Idle.
 void sc_pipeline_resume_listening(sc_pipeline_t pipeline);
 
 /// Get current pipeline state.

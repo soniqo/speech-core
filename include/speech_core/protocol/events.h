@@ -6,40 +6,25 @@
 
 namespace speech_core {
 
-/// Event types for the voice agent pipeline.
-/// Compatible with OpenAI Realtime API event naming.
+/// Event types emitted by the voice agent pipeline.
 enum class EventType {
     // Session
     SessionCreated,
-    SessionUpdated,
-
-    // Input audio
-    InputAudioBufferAppend,
-    InputAudioBufferCommit,
-    InputAudioBufferClear,
-    InputAudioBufferCleared,
-    InputAudioBufferCommitted,
 
     // VAD / turn detection
     SpeechStarted,
     SpeechEnded,
 
     // Transcription
-    TranscriptionPartial,
     TranscriptionCompleted,
 
     // Response lifecycle
     ResponseCreated,
+    ResponseInterrupted,
     ResponseDone,
 
     // Audio output
     ResponseAudioDelta,
-    ResponseAudioDone,
-    ResponseAudioTranscriptDelta,
-    ResponseAudioTranscriptDone,
-
-    // Conversation
-    ConversationItemCreated,
 
     // Tool calling
     ToolCallStarted,

@@ -37,7 +37,7 @@ audio → VAD → STT → text
 
 ## State Machine
 
-Five states with automatic transitions:
+Six states with automatic transitions:
 
 | State | Description | Transitions to |
 |---|---|---|
@@ -45,7 +45,7 @@ Five states with automatic transitions:
 | **Listening** | User is speaking, audio being buffered | Transcribing (on VAD speech_ended) |
 | **Transcribing** | STT is processing the utterance | Thinking or Idle |
 | **Thinking** | LLM is generating a response | Speaking or Idle |
-| **Speaking** | TTS audio is being emitted | Idle (on TTS done) or Listening (on interruption) |
+| **Speaking** | TTS audio is being emitted / waiting for playback to finish | Idle (on resume_listening) or Listening (on interruption) |
 
 ## Turn Detection
 
@@ -96,19 +96,23 @@ The pipeline emits events via the `EventCallback`:
 | Event | When | Payload |
 |---|---|---|
 | `SpeechStarted` | VAD confirms user speech | `start_time` |
+| `SpeechEnded` | User utterance finalized, STT starting | `start_time` |
 | `TranscriptionCompleted` | STT returns text | `text`, `start_time` |
-| `ToolCallStarted` | Tool trigger matched | `text` (tool name) |
+| `ToolCallStarted` | LLM requested a tool call | `text` (tool name) |
 | `ToolCallCompleted` | Tool execution finished | `text` (output) |
 | `ResponseCreated` | TTS synthesis starting | — |
 | `ResponseAudioDelta` | TTS audio chunk ready | `audio_data` (PCM16) |
+| `ResponseInterrupted` | User barged in during TTS | `start_time` |
 | `ResponseDone` | TTS synthesis complete | — |
 | `Error` | STT/LLM/TTS failure | `text` (error message) |
 
 ## Thread Safety
 
-- `push_audio()` and `push_text()` are mutex-protected — safe to call from different threads
-- Events are emitted on the calling thread — platform dispatches to main thread as needed
-- `start()`/`stop()` are also mutex-protected
+- `push_audio()` is mutex-protected — safe to call from any thread
+- STT/LLM/TTS run on a dedicated worker thread — `push_audio()` never blocks on inference
+- Events are emitted on the calling thread (push_audio events) or the worker thread (STT/TTS events) — platform dispatches to main thread as needed
+- `start()`/`stop()`/`resume_listening()` are mutex-protected
+- `resume_listening()` is non-blocking — post-playback guard is applied as a sample counter in the turn detector
 - State reads (`state()`, `is_running()`) are atomic — lock-free
 
 ## Configuration
@@ -118,12 +122,38 @@ The pipeline emits events via the `EventCallback`:
 ```cpp
 AgentConfig config;
 config.mode = AgentConfig::Mode::Pipeline;
-config.vad.onset = 0.5f;           // speech probability threshold
-config.vad.offset = 0.35f;         // silence probability threshold
-config.vad.min_speech_duration = 0.25f;  // seconds
-config.vad.min_silence_duration = 0.1f;  // seconds
+
+// VAD thresholds
+config.vad.onset = 0.5f;                    // speech probability threshold
+config.vad.offset = 0.35f;                  // silence probability threshold
+config.vad.min_speech_duration = 0.25f;     // seconds before confirming speech
+config.vad.min_silence_duration = 0.1f;     // seconds before confirming silence
+config.vad.pre_speech_buffer_duration = 0.6f; // seconds of pre-onset audio to capture
+
+// Interruption
 config.allow_interruptions = true;
-config.interruption_recovery_timeout = 0.4f;  // seconds
-config.max_utterance_duration = 15.0f;  // seconds
-config.language = "en";            // STT/TTS language hint
+config.min_interruption_duration = 1.0f;    // seconds of speech before confirming barge-in
+config.interruption_recovery_timeout = 0.4f; // seconds — brief interruptions recover
+
+// Timing
+config.min_speech_gap = 0.1f;              // seconds between agent speech outputs
+config.max_utterance_duration = 15.0f;     // seconds — force-split long utterances
+config.max_response_duration = 10.0f;      // seconds — cap TTS output (prevents hallucination)
+config.post_playback_guard = 0.3f;         // seconds — suppress VAD after playback (AEC settle)
+
+// Latency optimizations
+config.eager_stt = true;                   // start STT on first silence frame (saves ~0.6s)
+config.warmup_stt = true;                  // dummy transcription at pipeline start (ANE cold start)
+
+config.language = "en";                    // STT/TTS language hint (empty = auto-detect)
 ```
+
+### Eager STT
+
+When enabled (`eager_stt = true`, default), the turn detector emits `UserSpeechEnded` as soon as the first silence frame arrives (StreamingVAD `SpeechPaused` event), instead of waiting for `min_silence_duration` to confirm the end of speech. This saves ~0.6s of latency.
+
+If the user resumes speaking before silence is confirmed (`SpeechResumed`), the eager result is discarded and a new utterance starts fresh.
+
+### STT Warm-up
+
+When enabled (`warmup_stt = true`, default), the worker thread runs a dummy 0.5s silent transcription at pipeline start. First inference on CoreML / Neural Engine is slow due to cold start — warm-up brings subsequent latency from ~3s to <1s.
