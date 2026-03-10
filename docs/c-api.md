@@ -80,7 +80,8 @@ Key fields:
 - `max_utterance_duration` — force-split long utterances
 - `max_response_duration` — cap TTS output (prevents hallucination)
 - `post_playback_guard` — suppress VAD after playback (AEC settle)
-- `eager_stt` — start STT on first silence frame (saves ~0.6s latency)
+- `eager_stt` — start STT before silence confirms (saves latency)
+- `eager_stt_delay` — seconds in PendingSilence before eager fires (filters mid-sentence pauses)
 - `warmup_stt` — dummy STT at pipeline start (Neural Engine cold start)
 - `language` — STT/TTS language hint (empty string = auto-detect)
 - `mode` — `SC_MODE_PIPELINE`, `SC_MODE_TRANSCRIBE_ONLY`, or `SC_MODE_ECHO`

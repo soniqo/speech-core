@@ -168,6 +168,7 @@ sc_config_t sc_config_default(void) {
     c.max_response_duration = 10.0f;
     c.post_playback_guard = 0.3f;
     c.eager_stt = true;
+    c.eager_stt_delay = 0.3f;
     c.warmup_stt = true;
     c.language = "";
     c.mode = SC_MODE_ECHO;
@@ -209,6 +210,7 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.max_response_duration = config.max_response_duration;
     agent_config.post_playback_guard = config.post_playback_guard;
     agent_config.eager_stt = config.eager_stt;
+    agent_config.eager_stt_delay = config.eager_stt_delay;
     agent_config.warmup_stt = config.warmup_stt;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);

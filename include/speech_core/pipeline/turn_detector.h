@@ -26,6 +26,14 @@ struct TurnEvent {
     Type type;
     float time;
 
+    /// True if this UserSpeechStarted was emitted because the user resumed
+    /// speaking after an eager STT utterance was already dispatched.
+    bool eager_resumed = false;
+
+    /// True if this UserSpeechEnded was emitted eagerly (on first silence
+    /// frame) rather than after silence was confirmed.
+    bool eager = false;
+
     /// Accumulated user audio for this turn (populated on UserSpeechEnded).
     std::vector<float> audio;
 };
@@ -75,6 +83,8 @@ private:
     bool in_speech_ = false;
     bool interruption_confirmed_ = false;  // true once min_interruption_duration met
     bool eager_utterance_sent_ = false;    // true when eager STT fired early
+    bool eager_pending_ = false;           // waiting for eager_stt_delay to elapse
+    float eager_pending_time_ = 0.0f;     // time when SpeechPaused triggered pending eager
     std::vector<float> utterance_buffer_;
     float utterance_start_ = 0.0f;
     float interruption_time_ = -1.0f;

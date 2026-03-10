@@ -65,9 +65,12 @@ If an utterance exceeds `max_utterance_duration` (default 15s), `TurnDetector` f
 
 When the agent is speaking (`agent_speaking_ == true`) and the user starts talking:
 
-1. Pipeline emits an `Interruption` event
-2. TTS is cancelled, speech queue is cleared
-3. Pipeline transitions to Listening
+1. A deferred interruption timer starts (requires `min_interruption_duration` of continuous speech to confirm — filters AEC residual echo)
+2. Once confirmed, pipeline emits an `Interruption` event
+3. TTS is cancelled, speech queue is cleared
+4. Pipeline transitions to Listening
+
+**Retroactive interruption**: if the user is already speaking when `set_agent_speaking(true)` is called (e.g., user spoke during STT processing after an eager utterance), the deferred interruption timer starts immediately.
 
 **Interruption recovery**: if the user stops speaking within `interruption_recovery_timeout` (default 0.4s), an `InterruptionRecovered` event is emitted instead of processing the utterance — allowing the platform to resume playback.
 
@@ -142,7 +145,8 @@ config.max_response_duration = 10.0f;      // seconds — cap TTS output (preven
 config.post_playback_guard = 0.3f;         // seconds — suppress VAD after playback (AEC settle)
 
 // Latency optimizations
-config.eager_stt = true;                   // start STT on first silence frame (saves ~0.6s)
+config.eager_stt = true;                   // start STT before silence confirms (saves ~0.3s)
+config.eager_stt_delay = 0.3f;             // seconds in silence before eager fires (filters pauses)
 config.warmup_stt = true;                  // dummy transcription at pipeline start (ANE cold start)
 
 config.language = "en";                    // STT/TTS language hint (empty = auto-detect)
@@ -150,9 +154,13 @@ config.language = "en";                    // STT/TTS language hint (empty = aut
 
 ### Eager STT
 
-When enabled (`eager_stt = true`, default), the turn detector emits `UserSpeechEnded` as soon as the first silence frame arrives (StreamingVAD `SpeechPaused` event), instead of waiting for `min_silence_duration` to confirm the end of speech. This saves ~0.6s of latency.
+When enabled (`eager_stt = true`, default), the turn detector emits `UserSpeechEnded` early — before `min_silence_duration` confirms the end of speech — saving latency equal to `min_silence_duration - eager_stt_delay`.
 
-If the user resumes speaking before silence is confirmed (`SpeechResumed`), the eager result is discarded and a new utterance starts fresh.
+The `eager_stt_delay` parameter (default 0.3s) controls how long to wait in `PendingSilence` before firing the eager utterance. This filters natural mid-sentence pauses (typically 0.1–0.3s in conversational speech) while still being faster than full silence confirmation. Set to 0 to fire on the first silence frame.
+
+If the user resumes speaking before `min_silence_duration` (i.e., the VAD fires `SpeechResumed`), the eager result is discarded and the turn is treated as one continuous utterance. If the full silence elapses, the eager utterance is committed and any subsequent speech starts a new turn.
+
+The pipeline marks eager utterances with an `eager` flag so that new speech during STT processing is not mistaken for an interruption — it's treated as a separate utterance.
 
 ### STT Warm-up
 

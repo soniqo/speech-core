@@ -108,25 +108,36 @@ void VoicePipeline::worker_loop() {
                 utterance.audio.data(), utterance.audio.size(),
                 stt_.input_sample_rate());
 
-            PipelineEvent transcript_event;
-            transcript_event.type = EventType::TranscriptionCompleted;
-            transcript_event.text = result.text;
-            transcript_event.start_time = utterance.time;
-            on_event_(transcript_event);
+            // Check if this eager utterance was invalidated (user resumed
+            // speaking), or if a real interruption happened during STT.
+            // For eager utterances, new speech during STT is NOT an interruption
+            // (agent_speaking_ was never set), so skip the interrupted check.
+            bool invalidated = eager_invalidated_.exchange(false);
+            bool interrupted = !utterance.eager && (state_.load() == State::Listening);
 
-            // Check if interrupted during STT — state changes to
-            // Listening on interruption, so skip TTS if that happened.
-            bool interrupted = (state_.load() == State::Listening);
-            if (interrupted) {
+            if (invalidated || interrupted) {
+                // Don't emit transcription or TTS for discarded utterances.
                 std::lock_guard<std::mutex> lock(mutex_);
                 turn_detector_.set_agent_speaking(false);
-            } else if (!result.text.empty()) {
-                process_utterance(result.text, result.language);
             } else {
-                // Empty transcription (noise/breath) — resume listening
+                PipelineEvent transcript_event;
+                transcript_event.type = EventType::TranscriptionCompleted;
+                transcript_event.text = result.text;
+                transcript_event.start_time = utterance.time;
+                on_event_(transcript_event);
+            }
+
+            if (!invalidated && !interrupted && !result.text.empty()) {
+                process_utterance(result.text, result.language);
+            } else if (invalidated || interrupted) {
+                // Eager utterance discarded or new speech interrupted STT —
+                // the turn detector is tracking active speech, don't reset it.
+                // State is already Listening from UserSpeechStarted.
+            } else {
+                // Empty transcription (noise/breath) — resume idle
                 std::lock_guard<std::mutex> lock(mutex_);
                 turn_detector_.set_agent_speaking(false);
-                state_.store(State::Listening);
+                state_.store(State::Idle);
                 turn_detector_.reset();
             }
         } catch (const std::exception& ex) {
@@ -167,6 +178,12 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
     // Called from push_audio with mutex already held
     switch (event.type) {
     case TurnEvent::UserSpeechStarted: {
+        // If user resumed speaking after an eager STT utterance was dispatched,
+        // signal the worker to discard its result (it's a partial utterance).
+        if (event.eager_resumed) {
+            eager_invalidated_.store(true);
+            turn_detector_.set_agent_speaking(false);
+        }
         state_.store(State::Listening);
         PipelineEvent e;
         e.type = EventType::SpeechStarted;
@@ -177,15 +194,18 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
 
     case TurnEvent::UserSpeechEnded: {
         state_.store(State::Transcribing);
-        // Mark agent as "speaking" immediately so the turn detector treats
-        // any new speech as an interruption (not a second utterance) while
-        // the worker processes STT + TTS.
-        turn_detector_.set_agent_speaking(true);
+        // For non-eager utterances, mark agent as "speaking" so the turn
+        // detector treats new speech as interruption while STT + TTS runs.
+        // For eager utterances, DON'T — the user might speak again and
+        // it shouldn't be treated as interruption since nothing is playing.
+        if (!event.eager) {
+            turn_detector_.set_agent_speaking(true);
+        }
         // Enqueue audio for the worker thread — don't block push_audio
         // with STT/TTS which can take seconds.
         {
             std::lock_guard<std::mutex> wlock(worker_mutex_);
-            pending_utterances_.push_back({event.audio, event.time});
+            pending_utterances_.push_back({event.audio, event.time, event.eager});
         }
         worker_cv_.notify_one();
         break;

@@ -42,6 +42,11 @@ struct AgentConfig {
     /// at the cost of occasional split utterances on mid-sentence pauses.
     bool eager_stt = true;
 
+    /// Minimum time in PendingSilence (seconds) before firing eager STT.
+    /// Filters out natural mid-sentence pauses (0.1-0.3s in conversational
+    /// speech). 0 = fire on first silence frame (splits on every pause).
+    float eager_stt_delay = 0.3f;
+
     /// Run a dummy STT transcription at pipeline start to warm up the model.
     /// First inference on CoreML/Neural Engine is slow due to cold start;
     /// this brings subsequent latency from ~3s to <1s.

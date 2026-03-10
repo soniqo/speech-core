@@ -114,6 +114,7 @@ private:
     struct PendingUtterance {
         std::vector<float> audio;
         float time;
+        bool eager = false;  // true if from eager STT (agent_speaking_ not set)
     };
     std::thread worker_thread_;
     std::mutex worker_mutex_;
@@ -121,6 +122,7 @@ private:
     std::condition_variable worker_idle_cv_;  // signaled when worker finishes processing
     std::vector<PendingUtterance> pending_utterances_;
     std::atomic<bool> worker_busy_{false};
+    std::atomic<bool> eager_invalidated_{false};  // set when SpeechResumed discards an eager utterance
 
     void worker_loop();
     void on_turn_event(const TurnEvent& event);

@@ -81,6 +81,7 @@ typedef struct {
     float max_response_duration;
     float post_playback_guard;
     bool eager_stt;
+    float eager_stt_delay;
     bool warmup_stt;
     const char* language;
     sc_mode_t mode;

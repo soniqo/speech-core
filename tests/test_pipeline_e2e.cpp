@@ -1,4 +1,5 @@
 #include "speech_core/pipeline/voice_pipeline.h"
+#include "speech_core/pipeline/turn_detector.h"
 
 #include <atomic>
 #include <cassert>
@@ -1472,6 +1473,7 @@ void test_eager_stt() {
     auto config = test_config();
     config.mode = AgentConfig::Mode::Echo;
     config.eager_stt = true;  // enable for this test
+    config.eager_stt_delay = 0.0f;  // immediate fire (original behavior)
 
     EventLog log;
     VoicePipeline pipeline(stt, tts, nullptr, vad, config,
@@ -1521,6 +1523,609 @@ void test_stt_warmup() {
     printf("  PASS: stt_warmup\n");
 }
 
+// Test: eager STT result is discarded when user resumes speaking
+void test_eager_stt_discard_on_resume() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Speech → brief silence (eager fires) → speech resumes → silence confirms
+    vad.probs = {
+        0.0f,
+        // First speech
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Brief silence — eager STT fires (SpeechPaused)
+        0.1f,
+        // Speech resumes (SpeechResumed) — eager result should be discarded
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Real silence — second utterance ends
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.0f;  // immediate fire (tests discard path)
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.064f;  // 2 chunks
+    config.vad.min_speech_duration = 0.064f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // The eager utterance should be discarded; only the final full utterance
+    // should produce a transcription and TTS response.
+    assert(stt.call_count >= 1);  // at least the full utterance
+    assert(tts.call_count == 1);  // only ONE TTS response (not two)
+    assert(log.count(EventType::ResponseCreated) == 1);
+
+    pipeline.stop();
+    printf("  PASS: eager_stt_discard_on_resume\n");
+}
+
+// Test: eager STT fires, silence confirms (not resume), then user speaks again.
+// The second utterance should NOT be treated as an interruption.
+void test_eager_stt_new_utterance_after_silence() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // First utterance: speech → silence (eager fires, silence confirms)
+    // Gap of silence
+    // Second utterance: speech → silence
+    vad.probs = {
+        0.0f,
+        // First speech
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Silence — eager fires on first frame, then confirms
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        // Second speech (should NOT be interruption)
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Silence — confirms second utterance
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.0f;  // immediate fire (tests consecutive eager utterances)
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.064f;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;  // no guard — avoids suppressing second utterance
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+
+    // Push first batch — first utterance + gap
+    size_t first_batch = 14 * 512;  // 14 chunks: 1 silence + 8 speech + 5 silence
+    pipeline.push_audio(audio.data(), first_batch);
+    pipeline.wait_idle();
+
+    // First eager utterance should have been processed
+    assert(stt.call_count >= 1);
+    assert(tts.call_count >= 1);
+
+    // Resume listening before second utterance
+    pipeline.resume_listening();
+
+    // Push second batch — second utterance
+    pipeline.push_audio(audio.data() + first_batch, audio.size() - first_batch);
+    pipeline.wait_idle();
+
+    // Second utterance should also produce TTS — NOT be treated as interruption
+    assert(stt.call_count >= 2);
+    assert(tts.call_count >= 2);
+    // No interruption events
+    assert(!log.has(EventType::ResponseInterrupted));
+
+    pipeline.stop();
+    printf("  PASS: eager_stt_new_utterance_after_silence\n");
+}
+
+// Test: deferred eager STT filters brief mid-sentence pauses
+void test_deferred_eager_filters_brief_pause() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Speech → 1 frame silence (SpeechPaused) → speech resumes → silence confirms
+    // With eager_stt_delay > 1 frame, the pause should NOT trigger eager.
+    // The entire utterance should be treated as a single speech segment.
+    vad.probs = {
+        0.0f,
+        // Speech onset
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Brief pause: 1 frame below offset (SpeechPaused fires)
+        0.1f,
+        // Speech resumes (SpeechResumed cancels pending eager)
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Real silence — utterance ends normally
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.1f;  // 100ms (~3 chunks)
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.1f;
+    config.vad.min_speech_duration = 0.064f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // Single utterance — NOT split into two
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+    assert(log.count(EventType::TranscriptionCompleted) == 1);
+
+    pipeline.stop();
+    printf("  PASS: deferred_eager_filters_brief_pause\n");
+}
+
+// Test: deferred eager STT fires after delay elapses (before SpeechEnded)
+void test_deferred_eager_fires_after_delay() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Speech → long silence (eager fires after delay, before SpeechEnded confirms)
+    // eager_stt_delay = 0.064s (2 chunks), min_silence_duration = 0.3s (~10 chunks)
+    vad.probs = {
+        0.0f,
+        // Speech
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Silence: chunk 1 triggers SpeechPaused, chunk 3 triggers eager (0.064s),
+        // chunks 4-10 still in PendingSilence, chunk 10+ triggers SpeechEnded
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.064f;   // 2 chunks
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.3f;  // 10 chunks — longer than eager_stt_delay
+    config.vad.min_speech_duration = 0.064f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // Eager should have fired and processed the utterance
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+    assert(log.has(EventType::SpeechEnded));
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: deferred_eager_fires_after_delay\n");
+}
+
+// Test: set_agent_speaking(true) retroactively starts interruption when
+// user is already speaking. Tests TurnDetector directly since the pipeline
+// mutex serializes push_audio and speak(), making the race hard to trigger
+// through the full pipeline in deterministic tests.
+void test_retroactive_interruption_on_set_agent_speaking() {
+    MockVAD vad;
+
+    AgentConfig config;
+    config.allow_interruptions = true;
+    config.min_interruption_duration = 0.0f;  // immediate interruption
+    config.vad.min_speech_duration = 0.064f;  // 2 chunks
+
+    std::vector<TurnEvent> events;
+    TurnDetector td(vad, config, [&events](const TurnEvent& e) {
+        events.push_back(e);
+    });
+
+    // Push speech (confirmed after 2 chunks)
+    vad.probs = {0.9f, 0.9f, 0.9f, 0.9f};
+    auto audio = make_audio(vad.probs.size());
+    td.push_audio(audio.data(), audio.size());
+
+    // Verify SpeechStarted fired
+    bool has_speech_started = false;
+    for (const auto& e : events) {
+        if (e.type == TurnEvent::UserSpeechStarted) has_speech_started = true;
+    }
+    assert(has_speech_started);
+
+    // Now externally mark agent as speaking — simulates speak() calling
+    // set_agent_speaking(true) while user is still talking
+    td.set_agent_speaking(true);
+
+    // Should have retroactively fired an Interruption event
+    bool has_interruption = false;
+    for (const auto& e : events) {
+        if (e.type == TurnEvent::Interruption) has_interruption = true;
+    }
+    assert(has_interruption);
+
+    printf("  PASS: retroactive_interruption_on_set_agent_speaking\n");
+}
+
+// Test: set_agent_speaking(true) with deferred interruption (min_interruption_duration > 0)
+// should start the timer, and subsequent audio should confirm interruption.
+void test_retroactive_interruption_deferred() {
+    MockVAD vad;
+
+    AgentConfig config;
+    config.allow_interruptions = true;
+    config.min_interruption_duration = 0.1f;  // ~3 chunks deferred
+    config.vad.min_speech_duration = 0.064f;
+
+    std::vector<TurnEvent> events;
+    TurnDetector td(vad, config, [&events](const TurnEvent& e) {
+        events.push_back(e);
+    });
+
+    // Push speech (confirmed after 2 chunks)
+    vad.probs = {0.9f, 0.9f, 0.9f, 0.9f};
+    auto audio1 = make_audio(vad.probs.size());
+    td.push_audio(audio1.data(), audio1.size());
+
+    // Set agent speaking — should start deferred timer, NOT fire immediately
+    td.set_agent_speaking(true);
+
+    bool has_interruption = false;
+    for (const auto& e : events) {
+        if (e.type == TurnEvent::Interruption) has_interruption = true;
+    }
+    assert(!has_interruption);  // not yet — deferred
+
+    // Push more speech to exceed min_interruption_duration
+    vad.probs = {0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+    auto audio2 = make_audio(vad.probs.size());
+    td.push_audio(audio2.data(), audio2.size());
+
+    // Now interruption should have fired
+    has_interruption = false;
+    for (const auto& e : events) {
+        if (e.type == TurnEvent::Interruption) has_interruption = true;
+    }
+    assert(has_interruption);
+
+    printf("  PASS: retroactive_interruption_deferred\n");
+}
+
+// Test: eager utterance invalidated (user resumed) should NOT reset turn
+// detector. Subsequent speech must still be processed by the pipeline.
+// Regression: worker's else branch called turn_detector_.reset() for
+// invalidated utterances, wiping ongoing speech and causing stuck state.
+void test_eager_invalidated_doesnt_reset_turn_detector() {
+    MockVAD vad;
+
+    class SlowSTT : public STTInterface {
+    public:
+        int call_count = 0;
+        TranscriptionResult transcribe(const float*, size_t, int) override {
+            call_count++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            return {"hello", "", 1.0f, 0, 0};
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    SlowSTT stt;
+    MockTTS tts;
+
+    // Speech → brief pause (eager fires, delay=0) → speech resumes (invalidates)
+    // → silence confirms → second utterance should be processed
+    vad.probs = {
+        0.0f,
+        // First speech
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Brief silence — eager fires immediately (delay=0)
+        0.1f,
+        // Speech resumes — eager result invalidated
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Real silence — second utterance ends
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.0f;  // immediate fire
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.064f;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // The first eager utterance was invalidated — but the resumed speech
+    // should still produce a valid transcription + TTS response.
+    assert(tts.call_count >= 1);
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    // Pipeline should NOT be stuck — should be in Speaking (or Idle after stop)
+    auto final_state = pipeline.state();
+    assert(final_state == VoicePipeline::State::Speaking ||
+           final_state == VoicePipeline::State::Idle);
+
+    pipeline.stop();
+    printf("  PASS: eager_invalidated_doesnt_reset_turn_detector\n");
+}
+
+// Test: mid-sentence pause (0.2s) shorter than eager_stt_delay (0.3s)
+// should NOT split the utterance. Matches real-world "почему ты... не спишь"
+// scenario where a 0.15-0.25s thinking pause caused premature eager fire.
+void test_eager_delay_filters_mid_sentence_pause() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // At 32ms/chunk: 6 chunks = 0.192s pause (< 0.3s delay → filtered)
+    // 19 chunks silence = 0.608s (> 0.6s min_silence → SpeechEnded confirms)
+    vad.probs = {
+        0.0f,
+        // Speech: "почему ты"
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Mid-sentence pause ~0.2s (6 chunks) — should be filtered
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        // Speech resumes: "не спишь"
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Real end-of-utterance silence (19 chunks = 0.608s > 0.6s)
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.3f;
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.6f;
+    config.vad.min_speech_duration = 0.064f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // Single utterance — NOT split at the mid-sentence pause
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+    assert(log.count(EventType::TranscriptionCompleted) == 1);
+
+    pipeline.stop();
+    printf("  PASS: eager_delay_filters_mid_sentence_pause\n");
+}
+
+// Test: multiple rapid pause/resume cycles within eager_stt_delay
+// (user hesitating: "um... like... you know") — should produce single utterance.
+void test_multiple_eager_resume_cycles_single_utterance() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Three brief pauses (each < 0.3s), all filtered by eager_stt_delay
+    vad.probs = {
+        0.0f,
+        // Speech
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Pause 1: 4 chunks = 0.128s
+        0.1f, 0.1f, 0.1f, 0.1f,
+        // Resume
+        0.9f, 0.9f, 0.9f, 0.9f,
+        // Pause 2: 5 chunks = 0.16s
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        // Resume
+        0.9f, 0.9f, 0.9f, 0.9f,
+        // Pause 3: 3 chunks = 0.096s
+        0.1f, 0.1f, 0.1f,
+        // Resume and finish
+        0.9f, 0.9f, 0.9f, 0.9f,
+        // Real silence (19 chunks > 0.6s)
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.3f;
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.6f;
+    config.vad.min_speech_duration = 0.064f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // All pauses filtered — single utterance
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: multiple_eager_resume_cycles_single_utterance\n");
+}
+
+// Test: eager fires (pause > delay), user speaks again during TTS playback.
+// The speech during TTS should trigger interruption (if long enough) or
+// be captured as a new utterance after playback, NOT silently lost.
+void test_speech_during_tts_after_eager_not_lost() {
+    MockVAD vad;
+
+    class SlowSTT : public STTInterface {
+    public:
+        int call_count = 0;
+        TranscriptionResult transcribe(const float*, size_t, int) override {
+            call_count++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return {"hello", "", 1.0f, 0, 0};
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    SlowSTT stt;
+    MockTTS tts;
+
+    // First utterance: speech → pause > 0.3s → eager fires
+    // Need 11+ silence chunks for eager (SpeechPaused on 1st + 10 more = 0.352s > 0.3s)
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.3f;
+    config.mode = AgentConfig::Mode::Echo;
+    config.allow_interruptions = true;
+    config.min_interruption_duration = 0.0f;  // immediate barge-in
+    config.vad.min_silence_duration = 0.6f;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio1 = make_audio(vad.probs.size());
+    pipeline.push_audio(audio1.data(), audio1.size());
+    pipeline.wait_idle();
+
+    // First utterance processed
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+
+    // Simulate platform calling resume_listening after playback
+    pipeline.resume_listening();
+
+    // Now user speaks the continuation (was lost in the bug)
+    stt.call_count = 0;
+    tts.call_count = 0;
+    vad.prob_index = 0;
+    vad.probs = {
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        // Real silence (19 chunks > 0.6s)
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+    auto audio2 = make_audio(vad.probs.size());
+    pipeline.push_audio(audio2.data(), audio2.size());
+    pipeline.wait_idle();
+
+    // Continuation should be captured and processed — NOT lost
+    assert(stt.call_count == 1);
+    assert(tts.call_count == 1);
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: speech_during_tts_after_eager_not_lost\n");
+}
+
+// Test: eager fires, user says new phrase while STT processes the first.
+// The first STT result must NOT be discarded — "какая твоя зарплата" lost bug.
+// For eager utterances, new speech during STT is a separate utterance,
+// not an interruption (agent_speaking_ was never set).
+void test_eager_new_speech_during_stt_doesnt_discard() {
+    MockVAD vad;
+
+    class SlowSTT : public STTInterface {
+    public:
+        int call_count = 0;
+        std::vector<std::string> results;
+        TranscriptionResult transcribe(const float*, size_t, int) override {
+            call_count++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            return {"phrase " + std::to_string(call_count), "", 1.0f, 0, 0};
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    SlowSTT stt;
+    MockTTS tts;
+
+    // First utterance → eager fires after 0.3s silence, then full
+    // min_silence_duration elapses so the VAD returns to Silence state.
+    // This ensures the second push starts a fresh SpeechStarted (not
+    // SpeechResumed which would invalidate the eager utterance).
+    // 8 speech chunks, then 20 silence chunks = 0.64s > 0.6s min_silence.
+    // Eager fires at ~10 silence chunks (0.32s > 0.3s delay).
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.eager_stt = true;
+    config.eager_stt_delay = 0.3f;
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_silence_duration = 0.6f;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio1 = make_audio(vad.probs.size());
+    pipeline.push_audio(audio1.data(), audio1.size());
+
+    // While STT processes (80ms), push a second utterance
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    vad.prob_index = 0;
+    vad.probs = {
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+    auto audio2 = make_audio(vad.probs.size());
+    pipeline.push_audio(audio2.data(), audio2.size());
+    pipeline.wait_idle();
+
+    // BOTH utterances should be processed — first NOT discarded
+    assert(stt.call_count == 2);
+    assert(tts.call_count == 2);
+    assert(log.count(EventType::TranscriptionCompleted) == 2);
+
+    pipeline.stop();
+    printf("  PASS: eager_new_speech_during_stt_doesnt_discard\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -1552,6 +2157,17 @@ int main() {
     test_stop_during_llm();
     test_concurrent_push_audio();
     test_eager_stt();
+    test_eager_stt_discard_on_resume();
+    test_eager_stt_new_utterance_after_silence();
+    test_deferred_eager_filters_brief_pause();
+    test_deferred_eager_fires_after_delay();
+    test_retroactive_interruption_on_set_agent_speaking();
+    test_retroactive_interruption_deferred();
+    test_eager_invalidated_doesnt_reset_turn_detector();
+    test_eager_delay_filters_mid_sentence_pause();
+    test_multiple_eager_resume_cycles_single_utterance();
+    test_speech_during_tts_after_eager_not_lost();
+    test_eager_new_speech_during_stt_doesnt_discard();
     test_stt_warmup();
     printf("All pipeline E2E tests passed.\n");
     return 0;

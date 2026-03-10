@@ -65,24 +65,34 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 on_event_(started);
 
             } else if (vad_event.type == VADEvent::SpeechPaused) {
-                // Eager STT: emit UserSpeechEnded immediately when silence
-                // begins, saving ~0.5s of silence confirmation latency.
-                // If speech resumes, the early result is discarded.
+                // Eager STT: start timer when silence begins. After
+                // eager_stt_delay elapses, fire UserSpeechEnded early.
                 if (config_.eager_stt && in_speech_ && !agent_speaking_
                     && !eager_utterance_sent_) {
-                    eager_utterance_sent_ = true;
-                    in_speech_ = false;
-                    interruption_time_ = -1.0f;
+                    if (config_.eager_stt_delay <= 0.0f) {
+                        // No delay — fire immediately (original behavior)
+                        eager_utterance_sent_ = true;
+                        in_speech_ = false;
+                        interruption_time_ = -1.0f;
 
-                    TurnEvent ended;
-                    ended.type = TurnEvent::UserSpeechEnded;
-                    ended.time = vad_event.end_time;
-                    ended.audio = utterance_buffer_;
-                    on_event_(ended);
-                    utterance_buffer_.clear();
+                        TurnEvent ended;
+                        ended.type = TurnEvent::UserSpeechEnded;
+                        ended.time = vad_event.end_time;
+                        ended.eager = true;
+                        ended.audio = utterance_buffer_;
+                        on_event_(ended);
+                        utterance_buffer_.clear();
+                    } else {
+                        // Start deferred eager timer
+                        eager_pending_ = true;
+                        eager_pending_time_ = streaming_vad_.current_time();
+                    }
                 }
 
             } else if (vad_event.type == VADEvent::SpeechResumed) {
+                // Cancel deferred eager — speech resumed before delay elapsed
+                eager_pending_ = false;
+
                 // Speech resumed after a pause — if we sent an eager utterance,
                 // that's already being processed. Treat resumed speech as a
                 // new utterance (prepend pre-speech ring for context).
@@ -96,11 +106,13 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                     TurnEvent started;
                     started.type = TurnEvent::UserSpeechStarted;
                     started.time = vad_event.end_time;
+                    started.eager_resumed = true;
                     on_event_(started);
                 }
 
             } else if (vad_event.type == VADEvent::SpeechEnded) {
                 in_speech_ = false;
+                eager_pending_ = false;  // silence confirmed — normal path handles it
 
                 // If eager STT already fired, silence just confirmed it — skip
                 if (eager_utterance_sent_) {
@@ -145,6 +157,25 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                     on_event_(ended);
                     utterance_buffer_.clear();
                 }
+            }
+        }
+
+        // Deferred eager STT: fire after delay elapses in PendingSilence
+        if (eager_pending_ && !eager_utterance_sent_) {
+            float elapsed = streaming_vad_.current_time() - eager_pending_time_;
+            if (elapsed >= config_.eager_stt_delay) {
+                eager_pending_ = false;
+                eager_utterance_sent_ = true;
+                in_speech_ = false;
+                interruption_time_ = -1.0f;
+
+                TurnEvent ended;
+                ended.type = TurnEvent::UserSpeechEnded;
+                ended.time = eager_pending_time_;
+                ended.eager = true;
+                ended.audio = utterance_buffer_;
+                on_event_(ended);
+                utterance_buffer_.clear();
             }
         }
 
@@ -207,6 +238,21 @@ void TurnDetector::force_end_utterance(float time) {
 
 void TurnDetector::set_agent_speaking(bool speaking) {
     agent_speaking_ = speaking;
+
+    // Retroactive interruption: if user is already speaking when the agent
+    // starts (e.g. eager STT dispatched, user spoke during STT processing),
+    // begin the deferred interruption timer so barge-in can still trigger.
+    if (speaking && in_speech_ && config_.allow_interruptions
+        && !interruption_confirmed_ && interruption_time_ < 0.0f) {
+        interruption_time_ = streaming_vad_.current_time();
+        if (config_.min_interruption_duration <= 0.0f) {
+            interruption_confirmed_ = true;
+            TurnEvent interrupt;
+            interrupt.type = TurnEvent::Interruption;
+            interrupt.time = interruption_time_;
+            on_event_(interrupt);
+        }
+    }
 }
 
 void TurnDetector::set_post_playback_guard(float seconds) {
@@ -244,6 +290,7 @@ void TurnDetector::reset() {
     interruption_time_ = -1.0f;
     interruption_confirmed_ = false;
     eager_utterance_sent_ = false;
+    eager_pending_ = false;
     guard_remaining_samples_ = 0;
 }
 
