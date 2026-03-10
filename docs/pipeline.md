@@ -37,7 +37,7 @@ audio → VAD → STT → text
 
 ## State Machine
 
-Six states with automatic transitions:
+Five states with automatic transitions:
 
 | State | Description | Transitions to |
 |---|---|---|

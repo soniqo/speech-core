@@ -29,41 +29,11 @@ ML inference is **not** in this library. Consumers implement the abstract interf
 
 | Mode | Flow | Use case |
 |---|---|---|
-| **VoicePipeline** | audio → VAD → STT → LLM → TTS → audio | Full voice agent with conversational AI |
-| **Echo** | audio → VAD → STT → TTS → audio | Testing — speaks back what the user said |
-| **TranscribeOnly** | audio → VAD → STT → text | Speech-to-text only, no response |
+| **VoicePipeline** | audio → VAD → STT → LLM → TTS → audio | Full voice agent |
+| **Echo** | audio → VAD → STT → TTS → audio | Testing |
+| **TranscribeOnly** | audio → VAD → STT → text | Transcription only |
 
-In **VoicePipeline** mode, the LLM decides when to call tools — if it returns tool call requests, the pipeline executes them and calls the LLM again with the results.
-
-See [`docs/pipeline.md`](docs/pipeline.md) for detailed state machine, turn detection, and interruption handling documentation.
-
-## Pipeline State Machine
-
-The voice pipeline manages the full conversational loop:
-
-```
-    ┌──────┐  VAD: speech_started   ┌───────────┐
-    │ IDLE ├───────────────────────►│ LISTENING  │
-    └──┬───┘                        └─────┬─────┘
-       ▲                                  │ VAD: speech_ended
-       │                            ┌─────▼──────────┐
-       │                            │ TRANSCRIBING    │
-       │                            └─────┬──────────┘
-       │                                  │ STT result
-       │                            ┌─────▼──────────┐
-       │                            │ THINKING        │
-       │                            └─────┬──────────┘
-       │                                  │ LLM response
-       │                            ┌─────▼──────────┐
-       │  resume_listening()        │ SPEAKING        │◄── user barge-in ──► LISTENING
-       └────────────────────────────┴────────────────┘
-```
-
-The pipeline stays in SPEAKING after TTS finishes, waiting for the platform to call `resume_listening()` after audio playback ends.
-
-**Interruption handling**: when the user speaks while the agent is in SPEAKING state, the pipeline cancels TTS output and transitions back to LISTENING. False-interruption recovery pauses playback briefly and resumes if the user stops within a configurable window.
-
-**Post-playback guard**: after `resume_listening()`, the turn detector suppresses VAD events for a configurable window (`post_playback_guard`, default 0.3s) to let AEC residual echo settle.
+See [`docs/pipeline.md`](docs/pipeline.md) for state machine, turn detection, interruption handling, and configuration.
 
 ## Components
 
@@ -132,33 +102,11 @@ class VADInterface {
 
 ### Tools (`include/speech_core/tools/`)
 
-| File | Purpose |
-|---|---|
-| `tool_types.h` | `ToolDefinition` and `ToolResult` structs |
-| `tool_registry.h` | Registry — add tools programmatically or load from JSON |
-| `intent_matcher.h` | Regex pattern matching on transcripts (case-insensitive) |
-| `tool_executor.h` | Shell command execution with cooldown enforcement |
-
-Tool definitions:
-
-```json
-[
-  {
-    "name": "tell_time",
-    "description": "Tell the current time",
-    "triggers": ["what time", "current time"],
-    "command": "date '+%I:%M %p'",
-    "timeout": 5,
-    "cooldown": 30
-  }
-]
-```
-
-The LLM decides when to call tools. When the LLM returns a `ToolCall`, the pipeline executes the matching command, injects the result into the conversation, and calls the LLM again for a final response.
+Tool calling via LLM function calls. See [`docs/tools.md`](docs/tools.md).
 
 ### C API (`include/speech_core/speech_core_c.h`)
 
-C wrapper for FFI — vtable-based interface bridging for Swift, Kotlin, etc.
+C wrapper for FFI — vtable-based interface bridging for Swift, Kotlin, etc. See [`docs/c-api.md`](docs/c-api.md).
 
 ## Build
 
