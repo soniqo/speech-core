@@ -82,6 +82,99 @@ void test_registry_json_empty_array() {
     printf("  PASS: registry_json_empty_array\n");
 }
 
+void test_registry_json_unknown_fields() {
+    // Parser should skip unknown fields of any JSON type
+    ToolRegistry reg;
+    std::string json = R"([
+        {
+            "name": "test",
+            "description": "A test tool",
+            "triggers": ["go"],
+            "command": "echo hi",
+            "timeout": 5,
+            "cooldown": 0,
+            "enabled": true,
+            "weight": 3.14,
+            "metadata": null,
+            "tags": ["alpha", "beta"],
+            "config": {"nested": "object", "deep": {"level": 2}},
+            "priority": false
+        }
+    ])";
+
+    int count = reg.load_json(json);
+    assert(count == 1);
+    assert(reg.find("test") != nullptr);
+    assert(reg.find("test")->command == "echo hi");
+    printf("  PASS: registry_json_unknown_fields\n");
+}
+
+void test_registry_json_escape_sequences() {
+    ToolRegistry reg;
+    std::string json = R"([
+        {
+            "name": "esc",
+            "description": "tab\there\nnewline",
+            "triggers": ["test"],
+            "command": "echo \"hello\"",
+            "timeout": 5,
+            "cooldown": 0
+        }
+    ])";
+
+    int count = reg.load_json(json);
+    assert(count == 1);
+    auto* t = reg.find("esc");
+    assert(t != nullptr);
+    assert(t->description == "tab\there\nnewline");
+    assert(t->command == "echo \"hello\"");
+    printf("  PASS: registry_json_escape_sequences\n");
+}
+
+void test_registry_json_unicode_escape() {
+    ToolRegistry reg;
+    // \u0041 = 'A', \u00e9 = 'é' (2-byte UTF-8), \u4e16 = '世' (3-byte UTF-8)
+    std::string json = R"([
+        {
+            "name": "\u0041\u0042",
+            "description": "caf\u00e9",
+            "triggers": ["\u4e16"],
+            "command": "echo ok",
+            "timeout": 5,
+            "cooldown": 0
+        }
+    ])";
+
+    int count = reg.load_json(json);
+    assert(count == 1);
+    auto* t = reg.find("AB");
+    assert(t != nullptr);
+    assert(t->description == "caf\xc3\xa9");
+    assert(t->triggers[0] == "\xe4\xb8\x96");
+    printf("  PASS: registry_json_unicode_escape\n");
+}
+
+void test_registry_json_float_timeout() {
+    // timeout as 5.0 should parse as 5
+    ToolRegistry reg;
+    std::string json = R"([
+        {
+            "name": "floaty",
+            "description": "test",
+            "triggers": ["go"],
+            "command": "echo ok",
+            "timeout": 5.0,
+            "cooldown": 10.5
+        }
+    ])";
+
+    int count = reg.load_json(json);
+    assert(count == 1);
+    assert(reg.find("floaty")->timeout == 5);
+    assert(reg.find("floaty")->cooldown == 10);
+    printf("  PASS: registry_json_float_timeout\n");
+}
+
 // ---------------------------------------------------------------------------
 // IntentMatcher tests
 // ---------------------------------------------------------------------------
@@ -252,6 +345,10 @@ int main() {
     test_registry_load_json();
     test_registry_json_malformed();
     test_registry_json_empty_array();
+    test_registry_json_unknown_fields();
+    test_registry_json_escape_sequences();
+    test_registry_json_unicode_escape();
+    test_registry_json_float_timeout();
 
     // Matcher
     test_matcher_basic();
