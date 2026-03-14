@@ -92,6 +92,9 @@ public:
     /// Access the tool registry for adding tools.
     ToolRegistry& tool_registry() { return tool_registry_; }
 
+    /// Access the conversation context (for setting token counter, etc.).
+    ConversationContext& conversation_context() { return context_; }
+
 private:
     STTInterface& stt_;
     TTSInterface& tts_;

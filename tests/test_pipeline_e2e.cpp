@@ -2321,6 +2321,84 @@ void test_stage_latency_transcribe_only() {
     printf("  PASS: stage_latency_transcribe_only\n");
 }
 
+// ---------------------------------------------------------------------------
+// Conversation history limit tests
+// ---------------------------------------------------------------------------
+
+void test_history_message_limit() {
+    // Test that max_history_messages is wired through config
+    // Use Echo mode to avoid LLM and state complications
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {0.0f};
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.max_history_messages = 4;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    // Push 10 text messages — each adds user + assistant (echo) = 2 messages
+    for (int i = 0; i < 10; i++) {
+        pipeline.push_text("msg" + std::to_string(i));
+        pipeline.resume_listening();
+    }
+
+    auto& ctx = pipeline.conversation_context();
+    size_t non_system = 0;
+    for (const auto& m : ctx.messages()) {
+        if (m.role != MessageRole::System) non_system++;
+    }
+    assert(non_system <= 4);
+
+    pipeline.stop();
+    printf("  PASS: history_message_limit\n");
+}
+
+void test_history_token_limit() {
+    // Test token-based trimming via ConversationContext directly
+    ConversationContext ctx("system prompt", 0, 50);  // unlimited messages, 50 token limit
+
+    // Simple token counter: 1 token per word
+    ctx.set_token_counter([](const std::string& text) -> int {
+        int count = text.empty() ? 0 : 1;
+        for (char c : text) {
+            if (c == ' ') count++;
+        }
+        return count;
+    });
+
+    // System prompt = "system prompt" = 2 tokens
+    // Add messages until we exceed 50 tokens
+    for (int i = 0; i < 20; i++) {
+        ctx.add_user_message("this is a test message number " + std::to_string(i));
+        ctx.add_assistant_message("ok got it message " + std::to_string(i));
+    }
+
+    // Count total tokens
+    int total = 0;
+    for (const auto& m : ctx.messages()) {
+        int count = m.content.empty() ? 0 : 1;
+        for (char c : m.content) {
+            if (c == ' ') count++;
+        }
+        total += count;
+    }
+
+    // Should be within budget
+    assert(total <= 50);
+    // System prompt should still be present
+    assert(ctx.messages()[0].role == MessageRole::System);
+    assert(ctx.messages()[0].content == "system prompt");
+
+    printf("  PASS: history_token_limit\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2368,6 +2446,8 @@ int main() {
     test_stage_latency_pipeline();
     test_stage_latency_echo();
     test_stage_latency_transcribe_only();
+    test_history_message_limit();
+    test_history_token_limit();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
