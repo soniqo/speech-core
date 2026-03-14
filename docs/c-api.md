@@ -83,6 +83,9 @@ Key fields:
 - `eager_stt` — start STT before silence confirms (saves latency)
 - `eager_stt_delay` — seconds in PendingSilence before eager fires (filters mid-sentence pauses)
 - `warmup_stt` — dummy STT at pipeline start (Neural Engine cold start)
+- `max_history_messages` — max conversation messages to retain (default 50, 0 = unlimited)
+- `max_history_tokens` — max conversation tokens (default 0 = disabled, requires `count_tokens` on LLM vtable)
+- `mask_tool_results` — drop tool messages before conversation messages during trimming (default true)
 - `language` — STT/TTS language hint (empty string = auto-detect)
 - `mode` — `SC_MODE_PIPELINE`, `SC_MODE_TRANSCRIBE_ONLY`, or `SC_MODE_ECHO`
 

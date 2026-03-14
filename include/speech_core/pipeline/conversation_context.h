@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -7,14 +8,24 @@
 
 namespace speech_core {
 
+/// Callback to count tokens in a text string.
+using TokenCounter = std::function<int(const std::string& text)>;
+
 /// Tracks conversation history for multi-turn LLM interactions.
 class ConversationContext {
 public:
-    /// @param system_prompt  Initial system prompt for the LLM
-    /// @param max_messages   Maximum messages to retain (0 = unlimited)
+    /// @param system_prompt     Initial system prompt for the LLM
+    /// @param max_messages      Maximum messages to retain (0 = unlimited)
+    /// @param max_tokens        Maximum total tokens (0 = disabled, requires token_counter)
+    /// @param mask_tool_results Drop tool messages before conversation messages during trimming
     explicit ConversationContext(
         const std::string& system_prompt = "",
-        size_t max_messages = 50);
+        size_t max_messages = 50,
+        size_t max_tokens = 0,
+        bool mask_tool_results = true);
+
+    /// Set a token counting function for token-based trimming.
+    void set_token_counter(TokenCounter counter);
 
     /// Add a user message (typically from STT).
     void add_user_message(const std::string& text, double timestamp = 0.0);
@@ -38,6 +49,11 @@ public:
 private:
     std::vector<Message> messages_;
     size_t max_messages_;
+    size_t max_tokens_;
+    bool mask_tool_results_;
+    TokenCounter token_counter_;
+
+    void trim();
 };
 
 }  // namespace speech_core

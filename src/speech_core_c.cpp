@@ -170,6 +170,9 @@ sc_config_t sc_config_default(void) {
     c.eager_stt = true;
     c.eager_stt_delay = 0.3f;
     c.warmup_stt = true;
+    c.max_history_messages = 50;
+    c.max_history_tokens = 0;
+    c.mask_tool_results = true;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -212,6 +215,9 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.eager_stt = config.eager_stt;
     agent_config.eager_stt_delay = config.eager_stt_delay;
     agent_config.warmup_stt = config.warmup_stt;
+    agent_config.max_history_messages = config.max_history_messages;
+    agent_config.max_history_tokens = config.max_history_tokens;
+    agent_config.mask_tool_results = config.mask_tool_results;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);
 
@@ -233,6 +239,16 @@ sc_pipeline_t sc_pipeline_create(
             e.tts_duration_ms = event.tts_duration_ms;
             p->event_fn(&e, p->event_context);
         });
+
+    // Wire token counter from LLM vtable if available
+    if (llm && llm->count_tokens && config.max_history_tokens > 0) {
+        auto count_fn = llm->count_tokens;
+        auto llm_ctx = llm->context;
+        p->pipeline->conversation_context().set_token_counter(
+            [count_fn, llm_ctx](const std::string& text) -> int {
+                return count_fn(llm_ctx, text.c_str());
+            });
+    }
 
     return p;
 }

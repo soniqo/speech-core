@@ -20,7 +20,10 @@ VoicePipeline::VoicePipeline(
       on_event_(std::move(on_event)),
       turn_detector_(vad, config,
                      [this](const TurnEvent& e) { on_turn_event(e); }),
-      context_(/* system_prompt */ "", /* max_messages */ 50) {}
+      context_(/* system_prompt */ "",
+               config.max_history_messages > 0 ? config.max_history_messages : 0,
+               config.max_history_tokens > 0 ? config.max_history_tokens : 0,
+               config.mask_tool_results) {}
 
 VoicePipeline::~VoicePipeline() {
     stop();

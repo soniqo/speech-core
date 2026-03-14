@@ -148,6 +148,11 @@ config.eager_stt = true;                   // start STT before silence confirms 
 config.eager_stt_delay = 0.3f;             // seconds in silence before eager fires (filters pauses)
 config.warmup_stt = true;                  // dummy transcription at pipeline start (ANE cold start)
 
+// Conversation history
+config.max_history_messages = 50;          // max messages retained (0 = unlimited)
+config.max_history_tokens = 0;             // max tokens (0 = disabled, needs token counter)
+config.mask_tool_results = true;           // drop tool messages before conversation during trimming
+
 config.language = "en";                    // STT/TTS language hint (empty = auto-detect)
 ```
 

@@ -86,6 +86,9 @@ typedef struct {
     bool eager_stt;
     float eager_stt_delay;
     bool warmup_stt;
+    int max_history_messages;     // Max conversation messages (default 50, 0 = unlimited)
+    int max_history_tokens;       // Max conversation tokens (default 0 = disabled)
+    bool mask_tool_results;       // Drop tool messages before conversation during trimming
     const char* language;
     sc_mode_t mode;
 } sc_config_t;
@@ -166,6 +169,7 @@ typedef struct {
     void (*chat)(void* ctx, const sc_message_t* messages, size_t count,
                  sc_llm_token_fn on_token, void* token_ctx);
     void (*cancel)(void* ctx);
+    int (*count_tokens)(void* ctx, const char* text);  // Optional, NULL = skip
 } sc_llm_vtable_t;
 
 // ---------------------------------------------------------------------------
