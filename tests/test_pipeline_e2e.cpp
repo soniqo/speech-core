@@ -529,6 +529,54 @@ void test_llm_driven_tool_call() {
     printf("  PASS: llm_driven_tool_call\n");
 }
 
+void test_callback_tool_execution() {
+    MockSTT stt;
+    MockTTS tts;
+    MockLLM llm;
+    MockVAD vad;
+
+    stt.next_text = "what time is it";
+    llm.next_tool_calls = {{"tell_time", "{}"}};
+    llm.response = "It is 3:14 PM";
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    // Register tool with callback handler (no shell command)
+    ToolDefinition time_tool;
+    time_tool.name = "tell_time";
+    time_tool.cooldown = 0;
+    time_tool.handler = [](const std::string& /*name*/,
+                           const std::string& /*args*/) -> std::string {
+        return "3:14 PM";
+    };
+    pipeline.tool_registry().add(time_tool);
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    assert(llm.call_count == 2);
+    assert(log.has(EventType::ToolCallStarted));
+    assert(log.has(EventType::ToolCallCompleted));
+    assert(log.text_for(EventType::ToolCallCompleted) == "3:14 PM");
+    assert(tts.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: callback_tool_execution\n");
+}
+
 void test_no_tool_calls_normal_flow() {
     MockSTT stt;
     MockTTS tts;
@@ -2285,6 +2333,7 @@ int main() {
     test_interruption();
     test_max_utterance_force_split();
     test_llm_driven_tool_call();
+    test_callback_tool_execution();
     test_no_tool_calls_normal_flow();
     test_not_running_ignores_input();
     test_push_audio_nonblocking_during_tts();
