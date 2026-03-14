@@ -106,6 +106,13 @@ typedef struct {
     const char* content;
 } sc_message_t;
 
+typedef struct {
+    void* context;
+    void (*enhance)(void* ctx, const float* input, size_t length,
+                    int sample_rate, float* output);
+    int (*input_sample_rate)(void* ctx);
+} sc_enhancer_vtable_t;
+
 // ---------------------------------------------------------------------------
 // Tool definition (callback-based, no popen)
 // ---------------------------------------------------------------------------
@@ -222,6 +229,11 @@ sc_state_t sc_pipeline_state(sc_pipeline_t pipeline);
 
 /// Check if the pipeline is running.
 bool sc_pipeline_is_running(sc_pipeline_t pipeline);
+
+/// Set an optional speech enhancer (runs before VAD on every push_audio).
+/// Must be called before sc_pipeline_start(). Pass NULL to disable.
+void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
+                               sc_enhancer_vtable_t enhancer);
 
 /// Register a tool with platform callback handler.
 /// Must be called before sc_pipeline_start().
