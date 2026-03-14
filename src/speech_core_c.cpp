@@ -228,6 +228,9 @@ sc_pipeline_t sc_pipeline_create(
             e.start_time = event.start_time;
             e.end_time = event.end_time;
             e.confidence = event.confidence;
+            e.stt_duration_ms = event.stt_duration_ms;
+            e.llm_duration_ms = event.llm_duration_ms;
+            e.tts_duration_ms = event.tts_duration_ms;
             p->event_fn(&e, p->event_context);
         });
 
