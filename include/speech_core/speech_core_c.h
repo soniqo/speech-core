@@ -66,6 +66,9 @@ typedef struct {
     float start_time;
     float end_time;
     float confidence;
+    float stt_duration_ms;
+    float llm_duration_ms;
+    float tts_duration_ms;
 } sc_event_t;
 
 typedef struct {

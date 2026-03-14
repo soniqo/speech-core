@@ -126,8 +126,10 @@ private:
 
     void worker_loop();
     void on_turn_event(const TurnEvent& event);
-    void process_utterance(const std::string& transcript, const std::string& language = "");
-    void speak(const std::string& text, const std::string& language = "");
+    void process_utterance(const std::string& transcript, const std::string& language = "",
+                           float stt_duration_ms = 0.0f);
+    void speak(const std::string& text, const std::string& language = "",
+               float stt_duration_ms = 0.0f, float llm_duration_ms = 0.0f);
     void emit_error(const std::string& message);
     std::string call_llm_with_tools();
 };

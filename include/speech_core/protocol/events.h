@@ -47,6 +47,11 @@ struct PipelineEvent {
     float start_time = 0.0f;
     float end_time = 0.0f;
     float confidence = 0.0f;
+
+    // Per-stage latency in milliseconds (populated where applicable)
+    float stt_duration_ms = 0.0f;   // TranscriptionCompleted, ResponseDone
+    float llm_duration_ms = 0.0f;   // ResponseCreated, ResponseDone
+    float tts_duration_ms = 0.0f;   // ResponseDone
 };
 
 }  // namespace speech_core
