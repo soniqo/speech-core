@@ -104,6 +104,27 @@ typedef struct {
 } sc_message_t;
 
 // ---------------------------------------------------------------------------
+// Tool definition (callback-based, no popen)
+// ---------------------------------------------------------------------------
+
+/// Tool handler callback. Returns a C string result (caller must not free).
+/// The returned pointer must remain valid until the next call to the same handler.
+typedef const char* (*sc_tool_handler_fn)(const char* tool_name,
+                                          const char* arguments,
+                                          void* context);
+
+typedef struct {
+    const char* name;
+    const char* description;
+    const char** triggers;       // NULL-terminated array of trigger patterns
+    sc_tool_handler_fn handler;  // Platform callback (NULL = use shell command)
+    const char* command;         // Shell command (used if handler is NULL)
+    void* handler_context;
+    int timeout;                 // seconds, 0 = no limit
+    int cooldown;                // seconds, 0 = no cooldown
+} sc_tool_definition_t;
+
+// ---------------------------------------------------------------------------
 // Callback types
 // ---------------------------------------------------------------------------
 
@@ -197,6 +218,17 @@ sc_state_t sc_pipeline_state(sc_pipeline_t pipeline);
 
 /// Check if the pipeline is running.
 bool sc_pipeline_is_running(sc_pipeline_t pipeline);
+
+/// Register a tool with platform callback handler.
+/// Must be called before sc_pipeline_start().
+void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool);
+
+/// Load tools from a JSON string (shell-command based tools).
+/// @return Number of tools loaded, or -1 on parse error.
+int sc_pipeline_load_tools_json(sc_pipeline_t pipeline, const char* json);
+
+/// Remove all registered tools.
+void sc_pipeline_clear_tools(sc_pipeline_t pipeline);
 
 #ifdef __cplusplus
 }

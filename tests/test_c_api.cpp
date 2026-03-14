@@ -173,12 +173,118 @@ void test_push_text_echo() {
     printf("  PASS: push_text_echo\n");
 }
 
+void test_add_tool_callback() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t*, void*) {}, nullptr);
+
+    // Register a tool with callback handler
+    const char* triggers[] = {"what time", "current time", nullptr};
+    sc_tool_definition_t tool = {};
+    tool.name = "tell_time";
+    tool.description = "Tell the current time";
+    tool.triggers = triggers;
+    tool.handler = [](const char* name, const char*, void*) -> const char* {
+        if (strcmp(name, "tell_time") == 0) return "3:14 PM";
+        return "unknown";
+    };
+    tool.handler_context = nullptr;
+    tool.timeout = 5;
+    tool.cooldown = 0;
+
+    sc_pipeline_add_tool(p, tool);
+
+    // Register another tool with shell command
+    sc_tool_definition_t tool2 = {};
+    tool2.name = "greet";
+    tool2.description = "Say hello";
+    const char* triggers2[] = {"hello", "hi", nullptr};
+    tool2.triggers = triggers2;
+    tool2.command = "echo Hello!";
+    tool2.timeout = 3;
+    tool2.cooldown = 0;
+
+    sc_pipeline_add_tool(p, tool2);
+
+    // Verify tools are registered (we can't directly query, but clear shouldn't crash)
+    sc_pipeline_clear_tools(p);
+
+    sc_pipeline_destroy(p);
+    printf("  PASS: add_tool_callback\n");
+}
+
+void test_load_tools_json_c_api() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t*, void*) {}, nullptr);
+
+    const char* json = R"([
+        {
+            "name": "tell_time",
+            "description": "Tell the current time",
+            "triggers": ["what time"],
+            "command": "date '+%I:%M %p'",
+            "timeout": 5,
+            "cooldown": 30
+        }
+    ])";
+
+    int count = sc_pipeline_load_tools_json(p, json);
+    assert(count == 1);
+
+    // Invalid JSON
+    assert(sc_pipeline_load_tools_json(p, "not json") == -1);
+
+    // NULL safety
+    assert(sc_pipeline_load_tools_json(nullptr, json) == -1);
+    assert(sc_pipeline_load_tools_json(p, nullptr) == -1);
+
+    sc_pipeline_clear_tools(p);
+    sc_pipeline_destroy(p);
+    printf("  PASS: load_tools_json_c_api\n");
+}
+
 void test_null_safety() {
     // All functions should handle NULL pipeline gracefully
     sc_pipeline_start(nullptr);
     sc_pipeline_stop(nullptr);
     sc_pipeline_push_audio(nullptr, nullptr, 0);
     sc_pipeline_push_text(nullptr, nullptr);
+    sc_pipeline_clear_tools(nullptr);
     assert(sc_pipeline_state(nullptr) == SC_STATE_IDLE);
     assert(sc_pipeline_is_running(nullptr) == false);
     sc_pipeline_destroy(nullptr);
@@ -191,6 +297,8 @@ int main() {
     test_create_destroy();
     test_start_stop();
     test_push_text_echo();
+    test_add_tool_callback();
+    test_load_tools_json_c_api();
     test_null_safety();
     printf("All C API tests passed.\n");
     return 0;

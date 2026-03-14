@@ -16,22 +16,33 @@ ToolResult ToolExecutor::execute(const ToolDefinition& tool) {
         return result;
     }
 
-    // Execute the shell command via popen
-    FILE* pipe = popen(tool.command.c_str(), "r");
-    if (!pipe) {
-        result.output = "Failed to execute command";
-        return result;
-    }
+    // Use callback handler if available, otherwise fall back to popen
+    if (tool.handler) {
+        try {
+            result.output = tool.handler(tool.name, "");
+            result.success = true;
+        } catch (const std::exception& ex) {
+            result.output = std::string("Tool handler failed: ") + ex.what();
+            result.success = false;
+        }
+    } else {
+        // Execute the shell command via popen
+        FILE* pipe = popen(tool.command.c_str(), "r");
+        if (!pipe) {
+            result.output = "Failed to execute command";
+            return result;
+        }
 
-    std::string output;
-    std::array<char, 256> buffer;
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
-        output += buffer.data();
-    }
+        std::string output;
+        std::array<char, 256> buffer;
+        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
+            output += buffer.data();
+        }
 
-    int status = pclose(pipe);
-    result.success = (status == 0);
-    result.output = output;
+        int status = pclose(pipe);
+        result.success = (status == 0);
+        result.output = output;
+    }
 
     // Trim trailing newline
     while (!result.output.empty() && result.output.back() == '\n') {

@@ -59,7 +59,7 @@ See [`docs/pipeline.md`](docs/pipeline.md) for state machine, turn detection, in
 | File | Purpose |
 |---|---|
 | `audio_buffer.h` | Lock-free ring buffer for streaming mic input |
-| `resampler.h` | Sample rate conversion (e.g. 24kHz to 16kHz for STT) |
+| `resampler.h` | Windowed-sinc resampler with anti-aliasing and precomputed kernel cache |
 | `pcm_codec.h` | Float32 / PCM16-LE / base64 conversions |
 
 ### Protocol (`include/speech_core/protocol/`)

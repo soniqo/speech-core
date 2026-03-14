@@ -273,4 +273,46 @@ bool sc_pipeline_is_running(sc_pipeline_t pipeline) {
     return pipeline->pipeline->is_running();
 }
 
+void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool) {
+    if (!pipeline) return;
+
+    ToolDefinition def;
+    def.name = tool.name ? tool.name : "";
+    def.description = tool.description ? tool.description : "";
+    def.timeout = tool.timeout;
+    def.cooldown = tool.cooldown;
+
+    // Copy triggers
+    if (tool.triggers) {
+        for (const char** t = tool.triggers; *t != nullptr; t++) {
+            def.triggers.push_back(*t);
+        }
+    }
+
+    if (tool.handler) {
+        // Capture the C callback + context as a C++ handler
+        auto c_handler = tool.handler;
+        auto c_ctx = tool.handler_context;
+        def.handler = [c_handler, c_ctx](const std::string& name,
+                                          const std::string& args) -> std::string {
+            const char* result = c_handler(name.c_str(), args.c_str(), c_ctx);
+            return result ? std::string(result) : "";
+        };
+    } else if (tool.command) {
+        def.command = tool.command;
+    }
+
+    pipeline->pipeline->tool_registry().add(std::move(def));
+}
+
+int sc_pipeline_load_tools_json(sc_pipeline_t pipeline, const char* json) {
+    if (!pipeline || !json) return -1;
+    return pipeline->pipeline->tool_registry().load_json(std::string(json));
+}
+
+void sc_pipeline_clear_tools(sc_pipeline_t pipeline) {
+    if (!pipeline) return;
+    pipeline->pipeline->tool_registry().clear();
+}
+
 }  // extern "C"
