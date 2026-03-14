@@ -88,6 +88,7 @@ typedef struct {
     bool warmup_stt;
     int max_history_messages;     // Max conversation messages (default 50, 0 = unlimited)
     int max_history_tokens;       // Max conversation tokens (default 0 = disabled)
+    bool mask_tool_results;       // Drop tool messages before conversation during trimming
     const char* language;
     sc_mode_t mode;
 } sc_config_t;

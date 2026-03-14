@@ -61,6 +61,11 @@ struct AgentConfig {
     /// When exceeded, oldest messages (after system prompt) are trimmed.
     int max_history_tokens = 0;
 
+    /// Drop tool result messages before conversation messages during trimming.
+    /// Tool outputs are self-contained — the LLM already acted on them, so the
+    /// raw output can be dropped while keeping the user/assistant turns.
+    bool mask_tool_results = true;
+
     /// Language hint for STT/TTS (e.g. "en", "zh", "de"). Empty = auto-detect.
     std::string language;
 

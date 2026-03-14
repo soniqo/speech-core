@@ -2399,6 +2399,41 @@ void test_history_token_limit() {
     printf("  PASS: history_token_limit\n");
 }
 
+void test_history_mask_tool_results() {
+    // Tool messages should be dropped before conversation messages
+    ConversationContext ctx("system", 6, 0, true);  // max 6 messages, masking on
+
+    ctx.add_user_message("what time is it");
+    ctx.add_assistant_message("let me check");       // LLM decided to call tool
+    ctx.add_tool_message("tell_time", "3:14 PM");
+    ctx.add_assistant_message("it is 3:14 PM");
+    ctx.add_user_message("thanks");
+    ctx.add_assistant_message("you're welcome");
+    // 6 non-system messages — at limit
+
+    // Add one more to trigger trim
+    ctx.add_user_message("what about tomorrow");
+
+    // Tool message should have been dropped first
+    bool has_tool = false;
+    for (const auto& m : ctx.messages()) {
+        if (m.role == MessageRole::Tool) has_tool = true;
+    }
+    assert(!has_tool);
+
+    // System prompt preserved
+    assert(ctx.messages()[0].role == MessageRole::System);
+
+    // Should still have the recent conversation
+    size_t non_system = 0;
+    for (const auto& m : ctx.messages()) {
+        if (m.role != MessageRole::System) non_system++;
+    }
+    assert(non_system <= 6);
+
+    printf("  PASS: history_mask_tool_results\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2448,6 +2483,7 @@ int main() {
     test_stage_latency_transcribe_only();
     test_history_message_limit();
     test_history_token_limit();
+    test_history_mask_tool_results();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }

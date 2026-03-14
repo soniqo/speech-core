@@ -22,7 +22,8 @@ VoicePipeline::VoicePipeline(
                      [this](const TurnEvent& e) { on_turn_event(e); }),
       context_(/* system_prompt */ "",
                config.max_history_messages > 0 ? config.max_history_messages : 0,
-               config.max_history_tokens > 0 ? config.max_history_tokens : 0) {}
+               config.max_history_tokens > 0 ? config.max_history_tokens : 0,
+               config.mask_tool_results) {}
 
 VoicePipeline::~VoicePipeline() {
     stop();

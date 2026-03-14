@@ -172,6 +172,7 @@ sc_config_t sc_config_default(void) {
     c.warmup_stt = true;
     c.max_history_messages = 50;
     c.max_history_tokens = 0;
+    c.mask_tool_results = true;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -216,6 +217,7 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.warmup_stt = config.warmup_stt;
     agent_config.max_history_messages = config.max_history_messages;
     agent_config.max_history_tokens = config.max_history_tokens;
+    agent_config.mask_tool_results = config.mask_tool_results;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);
 

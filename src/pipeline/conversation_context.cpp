@@ -3,8 +3,10 @@
 namespace speech_core {
 
 ConversationContext::ConversationContext(
-    const std::string& system_prompt, size_t max_messages, size_t max_tokens)
-    : max_messages_(max_messages), max_tokens_(max_tokens) {
+    const std::string& system_prompt, size_t max_messages,
+    size_t max_tokens, bool mask_tool_results)
+    : max_messages_(max_messages), max_tokens_(max_tokens),
+      mask_tool_results_(mask_tool_results) {
     if (!system_prompt.empty()) {
         messages_.push_back({MessageRole::System, system_prompt, 0.0});
     }
@@ -32,10 +34,34 @@ void ConversationContext::add_tool_message(
 }
 
 void ConversationContext::trim() {
-    // Index of first non-system message
     size_t first = (!messages_.empty() && messages_[0].role == MessageRole::System) ? 1 : 0;
 
-    // Message-count trimming: keep system prompt + last max_messages_
+    // Phase 1: drop tool messages first (if enabled).
+    // Tool outputs are self-contained — the LLM already acted on them.
+    if (mask_tool_results_) {
+        bool need_mask = (max_messages_ > 0 && messages_.size() > max_messages_ + first);
+        if (!need_mask && max_tokens_ > 0 && token_counter_) {
+            int total = 0;
+            for (const auto& m : messages_) total += token_counter_(m.content);
+            need_mask = total > static_cast<int>(max_tokens_);
+        }
+        if (need_mask) {
+            // Remove tool messages from oldest to newest, but not in the last 2
+            // messages (the current turn's tool result may still be needed).
+            size_t keep_tail = 2;
+            size_t limit = messages_.size() > keep_tail ? messages_.size() - keep_tail : 0;
+            for (size_t i = first; i < limit; ) {
+                if (messages_[i].role == MessageRole::Tool) {
+                    messages_.erase(messages_.begin() + static_cast<ptrdiff_t>(i));
+                    limit--;
+                } else {
+                    i++;
+                }
+            }
+        }
+    }
+
+    // Phase 2: message-count trimming
     if (max_messages_ > 0 && messages_.size() > max_messages_ + first) {
         auto start = messages_.begin() + static_cast<ptrdiff_t>(first);
         auto end = messages_.end() - static_cast<ptrdiff_t>(max_messages_);
@@ -44,13 +70,11 @@ void ConversationContext::trim() {
         }
     }
 
-    // Token-based trimming: remove oldest non-system messages until within budget
-    if (max_tokens_ > 0 && token_counter_ && messages_.size() > first) {
+    // Phase 3: token-based trimming
+    if (max_tokens_ > 0 && token_counter_ && messages_.size() > first + 1) {
         while (messages_.size() > first + 1) {
             int total = 0;
-            for (const auto& m : messages_) {
-                total += token_counter_(m.content);
-            }
+            for (const auto& m : messages_) total += token_counter_(m.content);
             if (total <= static_cast<int>(max_tokens_)) break;
             messages_.erase(messages_.begin() + static_cast<ptrdiff_t>(first));
         }
