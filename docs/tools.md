@@ -120,6 +120,10 @@ The LLM implementation decides when to call tools based on the conversation and 
 
 Each tool has a `cooldown` period (in seconds). After execution, the same tool cannot be triggered again until the cooldown expires. Set `cooldown = 0` to disable.
 
+## History trimming
+
+When `mask_tool_results` is enabled (default), tool result messages are dropped before conversation messages during history trimming. Tool outputs are self-contained — the LLM already acted on them, so the raw output can be dropped while keeping user/assistant turns. The last 2 messages are always protected to avoid dropping the current turn's tool result before the LLM sees it.
+
 ## IntentMatcher (standalone)
 
 `IntentMatcher` is available as a standalone component for regex-based pattern matching — useful outside the pipeline for quick intent classification. The pipeline itself does **not** use it; the LLM decides tool calls.
