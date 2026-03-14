@@ -1,6 +1,7 @@
 #include "speech_core/pipeline/voice_pipeline.h"
 #include "speech_core/audio/pcm_codec.h"
 
+#include <chrono>
 #include <stdexcept>
 
 namespace speech_core {
@@ -104,9 +105,12 @@ void VoicePipeline::worker_loop() {
 
         // Run STT (no pipeline mutex held — push_audio continues to flow)
         try {
+            auto stt_start = std::chrono::steady_clock::now();
             auto result = stt_.transcribe(
                 utterance.audio.data(), utterance.audio.size(),
                 stt_.input_sample_rate());
+            float stt_ms = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - stt_start).count();
 
             // Check if this eager utterance was invalidated (user resumed
             // speaking), or if a real interruption happened during STT.
@@ -124,11 +128,12 @@ void VoicePipeline::worker_loop() {
                 transcript_event.type = EventType::TranscriptionCompleted;
                 transcript_event.text = result.text;
                 transcript_event.start_time = utterance.time;
+                transcript_event.stt_duration_ms = stt_ms;
                 on_event_(transcript_event);
             }
 
             if (!invalidated && !interrupted && !result.text.empty()) {
-                process_utterance(result.text, result.language);
+                process_utterance(result.text, result.language, stt_ms);
             } else if (invalidated || interrupted) {
                 // Eager utterance discarded or new speech interrupted STT —
                 // the turn detector is tracking active speech, don't reset it.
@@ -233,10 +238,13 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
     }
 }
 
-void VoicePipeline::process_utterance(const std::string& transcript, const std::string& language) {
+void VoicePipeline::process_utterance(const std::string& transcript,
+                                      const std::string& language,
+                                      float stt_duration_ms) {
     context_.add_user_message(transcript);
 
     std::string response_text;
+    float llm_ms = 0.0f;
 
     switch (config_.mode) {
     case AgentConfig::Mode::Echo:
@@ -254,7 +262,10 @@ void VoicePipeline::process_utterance(const std::string& transcript, const std::
             state_.store(State::Thinking);
 
             try {
+                auto llm_start = std::chrono::steady_clock::now();
                 response_text = call_llm_with_tools();
+                llm_ms = std::chrono::duration<float, std::milli>(
+                    std::chrono::steady_clock::now() - llm_start).count();
             } catch (const std::exception& ex) {
                 emit_error(std::string("LLM failed: ") + ex.what());
                 state_.store(State::Idle);
@@ -266,7 +277,7 @@ void VoicePipeline::process_utterance(const std::string& transcript, const std::
 
     if (!response_text.empty()) {
         context_.add_assistant_message(response_text);
-        speak(response_text, language);
+        speak(response_text, language, stt_duration_ms, llm_ms);
     } else {
         state_.store(State::Idle);
     }
@@ -322,7 +333,8 @@ std::string VoicePipeline::call_llm_with_tools() {
     return response.text.empty() ? accumulated : response.text;
 }
 
-void VoicePipeline::speak(const std::string& text, const std::string& language) {
+void VoicePipeline::speak(const std::string& text, const std::string& language,
+                          float stt_duration_ms, float llm_duration_ms) {
     state_.store(State::Speaking);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -334,6 +346,7 @@ void VoicePipeline::speak(const std::string& text, const std::string& language) 
 
     PipelineEvent response_created;
     response_created.type = EventType::ResponseCreated;
+    response_created.llm_duration_ms = llm_duration_ms;
     on_event_(response_created);
 
     // Use detected language from STT if available, otherwise fall back to config
@@ -345,8 +358,11 @@ void VoicePipeline::speak(const std::string& text, const std::string& language) 
             ? static_cast<size_t>(config_.max_response_duration * tts_.output_sample_rate())
             : 0;
 
+        auto tts_start = std::chrono::steady_clock::now();
+
         tts_.synthesize(text, tts_language,
-            [this, speech_id, &total_samples, max_samples](
+            [this, speech_id, &total_samples, max_samples,
+             tts_start, stt_duration_ms, llm_duration_ms](
                 const float* samples, size_t length, bool is_final) {
                 // Enforce max response duration to prevent TTS hallucination
                 size_t emit_length = length;
@@ -367,12 +383,15 @@ void VoicePipeline::speak(const std::string& text, const std::string& language) 
 
                 if (is_final || force_final) {
                     speech_queue_.mark_done(speech_id);
-                    // Keep agent_speaking_ = true during playback so
-                    // user speech triggers interruption, not a new turn.
-                    // Platform calls resume_listening() after playback ends.
+
+                    float tts_ms = std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - tts_start).count();
 
                     PipelineEvent done;
                     done.type = EventType::ResponseDone;
+                    done.stt_duration_ms = stt_duration_ms;
+                    done.llm_duration_ms = llm_duration_ms;
+                    done.tts_duration_ms = tts_ms;
                     on_event_(done);
 
                     // Stay in Speaking — platform owns playback timing

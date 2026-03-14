@@ -106,10 +106,16 @@ public:
 struct EventLog {
     std::vector<EventType> types;
     std::vector<std::string> texts;
+    std::vector<float> stt_durations;
+    std::vector<float> llm_durations;
+    std::vector<float> tts_durations;
 
     void on_event(const PipelineEvent& e) {
         types.push_back(e.type);
         texts.push_back(e.text);
+        stt_durations.push_back(e.stt_duration_ms);
+        llm_durations.push_back(e.llm_duration_ms);
+        tts_durations.push_back(e.tts_duration_ms);
     }
 
     bool has(EventType t) const {
@@ -128,6 +134,27 @@ struct EventLog {
             if (types[i] == t) return texts[i];
         }
         return "";
+    }
+
+    float stt_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return stt_durations[i];
+        }
+        return 0.0f;
+    }
+
+    float llm_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return llm_durations[i];
+        }
+        return 0.0f;
+    }
+
+    float tts_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return tts_durations[i];
+        }
+        return 0.0f;
     }
 };
 
@@ -2126,6 +2153,126 @@ void test_eager_new_speech_during_stt_doesnt_discard() {
     printf("  PASS: eager_new_speech_during_stt_doesnt_discard\n");
 }
 
+// ---------------------------------------------------------------------------
+// Stage latency metrics tests
+// ---------------------------------------------------------------------------
+
+void test_stage_latency_pipeline() {
+    MockSTT stt;
+    MockTTS tts;
+    MockLLM llm;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT duration on TranscriptionCompleted
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+
+    // LLM duration on ResponseCreated
+    assert(log.llm_duration_for(EventType::ResponseCreated) > 0.0f);
+
+    // All three on ResponseDone
+    assert(log.stt_duration_for(EventType::ResponseDone) > 0.0f);
+    assert(log.llm_duration_for(EventType::ResponseDone) > 0.0f);
+    assert(log.tts_duration_for(EventType::ResponseDone) > 0.0f);
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_pipeline\n");
+}
+
+void test_stage_latency_echo() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT ran — duration must be positive
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+    assert(log.stt_duration_for(EventType::ResponseDone) > 0.0f);
+
+    // No LLM in echo mode — must be zero
+    assert(log.llm_duration_for(EventType::ResponseDone) == 0.0f);
+
+    // TTS ran
+    assert(log.tts_duration_for(EventType::ResponseDone) > 0.0f);
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_echo\n");
+}
+
+void test_stage_latency_transcribe_only() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT duration populated
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+
+    // No TTS or LLM events
+    assert(!log.has(EventType::ResponseDone));
+    assert(!log.has(EventType::ResponseCreated));
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_transcribe_only\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2169,6 +2316,9 @@ int main() {
     test_speech_during_tts_after_eager_not_lost();
     test_eager_new_speech_during_stt_doesnt_discard();
     test_stt_warmup();
+    test_stage_latency_pipeline();
+    test_stage_latency_echo();
+    test_stage_latency_transcribe_only();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
