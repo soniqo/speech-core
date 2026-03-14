@@ -100,13 +100,13 @@ The pipeline emits events via the `EventCallback`:
 |---|---|---|
 | `SpeechStarted` | VAD confirms user speech | `start_time` |
 | `SpeechEnded` | User utterance finalized, STT starting | `start_time` |
-| `TranscriptionCompleted` | STT returns text | `text`, `start_time` |
+| `TranscriptionCompleted` | STT returns text | `text`, `start_time`, `stt_duration_ms` |
 | `ToolCallStarted` | LLM requested a tool call | `text` (tool name) |
 | `ToolCallCompleted` | Tool execution finished | `text` (output) |
-| `ResponseCreated` | TTS synthesis starting | — |
+| `ResponseCreated` | TTS synthesis starting | `llm_duration_ms` |
 | `ResponseAudioDelta` | TTS audio chunk ready | `audio_data` (PCM16) |
 | `ResponseInterrupted` | User barged in during TTS | `start_time` |
-| `ResponseDone` | TTS synthesis complete | — |
+| `ResponseDone` | TTS synthesis complete | `stt_duration_ms`, `llm_duration_ms`, `tts_duration_ms` |
 | `Error` | STT/LLM/TTS failure | `text` (error message) |
 
 ## Thread Safety
@@ -139,7 +139,6 @@ config.min_interruption_duration = 1.0f;    // seconds of speech before confirmi
 config.interruption_recovery_timeout = 0.4f; // seconds — brief interruptions recover
 
 // Timing
-config.min_speech_gap = 0.1f;              // seconds between agent speech outputs
 config.max_utterance_duration = 15.0f;     // seconds — force-split long utterances
 config.max_response_duration = 10.0f;      // seconds — cap TTS output (prevents hallucination)
 config.post_playback_guard = 0.3f;         // seconds — suppress VAD after playback (AEC settle)
