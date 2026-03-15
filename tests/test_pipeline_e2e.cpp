@@ -2938,6 +2938,7 @@ void test_llm_cancel_on_interruption() {
     auto config = test_config();
     config.mode = AgentConfig::Mode::Pipeline;
     config.vad.min_speech_duration = 0.064f;
+    config.min_interruption_duration = 0.0f;  // immediate interruption
     config.post_playback_guard = 0;
 
     EventLog log;
