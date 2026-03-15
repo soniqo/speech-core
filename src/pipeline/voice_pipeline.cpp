@@ -95,18 +95,90 @@ void VoicePipeline::worker_loop() {
         stt_.transcribe(silence.data(), silence.size(), stt_.input_sample_rate());
     }
 
+    bool streaming_active = false;
+    size_t stream_offset = 0;  // samples already sent to push_chunk
+
     while (running_.load()) {
         PendingUtterance utterance;
+        bool have_utterance = false;
         {
             std::unique_lock<std::mutex> lock(worker_mutex_);
-            worker_cv_.wait(lock, [this] {
-                return !pending_utterances_.empty() || !running_.load();
-            });
-            if (!running_.load()) return;
-            worker_busy_.store(true);
-            utterance = std::move(pending_utterances_.front());
-            pending_utterances_.erase(pending_utterances_.begin());
+            bool use_timed_wait = config_.emit_partial_transcriptions
+                                  && stt_.supports_streaming()
+                                  && !streaming_active;
+            bool poll_stream = streaming_active;
+
+            if (use_timed_wait || poll_stream) {
+                auto timeout = std::chrono::milliseconds(
+                    static_cast<int>(config_.partial_transcription_interval * 1000));
+                worker_cv_.wait_for(lock, timeout, [this] {
+                    return !pending_utterances_.empty() || !running_.load();
+                });
+            } else {
+                worker_cv_.wait(lock, [this] {
+                    return !pending_utterances_.empty() || !running_.load();
+                });
+            }
+            if (!running_.load()) {
+                if (streaming_active) {
+                    stt_.cancel_stream();
+                    streaming_active = false;
+                }
+                return;
+            }
+
+            if (!pending_utterances_.empty()) {
+                worker_busy_.store(true);
+                utterance = std::move(pending_utterances_.front());
+                pending_utterances_.erase(pending_utterances_.begin());
+                have_utterance = true;
+            }
         }
+
+        // Streaming STT: feed new audio chunks during speech
+        if (!have_utterance && streaming_active) {
+            std::vector<float> snapshot;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (turn_detector_.in_speech()) {
+                    snapshot = turn_detector_.utterance_snapshot();
+                }
+            }
+            if (snapshot.size() > stream_offset) {
+                try {
+                    auto partial_text = stt_.push_chunk(
+                        snapshot.data() + stream_offset,
+                        snapshot.size() - stream_offset);
+                    stream_offset = snapshot.size();
+                    if (!partial_text.empty()) {
+                        PipelineEvent partial;
+                        partial.type = EventType::PartialTranscription;
+                        partial.text = partial_text;
+                        on_event_(partial);
+                    }
+                } catch (...) {}
+            }
+            continue;
+        }
+
+        // Start streaming when speech begins (no utterance yet, speech active)
+        if (!have_utterance && !streaming_active
+            && config_.emit_partial_transcriptions
+            && stt_.supports_streaming()) {
+            bool speech_active;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                speech_active = turn_detector_.in_speech();
+            }
+            if (speech_active) {
+                stt_.begin_stream(stt_.input_sample_rate());
+                streaming_active = true;
+                stream_offset = 0;
+            }
+            continue;
+        }
+
+        if (!have_utterance) continue;
 
         // Emit SpeechEnded before starting STT
         {
@@ -119,9 +191,24 @@ void VoicePipeline::worker_loop() {
         // Run STT (no pipeline mutex held — push_audio continues to flow)
         try {
             auto stt_start = std::chrono::steady_clock::now();
-            auto result = stt_.transcribe(
-                utterance.audio.data(), utterance.audio.size(),
-                stt_.input_sample_rate());
+            TranscriptionResult result;
+
+            if (streaming_active) {
+                // Feed any remaining audio, then finalize stream
+                if (utterance.audio.size() > stream_offset) {
+                    stt_.push_chunk(
+                        utterance.audio.data() + stream_offset,
+                        utterance.audio.size() - stream_offset);
+                }
+                result = stt_.end_stream();
+                streaming_active = false;
+                stream_offset = 0;
+            } else {
+                result = stt_.transcribe(
+                    utterance.audio.data(), utterance.audio.size(),
+                    stt_.input_sample_rate());
+            }
+
             float stt_ms = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - stt_start).count();
 

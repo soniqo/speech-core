@@ -37,6 +37,7 @@ typedef enum {
     SC_EVENT_SESSION_CREATED = 0,
     SC_EVENT_SPEECH_STARTED,
     SC_EVENT_SPEECH_ENDED,
+    SC_EVENT_PARTIAL_TRANSCRIPTION,
     SC_EVENT_TRANSCRIPTION_COMPLETED,
     SC_EVENT_RESPONSE_CREATED,
     SC_EVENT_RESPONSE_INTERRUPTED,
@@ -89,6 +90,8 @@ typedef struct {
     int max_history_messages;     // Max conversation messages (default 50, 0 = unlimited)
     int max_history_tokens;       // Max conversation tokens (default 0 = disabled)
     bool mask_tool_results;       // Drop tool messages before conversation during trimming
+    bool emit_partial_transcriptions;  // Emit partial STT during speech (default false)
+    float partial_transcription_interval;  // Seconds between partials (default 1.0)
     const char* language;
     sc_mode_t mode;
 } sc_config_t;
@@ -153,6 +156,11 @@ typedef struct {
     sc_transcription_result_t (*transcribe)(
         void* ctx, const float* audio, size_t length, int sample_rate);
     int (*input_sample_rate)(void* ctx);
+    // Optional streaming methods (all NULL = batch only)
+    void (*begin_stream)(void* ctx, int sample_rate);
+    const char* (*push_chunk)(void* ctx, const float* audio, size_t length);
+    sc_transcription_result_t (*end_stream)(void* ctx);
+    void (*cancel_stream)(void* ctx);
 } sc_stt_vtable_t;
 
 typedef struct {

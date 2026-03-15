@@ -73,6 +73,12 @@ public:
     /// Reset all state (clears any active post-playback guard).
     void reset();
 
+    /// Whether the user is currently speaking.
+    bool in_speech() const { return in_speech_; }
+
+    /// Get a snapshot of the current utterance buffer (for partial transcription).
+    std::vector<float> utterance_snapshot() const { return utterance_buffer_; }
+
 private:
     VADInterface& vad_;
     AgentConfig config_;

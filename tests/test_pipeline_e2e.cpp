@@ -2494,6 +2494,99 @@ void test_speech_enhancement() {
     printf("  PASS: speech_enhancement\n");
 }
 
+// ---------------------------------------------------------------------------
+// Partial transcription test
+// ---------------------------------------------------------------------------
+
+void test_partial_transcription() {
+    // Streaming STT that tracks begin/push/end calls
+    class StreamingSTT : public STTInterface {
+    public:
+        std::atomic<int> push_count{0};
+        std::atomic<bool> stream_active{false};
+        std::atomic<bool> stream_ended{false};
+
+        TranscriptionResult transcribe(
+            const float* /*audio*/, size_t /*length*/, int /*sample_rate*/) override
+        {
+            return {"batch fallback", "", 0.9f, 0.0f, 1.0f};
+        }
+
+        int input_sample_rate() const override { return 16000; }
+
+        bool supports_streaming() const override { return true; }
+
+        void begin_stream(int /*sample_rate*/) override {
+            stream_active = true;
+            push_count = 0;
+        }
+
+        std::string push_chunk(const float* /*audio*/, size_t /*length*/) override {
+            push_count++;
+            return "partial " + std::to_string(push_count.load());
+        }
+
+        TranscriptionResult end_stream() override {
+            stream_active = false;
+            stream_ended = true;
+            return {"final transcript", "", 0.95f, 0.0f, 1.0f};
+        }
+
+        void cancel_stream() override {
+            stream_active = false;
+        }
+    };
+
+    StreamingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Long speech: 60 chunks (~1.9s), then silence
+    std::vector<float> probs;
+    probs.push_back(0.0f);
+    for (int i = 0; i < 60; i++) probs.push_back(0.9f);
+    for (int i = 0; i < 15; i++) probs.push_back(0.1f);
+    vad.probs = probs;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+    config.emit_partial_transcriptions = true;
+    config.partial_transcription_interval = 0.1f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    // Push audio in small batches to give worker time to fire partials
+    auto audio = make_audio(vad.probs.size());
+    size_t chunk = 512 * 5;
+    for (size_t i = 0; i < audio.size(); i += chunk) {
+        size_t n = std::min(chunk, audio.size() - i);
+        pipeline.push_audio(audio.data() + i, n);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Streaming should have been used (not batch transcribe)
+    assert(stt.stream_ended.load());
+    assert(stt.push_count.load() > 0);
+
+    // Should have partial transcription events
+    assert(log.has(EventType::PartialTranscription));
+    // And the final from end_stream
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.text_for(EventType::TranscriptionCompleted) == "final transcript");
+
+    pipeline.stop();
+    printf("  PASS: partial_transcription\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2545,6 +2638,7 @@ int main() {
     test_history_token_limit();
     test_history_mask_tool_results();
     test_speech_enhancement();
+    test_partial_transcription();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }

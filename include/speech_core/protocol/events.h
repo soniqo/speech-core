@@ -16,6 +16,7 @@ enum class EventType {
     SpeechEnded,
 
     // Transcription
+    PartialTranscription,
     TranscriptionCompleted,
 
     // Response lifecycle

@@ -38,7 +38,7 @@ class STTInterface {
 public:
     virtual ~STTInterface() = default;
 
-    /// Transcribe audio buffer to text.
+    /// Transcribe audio buffer to text (batch mode).
     /// @param audio  PCM Float32 samples
     /// @param length Number of samples
     /// @param sample_rate Sample rate in Hz
@@ -48,6 +48,26 @@ public:
 
     /// Expected input sample rate in Hz.
     virtual int input_sample_rate() const = 0;
+
+    // --- Optional streaming interface ---
+    // Override these to enable real-time partial transcription.
+    // When supports_streaming() returns true, the pipeline feeds audio
+    // chunks during speech via begin/push/end instead of batch transcribe.
+
+    /// Whether this STT model supports streaming transcription.
+    virtual bool supports_streaming() const { return false; }
+
+    /// Begin a new streaming transcription session.
+    virtual void begin_stream(int /*sample_rate*/) {}
+
+    /// Feed an audio chunk during speech. Returns partial text (empty if nothing new).
+    virtual std::string push_chunk(const float* /*audio*/, size_t /*length*/) { return ""; }
+
+    /// Finalize the stream and return the authoritative transcription.
+    virtual TranscriptionResult end_stream() { return {}; }
+
+    /// Cancel the current stream (e.g. on interruption).
+    virtual void cancel_stream() {}
 };
 
 // ---------------------------------------------------------------------------

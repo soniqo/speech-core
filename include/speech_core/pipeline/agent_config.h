@@ -66,6 +66,13 @@ struct AgentConfig {
     /// raw output can be dropped while keeping the user/assistant turns.
     bool mask_tool_results = true;
 
+    /// Emit partial transcription events during speech (opt-in).
+    /// Periodically runs STT on the buffered audio and emits PartialTranscription.
+    bool emit_partial_transcriptions = false;
+
+    /// Interval between partial transcription attempts (seconds).
+    float partial_transcription_interval = 1.0f;
+
     /// Language hint for STT/TTS (e.g. "en", "zh", "de"). Empty = auto-detect.
     std::string language;
 
