@@ -13,6 +13,7 @@ using namespace speech_core;
 
 class CSTTAdapter : public STTInterface {
     sc_stt_vtable_t vt_;
+    std::string last_partial_;  // keeps C string alive between push_chunk calls
 public:
     explicit CSTTAdapter(sc_stt_vtable_t vt) : vt_(vt) {}
 
@@ -31,6 +32,42 @@ public:
 
     int input_sample_rate() const override {
         return vt_.input_sample_rate(vt_.context);
+    }
+
+    bool supports_streaming() const override {
+        return vt_.begin_stream != nullptr;
+    }
+
+    void begin_stream(int sample_rate) override {
+        if (vt_.begin_stream) vt_.begin_stream(vt_.context, sample_rate);
+    }
+
+    PartialResult push_chunk(const float* audio, size_t length) override {
+        if (!vt_.push_chunk) return {};
+        auto r = vt_.push_chunk(vt_.context, audio, length);
+        return {
+            r.text ? std::string(r.text) : "",
+            r.language ? std::string(r.language) : "",
+            r.confidence
+        };
+    }
+
+    void flush_stream() override {
+        if (vt_.flush_stream) vt_.flush_stream(vt_.context);
+    }
+
+    TranscriptionResult end_stream() override {
+        if (!vt_.end_stream) return {};
+        auto r = vt_.end_stream(vt_.context);
+        return {
+            r.text ? std::string(r.text) : "",
+            r.language ? std::string(r.language) : "",
+            r.confidence, r.start_time, r.end_time
+        };
+    }
+
+    void cancel_stream() override {
+        if (vt_.cancel_stream) vt_.cancel_stream(vt_.context);
     }
 };
 
@@ -152,6 +189,7 @@ static sc_event_type_t map_event_type(EventType type) {
         case EventType::SessionCreated:           return SC_EVENT_SESSION_CREATED;
         case EventType::SpeechStarted:            return SC_EVENT_SPEECH_STARTED;
         case EventType::SpeechEnded:              return SC_EVENT_SPEECH_ENDED;
+        case EventType::PartialTranscription:      return SC_EVENT_PARTIAL_TRANSCRIPTION;
         case EventType::TranscriptionCompleted:   return SC_EVENT_TRANSCRIPTION_COMPLETED;
         case EventType::ResponseCreated:          return SC_EVENT_RESPONSE_CREATED;
         case EventType::ResponseInterrupted:      return SC_EVENT_RESPONSE_INTERRUPTED;
@@ -189,6 +227,8 @@ sc_config_t sc_config_default(void) {
     c.max_history_messages = 50;
     c.max_history_tokens = 0;
     c.mask_tool_results = true;
+    c.emit_partial_transcriptions = false;
+    c.partial_transcription_interval = 1.0f;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -234,6 +274,8 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.max_history_messages = config.max_history_messages;
     agent_config.max_history_tokens = config.max_history_tokens;
     agent_config.mask_tool_results = config.mask_tool_results;
+    agent_config.emit_partial_transcriptions = config.emit_partial_transcriptions;
+    agent_config.partial_transcription_interval = config.partial_transcription_interval;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);
 

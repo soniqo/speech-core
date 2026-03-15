@@ -34,11 +34,18 @@ struct TranscriptionResult {
     float end_time = 0.0f;
 };
 
+/// Partial transcription result from streaming STT.
+struct PartialResult {
+    std::string text;
+    std::string language;
+    float confidence = 0.0f;
+};
+
 class STTInterface {
 public:
     virtual ~STTInterface() = default;
 
-    /// Transcribe audio buffer to text.
+    /// Transcribe audio buffer to text (batch mode).
     /// @param audio  PCM Float32 samples
     /// @param length Number of samples
     /// @param sample_rate Sample rate in Hz
@@ -51,6 +58,30 @@ public:
 
     /// Cancel any in-progress transcription. Thread-safe.
     virtual void cancel() {}
+
+    // --- Optional streaming interface ---
+    // Override these to enable real-time partial transcription.
+    // When supports_streaming() returns true, the pipeline feeds audio
+    // chunks during speech via begin/push/end instead of batch transcribe.
+
+    /// Whether this STT model supports streaming transcription.
+    virtual bool supports_streaming() const { return false; }
+
+    /// Begin a new streaming transcription session.
+    virtual void begin_stream(int /*sample_rate*/) {}
+
+    /// Feed an audio chunk during speech. Returns structured partial result.
+    virtual PartialResult push_chunk(const float* /*audio*/, size_t /*length*/) { return {}; }
+
+    /// Mark a segment boundary without ending the stream.
+    /// Useful for force-split utterances in multi-utterance sessions.
+    virtual void flush_stream() {}
+
+    /// Finalize the stream and return the authoritative transcription.
+    virtual TranscriptionResult end_stream() { return {}; }
+
+    /// Cancel the current stream (e.g. on interruption).
+    virtual void cancel_stream() {}
 };
 
 // ---------------------------------------------------------------------------
