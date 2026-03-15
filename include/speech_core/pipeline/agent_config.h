@@ -52,6 +52,20 @@ struct AgentConfig {
     /// this brings subsequent latency from ~3s to <1s.
     bool warmup_stt = true;
 
+    /// Maximum conversation history messages to retain (0 = unlimited).
+    /// Oldest messages (after system prompt) are trimmed when exceeded.
+    int max_history_messages = 50;
+
+    /// Maximum conversation history tokens (0 = disabled).
+    /// Requires a token counter to be set on the LLM interface.
+    /// When exceeded, oldest messages (after system prompt) are trimmed.
+    int max_history_tokens = 0;
+
+    /// Drop tool result messages before conversation messages during trimming.
+    /// Tool outputs are self-contained — the LLM already acted on them, so the
+    /// raw output can be dropped while keeping the user/assistant turns.
+    bool mask_tool_results = true;
+
     /// Language hint for STT/TTS (e.g. "en", "zh", "de"). Empty = auto-detect.
     std::string language;
 

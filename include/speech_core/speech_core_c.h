@@ -66,6 +66,9 @@ typedef struct {
     float start_time;
     float end_time;
     float confidence;
+    float stt_duration_ms;
+    float llm_duration_ms;
+    float tts_duration_ms;
 } sc_event_t;
 
 typedef struct {
@@ -83,6 +86,9 @@ typedef struct {
     bool eager_stt;
     float eager_stt_delay;
     bool warmup_stt;
+    int max_history_messages;     // Max conversation messages (default 50, 0 = unlimited)
+    int max_history_tokens;       // Max conversation tokens (default 0 = disabled)
+    bool mask_tool_results;       // Drop tool messages before conversation during trimming
     const char* language;
     sc_mode_t mode;
 } sc_config_t;
@@ -99,6 +105,34 @@ typedef struct {
     sc_role_t role;
     const char* content;
 } sc_message_t;
+
+typedef struct {
+    void* context;
+    void (*enhance)(void* ctx, const float* input, size_t length,
+                    int sample_rate, float* output);
+    int (*input_sample_rate)(void* ctx);
+} sc_enhancer_vtable_t;
+
+// ---------------------------------------------------------------------------
+// Tool definition (callback-based, no popen)
+// ---------------------------------------------------------------------------
+
+/// Tool handler callback. Returns a C string result (caller must not free).
+/// The returned pointer must remain valid until the next call to the same handler.
+typedef const char* (*sc_tool_handler_fn)(const char* tool_name,
+                                          const char* arguments,
+                                          void* context);
+
+typedef struct {
+    const char* name;
+    const char* description;
+    const char** triggers;       // NULL-terminated array of trigger patterns
+    sc_tool_handler_fn handler;  // Platform callback (NULL = use shell command)
+    const char* command;         // Shell command (used if handler is NULL)
+    void* handler_context;
+    int timeout;                 // seconds, 0 = no limit
+    int cooldown;                // seconds, 0 = no cooldown
+} sc_tool_definition_t;
 
 // ---------------------------------------------------------------------------
 // Callback types
@@ -142,6 +176,7 @@ typedef struct {
     void (*chat)(void* ctx, const sc_message_t* messages, size_t count,
                  sc_llm_token_fn on_token, void* token_ctx);
     void (*cancel)(void* ctx);
+    int (*count_tokens)(void* ctx, const char* text);  // Optional, NULL = skip
 } sc_llm_vtable_t;
 
 // ---------------------------------------------------------------------------
@@ -194,6 +229,22 @@ sc_state_t sc_pipeline_state(sc_pipeline_t pipeline);
 
 /// Check if the pipeline is running.
 bool sc_pipeline_is_running(sc_pipeline_t pipeline);
+
+/// Set an optional speech enhancer (runs before VAD on every push_audio).
+/// Must be called before sc_pipeline_start(). Pass NULL to disable.
+void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
+                               sc_enhancer_vtable_t enhancer);
+
+/// Register a tool with platform callback handler.
+/// Must be called before sc_pipeline_start().
+void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool);
+
+/// Load tools from a JSON string (shell-command based tools).
+/// @return Number of tools loaded, or -1 on parse error.
+int sc_pipeline_load_tools_json(sc_pipeline_t pipeline, const char* json);
+
+/// Remove all registered tools.
+void sc_pipeline_clear_tools(sc_pipeline_t pipeline);
 
 #ifdef __cplusplus
 }

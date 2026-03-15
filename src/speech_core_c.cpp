@@ -113,6 +113,21 @@ public:
     }
 };
 
+class CEnhancerAdapter : public EnhancerInterface {
+    sc_enhancer_vtable_t vt_;
+public:
+    explicit CEnhancerAdapter(sc_enhancer_vtable_t vt) : vt_(vt) {}
+
+    void enhance(const float* audio, size_t length, int sample_rate,
+                 float* output) override {
+        vt_.enhance(vt_.context, audio, length, sample_rate, output);
+    }
+
+    int input_sample_rate() const override {
+        return vt_.input_sample_rate(vt_.context);
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Pipeline handle
 // ---------------------------------------------------------------------------
@@ -122,6 +137,7 @@ struct sc_pipeline_s {
     std::unique_ptr<CTTSAdapter> tts;
     std::unique_ptr<CLLMAdapter> llm;
     std::unique_ptr<CVADAdapter> vad;
+    std::unique_ptr<CEnhancerAdapter> enhancer;
     std::unique_ptr<VoicePipeline> pipeline;
     sc_event_fn event_fn;
     void* event_context;
@@ -170,6 +186,9 @@ sc_config_t sc_config_default(void) {
     c.eager_stt = true;
     c.eager_stt_delay = 0.3f;
     c.warmup_stt = true;
+    c.max_history_messages = 50;
+    c.max_history_tokens = 0;
+    c.mask_tool_results = true;
     c.language = "";
     c.mode = SC_MODE_ECHO;
     return c;
@@ -212,6 +231,9 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.eager_stt = config.eager_stt;
     agent_config.eager_stt_delay = config.eager_stt_delay;
     agent_config.warmup_stt = config.warmup_stt;
+    agent_config.max_history_messages = config.max_history_messages;
+    agent_config.max_history_tokens = config.max_history_tokens;
+    agent_config.mask_tool_results = config.mask_tool_results;
     agent_config.language = config.language ? config.language : "";
     agent_config.mode = static_cast<AgentConfig::Mode>(config.mode);
 
@@ -228,8 +250,21 @@ sc_pipeline_t sc_pipeline_create(
             e.start_time = event.start_time;
             e.end_time = event.end_time;
             e.confidence = event.confidence;
+            e.stt_duration_ms = event.stt_duration_ms;
+            e.llm_duration_ms = event.llm_duration_ms;
+            e.tts_duration_ms = event.tts_duration_ms;
             p->event_fn(&e, p->event_context);
         });
+
+    // Wire token counter from LLM vtable if available
+    if (llm && llm->count_tokens && config.max_history_tokens > 0) {
+        auto count_fn = llm->count_tokens;
+        auto llm_ctx = llm->context;
+        p->pipeline->conversation_context().set_token_counter(
+            [count_fn, llm_ctx](const std::string& text) -> int {
+                return count_fn(llm_ctx, text.c_str());
+            });
+    }
 
     return p;
 }
@@ -268,6 +303,55 @@ sc_state_t sc_pipeline_state(sc_pipeline_t pipeline) {
 bool sc_pipeline_is_running(sc_pipeline_t pipeline) {
     if (!pipeline) return false;
     return pipeline->pipeline->is_running();
+}
+
+void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
+                               sc_enhancer_vtable_t enhancer) {
+    if (!pipeline) return;
+    pipeline->enhancer = std::make_unique<CEnhancerAdapter>(enhancer);
+    pipeline->pipeline->set_enhancer(pipeline->enhancer.get());
+}
+
+void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool) {
+    if (!pipeline) return;
+
+    ToolDefinition def;
+    def.name = tool.name ? tool.name : "";
+    def.description = tool.description ? tool.description : "";
+    def.timeout = tool.timeout;
+    def.cooldown = tool.cooldown;
+
+    // Copy triggers
+    if (tool.triggers) {
+        for (const char** t = tool.triggers; *t != nullptr; t++) {
+            def.triggers.push_back(*t);
+        }
+    }
+
+    if (tool.handler) {
+        // Capture the C callback + context as a C++ handler
+        auto c_handler = tool.handler;
+        auto c_ctx = tool.handler_context;
+        def.handler = [c_handler, c_ctx](const std::string& name,
+                                          const std::string& args) -> std::string {
+            const char* result = c_handler(name.c_str(), args.c_str(), c_ctx);
+            return result ? std::string(result) : "";
+        };
+    } else if (tool.command) {
+        def.command = tool.command;
+    }
+
+    pipeline->pipeline->tool_registry().add(std::move(def));
+}
+
+int sc_pipeline_load_tools_json(sc_pipeline_t pipeline, const char* json) {
+    if (!pipeline || !json) return -1;
+    return pipeline->pipeline->tool_registry().load_json(std::string(json));
+}
+
+void sc_pipeline_clear_tools(sc_pipeline_t pipeline) {
+    if (!pipeline) return;
+    pipeline->pipeline->tool_registry().clear();
 }
 
 }  // extern "C"

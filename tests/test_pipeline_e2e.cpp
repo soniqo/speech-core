@@ -106,10 +106,16 @@ public:
 struct EventLog {
     std::vector<EventType> types;
     std::vector<std::string> texts;
+    std::vector<float> stt_durations;
+    std::vector<float> llm_durations;
+    std::vector<float> tts_durations;
 
     void on_event(const PipelineEvent& e) {
         types.push_back(e.type);
         texts.push_back(e.text);
+        stt_durations.push_back(e.stt_duration_ms);
+        llm_durations.push_back(e.llm_duration_ms);
+        tts_durations.push_back(e.tts_duration_ms);
     }
 
     bool has(EventType t) const {
@@ -128,6 +134,27 @@ struct EventLog {
             if (types[i] == t) return texts[i];
         }
         return "";
+    }
+
+    float stt_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return stt_durations[i];
+        }
+        return 0.0f;
+    }
+
+    float llm_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return llm_durations[i];
+        }
+        return 0.0f;
+    }
+
+    float tts_duration_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return tts_durations[i];
+        }
+        return 0.0f;
     }
 };
 
@@ -500,6 +527,54 @@ void test_llm_driven_tool_call() {
 
     pipeline.stop();
     printf("  PASS: llm_driven_tool_call\n");
+}
+
+void test_callback_tool_execution() {
+    MockSTT stt;
+    MockTTS tts;
+    MockLLM llm;
+    MockVAD vad;
+
+    stt.next_text = "what time is it";
+    llm.next_tool_calls = {{"tell_time", "{}"}};
+    llm.response = "It is 3:14 PM";
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    // Register tool with callback handler (no shell command)
+    ToolDefinition time_tool;
+    time_tool.name = "tell_time";
+    time_tool.cooldown = 0;
+    time_tool.handler = [](const std::string& /*name*/,
+                           const std::string& /*args*/) -> std::string {
+        return "3:14 PM";
+    };
+    pipeline.tool_registry().add(time_tool);
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    assert(llm.call_count == 2);
+    assert(log.has(EventType::ToolCallStarted));
+    assert(log.has(EventType::ToolCallCompleted));
+    assert(log.text_for(EventType::ToolCallCompleted) == "3:14 PM");
+    assert(tts.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: callback_tool_execution\n");
 }
 
 void test_no_tool_calls_normal_flow() {
@@ -2126,6 +2201,299 @@ void test_eager_new_speech_during_stt_doesnt_discard() {
     printf("  PASS: eager_new_speech_during_stt_doesnt_discard\n");
 }
 
+// ---------------------------------------------------------------------------
+// Stage latency metrics tests
+// ---------------------------------------------------------------------------
+
+void test_stage_latency_pipeline() {
+    MockSTT stt;
+    MockTTS tts;
+    MockLLM llm;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT duration on TranscriptionCompleted
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+
+    // LLM duration on ResponseCreated
+    assert(log.llm_duration_for(EventType::ResponseCreated) > 0.0f);
+
+    // All three on ResponseDone
+    assert(log.stt_duration_for(EventType::ResponseDone) > 0.0f);
+    assert(log.llm_duration_for(EventType::ResponseDone) > 0.0f);
+    assert(log.tts_duration_for(EventType::ResponseDone) > 0.0f);
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_pipeline\n");
+}
+
+void test_stage_latency_echo() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT ran — duration must be positive
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+    assert(log.stt_duration_for(EventType::ResponseDone) > 0.0f);
+
+    // No LLM in echo mode — must be zero
+    assert(log.llm_duration_for(EventType::ResponseDone) == 0.0f);
+
+    // TTS ran
+    assert(log.tts_duration_for(EventType::ResponseDone) > 0.0f);
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_echo\n");
+}
+
+void test_stage_latency_transcribe_only() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // STT duration populated
+    assert(log.stt_duration_for(EventType::TranscriptionCompleted) > 0.0f);
+
+    // No TTS or LLM events
+    assert(!log.has(EventType::ResponseDone));
+    assert(!log.has(EventType::ResponseCreated));
+
+    pipeline.stop();
+    printf("  PASS: stage_latency_transcribe_only\n");
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history limit tests
+// ---------------------------------------------------------------------------
+
+void test_history_message_limit() {
+    // Test that max_history_messages is wired through config
+    // Use Echo mode to avoid LLM and state complications
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {0.0f};
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.max_history_messages = 4;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    // Push 10 text messages — each adds user + assistant (echo) = 2 messages
+    for (int i = 0; i < 10; i++) {
+        pipeline.push_text("msg" + std::to_string(i));
+        pipeline.resume_listening();
+    }
+
+    auto& ctx = pipeline.conversation_context();
+    size_t non_system = 0;
+    for (const auto& m : ctx.messages()) {
+        if (m.role != MessageRole::System) non_system++;
+    }
+    assert(non_system <= 4);
+
+    pipeline.stop();
+    printf("  PASS: history_message_limit\n");
+}
+
+void test_history_token_limit() {
+    // Test token-based trimming via ConversationContext directly
+    ConversationContext ctx("system prompt", 0, 50);  // unlimited messages, 50 token limit
+
+    // Simple token counter: 1 token per word
+    ctx.set_token_counter([](const std::string& text) -> int {
+        int count = text.empty() ? 0 : 1;
+        for (char c : text) {
+            if (c == ' ') count++;
+        }
+        return count;
+    });
+
+    // System prompt = "system prompt" = 2 tokens
+    // Add messages until we exceed 50 tokens
+    for (int i = 0; i < 20; i++) {
+        ctx.add_user_message("this is a test message number " + std::to_string(i));
+        ctx.add_assistant_message("ok got it message " + std::to_string(i));
+    }
+
+    // Count total tokens
+    int total = 0;
+    for (const auto& m : ctx.messages()) {
+        int count = m.content.empty() ? 0 : 1;
+        for (char c : m.content) {
+            if (c == ' ') count++;
+        }
+        total += count;
+    }
+
+    // Should be within budget
+    assert(total <= 50);
+    // System prompt should still be present
+    assert(ctx.messages()[0].role == MessageRole::System);
+    assert(ctx.messages()[0].content == "system prompt");
+
+    printf("  PASS: history_token_limit\n");
+}
+
+void test_history_mask_tool_results() {
+    // Tool messages should be dropped before conversation messages
+    ConversationContext ctx("system", 6, 0, true);  // max 6 messages, masking on
+
+    ctx.add_user_message("what time is it");
+    ctx.add_assistant_message("let me check");       // LLM decided to call tool
+    ctx.add_tool_message("tell_time", "3:14 PM");
+    ctx.add_assistant_message("it is 3:14 PM");
+    ctx.add_user_message("thanks");
+    ctx.add_assistant_message("you're welcome");
+    // 6 non-system messages — at limit
+
+    // Add one more to trigger trim
+    ctx.add_user_message("what about tomorrow");
+
+    // Tool message should have been dropped first
+    bool has_tool = false;
+    for (const auto& m : ctx.messages()) {
+        if (m.role == MessageRole::Tool) has_tool = true;
+    }
+    assert(!has_tool);
+
+    // System prompt preserved
+    assert(ctx.messages()[0].role == MessageRole::System);
+
+    // Should still have the recent conversation
+    size_t non_system = 0;
+    for (const auto& m : ctx.messages()) {
+        if (m.role != MessageRole::System) non_system++;
+    }
+    assert(non_system <= 6);
+
+    printf("  PASS: history_mask_tool_results\n");
+}
+
+// ---------------------------------------------------------------------------
+// Speech enhancement test
+// ---------------------------------------------------------------------------
+
+void test_speech_enhancement() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    // Enhancer that tracks calls and scales audio by 0.5
+    class TestEnhancer : public EnhancerInterface {
+    public:
+        std::atomic<int> call_count{0};
+
+        void enhance(const float* audio, size_t length, int /*sample_rate*/,
+                     float* output) override {
+            call_count++;
+            for (size_t i = 0; i < length; i++) {
+                output[i] = audio[i] * 0.5f;
+            }
+        }
+
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    TestEnhancer enhancer;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); },
+        &enhancer);
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Enhancer should have been called for each push_audio chunk
+    assert(enhancer.call_count.load() > 0);
+
+    // Pipeline should still work normally
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: speech_enhancement\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2138,6 +2506,7 @@ int main() {
     test_interruption();
     test_max_utterance_force_split();
     test_llm_driven_tool_call();
+    test_callback_tool_execution();
     test_no_tool_calls_normal_flow();
     test_not_running_ignores_input();
     test_push_audio_nonblocking_during_tts();
@@ -2169,6 +2538,13 @@ int main() {
     test_speech_during_tts_after_eager_not_lost();
     test_eager_new_speech_during_stt_doesnt_discard();
     test_stt_warmup();
+    test_stage_latency_pipeline();
+    test_stage_latency_echo();
+    test_stage_latency_transcribe_only();
+    test_history_message_limit();
+    test_history_token_limit();
+    test_history_mask_tool_results();
+    test_speech_enhancement();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
