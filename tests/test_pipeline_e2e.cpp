@@ -1146,16 +1146,15 @@ void test_interruption_during_stt_skips_tts() {
 
     pipeline.wait_idle();
 
-    // STT ran but interruption should have prevented TTS for that utterance
+    // With the updated behavior, agent_speaking is NOT set during STT,
+    // so new speech during STT queues as a new utterance instead of
+    // interrupting. Both utterances should be processed sequentially.
     assert(stt.call_count >= 1);
-    // Key: the first utterance's TTS should NOT have run because the user
-    // interrupted during STT. The second utterance may or may not have
-    // been processed (depends on timing).
-    // The old bug: tts.call_count would equal stt.call_count (TTS ran despite interrupt)
-    assert(tts.call_count < stt.call_count);
+    // TTS should run for each completed transcription (no interruption during STT)
+    assert(tts.call_count >= 1);
 
     pipeline.stop();
-    printf("  PASS: interruption_during_stt_skips_tts\n");
+    printf("  PASS: speech_during_stt_queues_utterance\n");
 }
 
 // Test: post-playback guard suppresses VAD events
@@ -2494,6 +2493,209 @@ void test_speech_enhancement() {
     printf("  PASS: speech_enhancement\n");
 }
 
+// ---------------------------------------------------------------------------
+// Tests for voice pipeline improvements (feat/voice-pipeline-improvements)
+// ---------------------------------------------------------------------------
+
+// Test: speech during STT queues new utterance instead of interrupting.
+// agent_speaking is NOT set during STT, so new speech should NOT trigger
+// interruption — it should queue as a separate utterance.
+void test_speech_during_stt_queues_not_interrupts() {
+    // Use a slow STT that takes 200ms to simulate real transcription time
+    struct SlowSTT : public STTInterface {
+        std::atomic<int> call_count{0};
+        TranscriptionResult transcribe(
+            const float*, size_t, int) override
+        {
+            call_count++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            return {"utterance " + std::to_string(call_count.load()), "", 0.9f, 0.0f, 1.0f};
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    SlowSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    MockLLM llm;
+
+    // Two speech segments with a brief gap — second starts while STT processes first
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,   // first speech
+        0.1f, 0.1f, 0.1f, 0.1f,   // silence → triggers STT
+        0.8f, 0.8f, 0.8f, 0.8f,   // second speech (during STT processing)
+        0.1f, 0.1f, 0.1f, 0.1f,   // silence → triggers second STT
+        0.0f, 0.0f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+
+    // Wait for both utterances to be processed
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    pipeline.stop();
+
+    // Should NOT have interruption — both utterances processed sequentially
+    assert(!log.has(EventType::ResponseInterrupted));
+    // Should have at least 1 transcription
+    assert(log.count(EventType::TranscriptionCompleted) >= 1);
+
+    printf("  PASS: speech_during_stt_queues_not_interrupts\n");
+}
+
+// Test: LLM cancel() is called on interruption during Thinking state.
+// When user speaks while LLM is generating, cancel() should be invoked
+// so the worker thread unblocks.
+void test_llm_cancel_on_interruption() {
+    struct SlowLLM : public LLMInterface {
+        std::atomic<bool> cancelled{false};
+        std::atomic<int> call_count{0};
+
+        LLMResponse chat(const std::vector<Message>&,
+                         LLMTokenCallback on_token) override
+        {
+            call_count++;
+            // Simulate slow generation — check cancel periodically
+            for (int i = 0; i < 50; i++) {
+                if (cancelled.load()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            on_token("response", true);
+            LLMResponse r;
+            r.text = "response";
+            return r;
+        }
+
+        void cancel() override { cancelled.store(true); }
+    };
+
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    SlowLLM llm;
+
+    // First utterance triggers LLM, then second speech interrupts during LLM
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,   // first speech
+        0.1f, 0.1f, 0.1f, 0.1f,   // silence → STT → LLM starts
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+
+    // Wait for LLM to start processing
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Now push interruption speech while LLM is running
+    std::vector<float> interrupt_probs = {
+        0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f,  // new speech = interruption
+        0.1f, 0.1f, 0.1f, 0.1f,
+    };
+    vad.probs = interrupt_probs;
+    vad.prob_index = 0;
+    auto interrupt_audio = make_audio(interrupt_probs.size());
+    pipeline.push_audio(interrupt_audio.data(), interrupt_audio.size());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    pipeline.stop();
+
+    // LLM cancel() should have been called
+    assert(llm.cancelled.load());
+    printf("  PASS: llm_cancel_on_interruption\n");
+}
+
+// Test: agent_speaking is only set during Thinking state (not during STT).
+// This ensures new speech during STT doesn't trigger false interruptions.
+void test_agent_speaking_not_set_during_stt() {
+    struct TrackingSTT : public STTInterface {
+        std::function<void()> during_stt_callback;
+        TranscriptionResult transcribe(
+            const float*, size_t, int) override
+        {
+            if (during_stt_callback) during_stt_callback();
+            return {"hello", "", 0.9f, 0.0f, 1.0f};
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    TrackingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    MockLLM llm;
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f,
+        0.0f, 0.0f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    bool interrupted_during_stt = false;
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log, &interrupted_during_stt](const PipelineEvent& e) {
+            log.on_event(e);
+            if (e.type == EventType::ResponseInterrupted) {
+                interrupted_during_stt = true;
+            }
+        });
+
+    // During STT, push new speech — should NOT interrupt
+    stt.during_stt_callback = [&pipeline]() {
+        // Simulate new speech arriving during transcription
+        std::vector<float> speech(512 * 4, 0.0f);
+        pipeline.push_audio(speech.data(), speech.size());
+    };
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    pipeline.stop();
+
+    // Should NOT have been interrupted during STT
+    assert(!interrupted_during_stt);
+    printf("  PASS: agent_speaking_not_set_during_stt\n");
+}
+
+// Test: STT interface cancel() method has default no-op implementation.
+void test_stt_cancel_default() {
+    MockSTT stt;
+    // cancel() should be callable without crash (default no-op)
+    stt.cancel();
+    printf("  PASS: stt_cancel_default\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2545,6 +2747,10 @@ int main() {
     test_history_token_limit();
     test_history_mask_tool_results();
     test_speech_enhancement();
+    test_speech_during_stt_queues_not_interrupts();
+    test_llm_cancel_on_interruption();
+    test_agent_speaking_not_set_during_stt();
+    test_stt_cancel_default();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
