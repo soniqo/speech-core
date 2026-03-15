@@ -2586,6 +2586,181 @@ void test_partial_transcription() {
     printf("  PASS: partial_transcription\n");
 }
 
+void test_partial_transcription_batch_fallback() {
+    // Non-streaming STT with emit_partial_transcriptions enabled
+    // Should fall back to batch transcribe, no partials emitted
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    std::vector<float> probs;
+    probs.push_back(0.0f);
+    for (int i = 0; i < 30; i++) probs.push_back(0.9f);
+    for (int i = 0; i < 15; i++) probs.push_back(0.1f);
+    vad.probs = probs;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+    config.emit_partial_transcriptions = true;
+    config.partial_transcription_interval = 0.1f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    size_t chunk = 512 * 5;
+    for (size_t i = 0; i < audio.size(); i += chunk) {
+        size_t n = std::min(chunk, audio.size() - i);
+        pipeline.push_audio(audio.data() + i, n);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // No partials — MockSTT doesn't support streaming
+    assert(!log.has(EventType::PartialTranscription));
+    // But batch transcription still works
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(stt.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: partial_transcription_batch_fallback\n");
+}
+
+void test_partial_transcription_disabled() {
+    // Streaming STT available but emit_partial_transcriptions = false
+    // Should use batch mode, no streaming
+    class StreamingSTT : public STTInterface {
+    public:
+        std::atomic<bool> stream_began{false};
+        std::atomic<int> batch_count{0};
+
+        TranscriptionResult transcribe(
+            const float* /*audio*/, size_t /*length*/, int /*sample_rate*/) override
+        {
+            batch_count++;
+            return {"batch result", "", 0.9f, 0.0f, 1.0f};
+        }
+        int input_sample_rate() const override { return 16000; }
+        bool supports_streaming() const override { return true; }
+        void begin_stream(int) override { stream_began = true; }
+        std::string push_chunk(const float*, size_t) override { return "partial"; }
+        TranscriptionResult end_stream() override { return {"streamed", "", 0.9f, 0.0f, 1.0f}; }
+    };
+
+    StreamingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+    config.emit_partial_transcriptions = false;  // disabled
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Streaming should NOT have been used
+    assert(!stt.stream_began.load());
+    // Batch transcribe was used instead
+    assert(stt.batch_count.load() == 1);
+    assert(!log.has(EventType::PartialTranscription));
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.text_for(EventType::TranscriptionCompleted) == "batch result");
+
+    pipeline.stop();
+    printf("  PASS: partial_transcription_disabled\n");
+}
+
+void test_partial_transcription_cancel_on_stop() {
+    // Pipeline stops mid-stream → cancel_stream() should be called
+    class StreamingSTT : public STTInterface {
+    public:
+        std::atomic<bool> stream_active{false};
+        std::atomic<bool> cancel_called{false};
+
+        TranscriptionResult transcribe(
+            const float*, size_t, int) override
+        {
+            return {"batch", "", 0.9f, 0.0f, 1.0f};
+        }
+        int input_sample_rate() const override { return 16000; }
+        bool supports_streaming() const override { return true; }
+        void begin_stream(int) override { stream_active = true; }
+        std::string push_chunk(const float*, size_t) override {
+            // Slow push to keep stream alive
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return "partial";
+        }
+        TranscriptionResult end_stream() override {
+            stream_active = false;
+            return {"final", "", 0.9f, 0.0f, 1.0f};
+        }
+        void cancel_stream() override {
+            cancel_called = true;
+            stream_active = false;
+        }
+    };
+
+    StreamingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    // Lots of speech — pipeline will be stopped while streaming
+    std::vector<float> probs;
+    probs.push_back(0.0f);
+    for (int i = 0; i < 200; i++) probs.push_back(0.9f);
+    vad.probs = probs;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.emit_partial_transcriptions = true;
+    config.partial_transcription_interval = 0.05f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    size_t chunk = 512 * 10;
+    for (size_t i = 0; i < audio.size() && i < chunk * 5; i += chunk) {
+        size_t n = std::min(chunk, audio.size() - i);
+        pipeline.push_audio(audio.data() + i, n);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+
+    // Wait for streaming to start
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Stop while streaming
+    pipeline.stop();
+
+    // Stream should have been cancelled, not left dangling
+    assert(!stt.stream_active.load());
+
+    printf("  PASS: partial_transcription_cancel_on_stop\n");
+}
+
 // ---------------------------------------------------------------------------
 // Tests for voice pipeline improvements (feat/voice-pipeline-improvements)
 // ---------------------------------------------------------------------------
@@ -2841,6 +3016,9 @@ int main() {
     test_history_mask_tool_results();
     test_speech_enhancement();
     test_partial_transcription();
+    test_partial_transcription_batch_fallback();
+    test_partial_transcription_disabled();
+    test_partial_transcription_cancel_on_stop();
     test_speech_during_stt_queues_not_interrupts();
     test_llm_cancel_on_interruption();
     test_agent_speaking_not_set_during_stt();
