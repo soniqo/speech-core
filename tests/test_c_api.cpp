@@ -278,6 +278,159 @@ void test_load_tools_json_c_api() {
     printf("  PASS: load_tools_json_c_api\n");
 }
 
+void test_config_default_new_fields() {
+    sc_config_t c = sc_config_default();
+    assert(c.max_history_messages == 50);
+    assert(c.max_history_tokens == 0);
+    assert(c.mask_tool_results == true);
+    assert(c.emit_partial_transcriptions == false);
+    assert(c.partial_transcription_interval == 1.0f);
+    printf("  PASS: config_default_new_fields\n");
+}
+
+void test_set_enhancer() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t*, void*) {}, nullptr);
+
+    sc_enhancer_vtable_t enhancer = {};
+    enhancer.enhance = [](void*, const float* input, size_t length, int, float* output) {
+        for (size_t i = 0; i < length; i++) output[i] = input[i];
+    };
+    enhancer.input_sample_rate = [](void*) -> int { return 16000; };
+
+    sc_pipeline_set_enhancer(p, enhancer);
+
+    sc_pipeline_destroy(p);
+    printf("  PASS: set_enhancer\n");
+}
+
+void test_streaming_stt_vtable() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+    stt.begin_stream = [](void*, int) {};
+    stt.push_chunk = [](void*, const float*, size_t) -> sc_partial_result_t {
+        return {"partial", "", 0.8f};
+    };
+    stt.end_stream = [](void*) -> sc_transcription_result_t {
+        return {"final", "", 0.9f, 0.0f, 1.0f};
+    };
+    stt.cancel_stream = [](void*) {};
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t*, void*) {}, nullptr);
+
+    assert(p != nullptr);
+    sc_pipeline_destroy(p);
+    printf("  PASS: streaming_stt_vtable\n");
+}
+
+void test_resume_listening() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+    config.mode = SC_MODE_ECHO;
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t*, void*) {}, nullptr);
+
+    sc_pipeline_start(p);
+    sc_pipeline_push_text(p, "hello");
+    // After push_text in echo mode, pipeline should be in Speaking
+    // resume_listening brings it back
+    sc_pipeline_resume_listening(p);
+
+    sc_pipeline_stop(p);
+    sc_pipeline_destroy(p);
+    printf("  PASS: resume_listening\n");
+}
+
+void test_event_latency_fields() {
+    sc_stt_vtable_t stt = {};
+    stt.transcribe = mock_transcribe;
+    stt.input_sample_rate = mock_stt_sample_rate;
+
+    sc_tts_vtable_t tts = {};
+    tts.synthesize = mock_synthesize;
+    tts.output_sample_rate = mock_tts_sample_rate;
+    tts.cancel = mock_tts_cancel;
+
+    sc_vad_vtable_t vad = {};
+    vad.process_chunk = mock_vad_process;
+    vad.reset = mock_vad_reset;
+    vad.input_sample_rate = mock_vad_sample_rate;
+    vad.chunk_size = mock_vad_chunk_size;
+
+    sc_config_t config = sc_config_default();
+    config.mode = SC_MODE_ECHO;
+
+    float tts_dur = 0.0f;
+
+    sc_pipeline_t p = sc_pipeline_create(
+        stt, tts, nullptr, vad, config,
+        [](const sc_event_t* event, void* ctx) {
+            if (event->type == SC_EVENT_RESPONSE_DONE) {
+                *static_cast<float*>(ctx) = event->tts_duration_ms;
+            }
+        },
+        &tts_dur);
+
+    sc_pipeline_start(p);
+    sc_pipeline_push_text(p, "latency test");
+    // TTS duration should be > 0 on ResponseDone
+    assert(tts_dur > 0.0f);
+
+    sc_pipeline_stop(p);
+    sc_pipeline_destroy(p);
+    printf("  PASS: event_latency_fields\n");
+}
+
 void test_null_safety() {
     // All functions should handle NULL pipeline gracefully
     sc_pipeline_start(nullptr);
@@ -285,8 +438,10 @@ void test_null_safety() {
     sc_pipeline_push_audio(nullptr, nullptr, 0);
     sc_pipeline_push_text(nullptr, nullptr);
     sc_pipeline_clear_tools(nullptr);
+    sc_pipeline_resume_listening(nullptr);
     assert(sc_pipeline_state(nullptr) == SC_STATE_IDLE);
     assert(sc_pipeline_is_running(nullptr) == false);
+    assert(sc_pipeline_load_tools_json(nullptr, nullptr) == -1);
     sc_pipeline_destroy(nullptr);
     printf("  PASS: null_safety\n");
 }
@@ -294,11 +449,16 @@ void test_null_safety() {
 int main() {
     printf("test_c_api:\n");
     test_config_default();
+    test_config_default_new_fields();
     test_create_destroy();
     test_start_stop();
     test_push_text_echo();
     test_add_tool_callback();
     test_load_tools_json_c_api();
+    test_set_enhancer();
+    test_streaming_stt_vtable();
+    test_resume_listening();
+    test_event_latency_fields();
     test_null_safety();
     printf("All C API tests passed.\n");
     return 0;
