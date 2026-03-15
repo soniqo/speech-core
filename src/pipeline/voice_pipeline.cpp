@@ -12,10 +12,12 @@ VoicePipeline::VoicePipeline(
     LLMInterface* llm,
     VADInterface& vad,
     AgentConfig config,
-    EventCallback on_event)
+    EventCallback on_event,
+    EnhancerInterface* enhancer)
     : stt_(stt),
       tts_(tts),
       llm_(llm),
+      enhancer_(enhancer),
       config_(config),
       on_event_(std::move(on_event)),
       turn_detector_(vad, config,
@@ -74,7 +76,15 @@ void VoicePipeline::resume_listening() {
 void VoicePipeline::push_audio(const float* samples, size_t count) {
     if (!running_.load()) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    turn_detector_.push_audio(samples, count);
+
+    if (enhancer_ && count > 0) {
+        enhance_buf_.resize(count);
+        enhancer_->enhance(samples, count, enhancer_->input_sample_rate(),
+                           enhance_buf_.data());
+        turn_detector_.push_audio(enhance_buf_.data(), count);
+    } else {
+        turn_detector_.push_audio(samples, count);
+    }
 }
 
 void VoicePipeline::worker_loop() {

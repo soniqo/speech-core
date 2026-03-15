@@ -42,13 +42,15 @@ public:
     /// @param vad       Voice activity detection implementation
     /// @param config    Pipeline configuration
     /// @param on_event  Event callback
+    /// @param enhancer  Optional speech enhancement (nullable, runs before VAD)
     VoicePipeline(
         STTInterface& stt,
         TTSInterface& tts,
         LLMInterface* llm,
         VADInterface& vad,
         AgentConfig config,
-        EventCallback on_event);
+        EventCallback on_event,
+        EnhancerInterface* enhancer = nullptr);
 
     ~VoicePipeline();
 
@@ -89,6 +91,10 @@ public:
     /// Useful for testing — in production, events arrive asynchronously.
     void wait_idle();
 
+    /// Set an optional speech enhancer (runs before VAD in push_audio).
+    /// Must be called before start(). Pass nullptr to disable.
+    void set_enhancer(EnhancerInterface* enhancer) { enhancer_ = enhancer; }
+
     /// Access the tool registry for adding tools.
     ToolRegistry& tool_registry() { return tool_registry_; }
 
@@ -99,6 +105,7 @@ private:
     STTInterface& stt_;
     TTSInterface& tts_;
     LLMInterface* llm_;
+    EnhancerInterface* enhancer_;
     AgentConfig config_;
     EventCallback on_event_;
 
@@ -112,6 +119,7 @@ private:
     std::atomic<State> state_{State::Idle};
     std::atomic<bool> running_{false};
     mutable std::mutex mutex_;  // protects turn_detector_ and push_audio
+    std::vector<float> enhance_buf_;  // reusable buffer for enhancement output
 
     // Worker thread for STT/LLM/TTS — keeps push_audio non-blocking
     struct PendingUtterance {

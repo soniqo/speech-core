@@ -113,6 +113,21 @@ public:
     }
 };
 
+class CEnhancerAdapter : public EnhancerInterface {
+    sc_enhancer_vtable_t vt_;
+public:
+    explicit CEnhancerAdapter(sc_enhancer_vtable_t vt) : vt_(vt) {}
+
+    void enhance(const float* audio, size_t length, int sample_rate,
+                 float* output) override {
+        vt_.enhance(vt_.context, audio, length, sample_rate, output);
+    }
+
+    int input_sample_rate() const override {
+        return vt_.input_sample_rate(vt_.context);
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Pipeline handle
 // ---------------------------------------------------------------------------
@@ -122,6 +137,7 @@ struct sc_pipeline_s {
     std::unique_ptr<CTTSAdapter> tts;
     std::unique_ptr<CLLMAdapter> llm;
     std::unique_ptr<CVADAdapter> vad;
+    std::unique_ptr<CEnhancerAdapter> enhancer;
     std::unique_ptr<VoicePipeline> pipeline;
     sc_event_fn event_fn;
     void* event_context;
@@ -287,6 +303,13 @@ sc_state_t sc_pipeline_state(sc_pipeline_t pipeline) {
 bool sc_pipeline_is_running(sc_pipeline_t pipeline) {
     if (!pipeline) return false;
     return pipeline->pipeline->is_running();
+}
+
+void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
+                               sc_enhancer_vtable_t enhancer) {
+    if (!pipeline) return;
+    pipeline->enhancer = std::make_unique<CEnhancerAdapter>(enhancer);
+    pipeline->pipeline->set_enhancer(pipeline->enhancer.get());
 }
 
 void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool) {

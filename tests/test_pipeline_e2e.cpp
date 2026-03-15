@@ -2434,6 +2434,66 @@ void test_history_mask_tool_results() {
     printf("  PASS: history_mask_tool_results\n");
 }
 
+// ---------------------------------------------------------------------------
+// Speech enhancement test
+// ---------------------------------------------------------------------------
+
+void test_speech_enhancement() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    // Enhancer that tracks calls and scales audio by 0.5
+    class TestEnhancer : public EnhancerInterface {
+    public:
+        std::atomic<int> call_count{0};
+
+        void enhance(const float* audio, size_t length, int /*sample_rate*/,
+                     float* output) override {
+            call_count++;
+            for (size_t i = 0; i < length; i++) {
+                output[i] = audio[i] * 0.5f;
+            }
+        }
+
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    TestEnhancer enhancer;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); },
+        &enhancer);
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Enhancer should have been called for each push_audio chunk
+    assert(enhancer.call_count.load() > 0);
+
+    // Pipeline should still work normally
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: speech_enhancement\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -2484,6 +2544,7 @@ int main() {
     test_history_message_limit();
     test_history_token_limit();
     test_history_mask_tool_results();
+    test_speech_enhancement();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
