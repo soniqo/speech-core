@@ -1640,6 +1640,7 @@ void test_eager_stt_discard_on_resume() {
     auto audio = make_audio(vad.probs.size());
     pipeline.push_audio(audio.data(), audio.size());
     pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // The eager utterance should be discarded; only the final full utterance
     // should produce a transcription and TTS response.
