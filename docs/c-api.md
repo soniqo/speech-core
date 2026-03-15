@@ -86,6 +86,8 @@ Key fields:
 - `max_history_messages` — max conversation messages to retain (default 50, 0 = unlimited)
 - `max_history_tokens` — max conversation tokens (default 0 = disabled, requires `count_tokens` on LLM vtable)
 - `mask_tool_results` — drop tool messages before conversation messages during trimming (default true)
+- `emit_partial_transcriptions` — emit `SC_EVENT_PARTIAL_TRANSCRIPTION` during speech (default false, requires streaming STT)
+- `partial_transcription_interval` — seconds between streaming chunk pushes (default 1.0)
 - `language` — STT/TTS language hint (empty string = auto-detect)
 - `mode` — `SC_MODE_PIPELINE`, `SC_MODE_TRANSCRIBE_ONLY`, or `SC_MODE_ECHO`
 
@@ -155,6 +157,25 @@ sc_pipeline_clear_tools(pipeline);
 ```
 
 The `handler` callback takes priority over `command` when both are set. The returned `const char*` must remain valid until the next call to the same handler.
+
+### Streaming STT
+
+`sc_stt_vtable_t` supports optional streaming methods for real-time partial transcription. When `begin_stream` is non-NULL and `emit_partial_transcriptions` is enabled, the pipeline feeds audio chunks during speech via `push_chunk()` and emits `SC_EVENT_PARTIAL_TRANSCRIPTION` events.
+
+```c
+sc_stt_vtable_t stt = {
+    .context = my_stt,
+    .transcribe = my_transcribe_fn,          // batch fallback
+    .input_sample_rate = my_sample_rate_fn,
+    // Optional streaming (all NULL = batch only)
+    .begin_stream = my_begin_stream_fn,      // start streaming session
+    .push_chunk = my_push_chunk_fn,          // feed audio chunk, returns partial text
+    .end_stream = my_end_stream_fn,          // finalize, returns final result
+    .cancel_stream = my_cancel_stream_fn     // cancel on interruption
+};
+```
+
+Models that don't support streaming leave these NULL — the pipeline uses batch `transcribe()` as before.
 
 ### Events
 

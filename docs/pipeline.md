@@ -100,6 +100,7 @@ The pipeline emits events via the `EventCallback`:
 |---|---|---|
 | `SpeechStarted` | VAD confirms user speech | `start_time` |
 | `SpeechEnded` | User utterance finalized, STT starting | `start_time` |
+| `PartialTranscription` | Streaming STT partial result during speech | `text` |
 | `TranscriptionCompleted` | STT returns text | `text`, `start_time`, `stt_duration_ms` |
 | `ToolCallStarted` | LLM requested a tool call | `text` (tool name) |
 | `ToolCallCompleted` | Tool execution finished | `text` (output) |
@@ -152,6 +153,10 @@ config.warmup_stt = true;                  // dummy transcription at pipeline st
 config.max_history_messages = 50;          // max messages retained (0 = unlimited)
 config.max_history_tokens = 0;             // max tokens (0 = disabled, needs token counter)
 config.mask_tool_results = true;           // drop tool messages before conversation during trimming
+
+// Streaming STT (partial transcriptions)
+config.emit_partial_transcriptions = false; // opt-in, requires streaming STT model
+config.partial_transcription_interval = 1.0f; // seconds between chunk pushes
 
 config.language = "en";                    // STT/TTS language hint (empty = auto-detect)
 ```
