@@ -34,6 +34,13 @@ struct TranscriptionResult {
     float end_time = 0.0f;
 };
 
+/// Partial transcription result from streaming STT.
+struct PartialResult {
+    std::string text;
+    std::string language;
+    float confidence = 0.0f;
+};
+
 class STTInterface {
 public:
     virtual ~STTInterface() = default;
@@ -63,8 +70,12 @@ public:
     /// Begin a new streaming transcription session.
     virtual void begin_stream(int /*sample_rate*/) {}
 
-    /// Feed an audio chunk during speech. Returns partial text (empty if nothing new).
-    virtual std::string push_chunk(const float* /*audio*/, size_t /*length*/) { return ""; }
+    /// Feed an audio chunk during speech. Returns structured partial result.
+    virtual PartialResult push_chunk(const float* /*audio*/, size_t /*length*/) { return {}; }
+
+    /// Mark a segment boundary without ending the stream.
+    /// Useful for force-split utterances in multi-utterance sessions.
+    virtual void flush_stream() {}
 
     /// Finalize the stream and return the authoritative transcription.
     virtual TranscriptionResult end_stream() { return {}; }

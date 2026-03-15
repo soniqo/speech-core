@@ -2520,9 +2520,9 @@ void test_partial_transcription() {
             push_count = 0;
         }
 
-        std::string push_chunk(const float* /*audio*/, size_t /*length*/) override {
+        PartialResult push_chunk(const float* /*audio*/, size_t /*length*/) override {
             push_count++;
-            return "partial " + std::to_string(push_count.load());
+            return {"partial " + std::to_string(push_count.load()), "", 0.8f};
         }
 
         TranscriptionResult end_stream() override {
@@ -2648,7 +2648,7 @@ void test_partial_transcription_disabled() {
         int input_sample_rate() const override { return 16000; }
         bool supports_streaming() const override { return true; }
         void begin_stream(int) override { stream_began = true; }
-        std::string push_chunk(const float*, size_t) override { return "partial"; }
+        PartialResult push_chunk(const float*, size_t) override { return {"partial", "", 0.8f}; }
         TranscriptionResult end_stream() override { return {"streamed", "", 0.9f, 0.0f, 1.0f}; }
     };
 
@@ -2705,10 +2705,10 @@ void test_partial_transcription_cancel_on_stop() {
         int input_sample_rate() const override { return 16000; }
         bool supports_streaming() const override { return true; }
         void begin_stream(int) override { stream_active = true; }
-        std::string push_chunk(const float*, size_t) override {
+        PartialResult push_chunk(const float*, size_t) override {
             // Slow push to keep stream alive
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return "partial";
+            return {"partial", "", 0.8f};
         }
         TranscriptionResult end_stream() override {
             stream_active = false;

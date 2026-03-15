@@ -105,6 +105,12 @@ typedef struct {
 } sc_transcription_result_t;
 
 typedef struct {
+    const char* text;
+    const char* language;
+    float confidence;
+} sc_partial_result_t;
+
+typedef struct {
     sc_role_t role;
     const char* content;
 } sc_message_t;
@@ -158,7 +164,8 @@ typedef struct {
     int (*input_sample_rate)(void* ctx);
     // Optional streaming methods (all NULL = batch only)
     void (*begin_stream)(void* ctx, int sample_rate);
-    const char* (*push_chunk)(void* ctx, const float* audio, size_t length);
+    sc_partial_result_t (*push_chunk)(void* ctx, const float* audio, size_t length);
+    void (*flush_stream)(void* ctx);
     sc_transcription_result_t (*end_stream)(void* ctx);
     void (*cancel_stream)(void* ctx);
 } sc_stt_vtable_t;

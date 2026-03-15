@@ -42,10 +42,18 @@ public:
         if (vt_.begin_stream) vt_.begin_stream(vt_.context, sample_rate);
     }
 
-    std::string push_chunk(const float* audio, size_t length) override {
-        if (!vt_.push_chunk) return "";
-        const char* r = vt_.push_chunk(vt_.context, audio, length);
-        return r ? std::string(r) : "";
+    PartialResult push_chunk(const float* audio, size_t length) override {
+        if (!vt_.push_chunk) return {};
+        auto r = vt_.push_chunk(vt_.context, audio, length);
+        return {
+            r.text ? std::string(r.text) : "",
+            r.language ? std::string(r.language) : "",
+            r.confidence
+        };
+    }
+
+    void flush_stream() override {
+        if (vt_.flush_stream) vt_.flush_stream(vt_.context);
     }
 
     TranscriptionResult end_stream() override {

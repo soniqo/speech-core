@@ -146,15 +146,16 @@ void VoicePipeline::worker_loop() {
             }
             if (snapshot.size() > stream_offset) {
                 try {
-                    auto partial_text = stt_.push_chunk(
+                    auto partial = stt_.push_chunk(
                         snapshot.data() + stream_offset,
                         snapshot.size() - stream_offset);
                     stream_offset = snapshot.size();
-                    if (!partial_text.empty()) {
-                        PipelineEvent partial;
-                        partial.type = EventType::PartialTranscription;
-                        partial.text = partial_text;
-                        on_event_(partial);
+                    if (!partial.text.empty()) {
+                        PipelineEvent event;
+                        event.type = EventType::PartialTranscription;
+                        event.text = partial.text;
+                        event.confidence = partial.confidence;
+                        on_event_(event);
                     }
                 } catch (...) {}
             }
