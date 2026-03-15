@@ -106,6 +106,7 @@ public:
 struct EventLog {
     std::vector<EventType> types;
     std::vector<std::string> texts;
+    std::vector<float> confidences;
     std::vector<float> stt_durations;
     std::vector<float> llm_durations;
     std::vector<float> tts_durations;
@@ -113,6 +114,7 @@ struct EventLog {
     void on_event(const PipelineEvent& e) {
         types.push_back(e.type);
         texts.push_back(e.text);
+        confidences.push_back(e.confidence);
         stt_durations.push_back(e.stt_duration_ms);
         llm_durations.push_back(e.llm_duration_ms);
         tts_durations.push_back(e.tts_duration_ms);
@@ -153,6 +155,13 @@ struct EventLog {
     float tts_duration_for(EventType t) const {
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return tts_durations[i];
+        }
+        return 0.0f;
+    }
+
+    float confidence_for(EventType t) const {
+        for (size_t i = 0; i < types.size(); i++) {
+            if (types[i] == t) return confidences[i];
         }
         return 0.0f;
     }
@@ -2576,8 +2585,9 @@ void test_partial_transcription() {
     assert(stt.stream_ended.load());
     assert(stt.push_count.load() > 0);
 
-    // Should have partial transcription events
+    // Should have partial transcription events with confidence
     assert(log.has(EventType::PartialTranscription));
+    assert(log.confidence_for(EventType::PartialTranscription) > 0.0f);
     // And the final from end_stream
     assert(log.has(EventType::TranscriptionCompleted));
     assert(log.text_for(EventType::TranscriptionCompleted) == "final transcript");
@@ -2759,6 +2769,69 @@ void test_partial_transcription_cancel_on_stop() {
     assert(!stt.stream_active.load());
 
     printf("  PASS: partial_transcription_cancel_on_stop\n");
+}
+
+void test_partial_transcription_empty_skipped() {
+    // push_chunk returns empty text → no PartialTranscription event emitted
+    class SilentStreamSTT : public STTInterface {
+    public:
+        std::atomic<int> push_count{0};
+
+        TranscriptionResult transcribe(const float*, size_t, int) override {
+            return {"final", "", 0.9f, 0.0f, 1.0f};
+        }
+        int input_sample_rate() const override { return 16000; }
+        bool supports_streaming() const override { return true; }
+        void begin_stream(int) override {}
+        PartialResult push_chunk(const float*, size_t) override {
+            push_count++;
+            return {"", "", 0.0f};  // empty text
+        }
+        TranscriptionResult end_stream() override {
+            return {"final result", "", 0.9f, 0.0f, 1.0f};
+        }
+    };
+
+    SilentStreamSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    std::vector<float> probs;
+    probs.push_back(0.0f);
+    for (int i = 0; i < 40; i++) probs.push_back(0.9f);
+    for (int i = 0; i < 15; i++) probs.push_back(0.1f);
+    vad.probs = probs;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+    config.emit_partial_transcriptions = true;
+    config.partial_transcription_interval = 0.1f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    size_t chunk = 512 * 5;
+    for (size_t i = 0; i < audio.size(); i += chunk) {
+        size_t n = std::min(chunk, audio.size() - i);
+        pipeline.push_audio(audio.data() + i, n);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // push_chunk was called but returned empty — no partials emitted
+    assert(stt.push_count.load() > 0);
+    assert(!log.has(EventType::PartialTranscription));
+    // Final still works
+    assert(log.has(EventType::TranscriptionCompleted));
+
+    pipeline.stop();
+    printf("  PASS: partial_transcription_empty_skipped\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -3019,6 +3092,7 @@ int main() {
     test_partial_transcription_batch_fallback();
     test_partial_transcription_disabled();
     test_partial_transcription_cancel_on_stop();
+    test_partial_transcription_empty_skipped();
     test_speech_during_stt_queues_not_interrupts();
     test_llm_cancel_on_interruption();
     test_agent_speaking_not_set_during_stt();
