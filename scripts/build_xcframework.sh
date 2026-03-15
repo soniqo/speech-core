@@ -4,6 +4,8 @@ set -euo pipefail
 # Build SpeechCore.xcframework from the C++ static library.
 # Produces a zipped xcframework ready for SPM binary target distribution.
 #
+# Platforms: macOS (arm64+x86_64), iOS (arm64), iOS Simulator (arm64+x86_64)
+#
 # Usage:
 #   ./scripts/build_xcframework.sh [--output DIR]
 
@@ -18,32 +20,87 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "==> Building speech-core (arm64)..."
-BUILD_ARM64="${ROOT_DIR}/build-arm64"
-cmake -B "$BUILD_ARM64" -S "$ROOT_DIR" \
+NCPU="$(sysctl -n hw.ncpu)"
+
+# --- macOS ---
+
+echo "==> Building macOS (arm64)..."
+BUILD_MACOS_ARM64="${ROOT_DIR}/build-macos-arm64"
+cmake -B "$BUILD_MACOS_ARM64" -S "$ROOT_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
-cmake --build "$BUILD_ARM64" --config Release -j "$(sysctl -n hw.ncpu)"
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+    -DSPEECH_CORE_BUILD_TESTS=OFF
+cmake --build "$BUILD_MACOS_ARM64" --config Release -j "$NCPU"
 
-echo "==> Building speech-core (x86_64)..."
-BUILD_X86="${ROOT_DIR}/build-x86_64"
-cmake -B "$BUILD_X86" -S "$ROOT_DIR" \
+echo "==> Building macOS (x86_64)..."
+BUILD_MACOS_X86="${ROOT_DIR}/build-macos-x86_64"
+cmake -B "$BUILD_MACOS_X86" -S "$ROOT_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
-cmake --build "$BUILD_X86" --config Release -j "$(sysctl -n hw.ncpu)"
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+    -DSPEECH_CORE_BUILD_TESTS=OFF
+cmake --build "$BUILD_MACOS_X86" --config Release -j "$NCPU"
 
-echo "==> Creating universal binary..."
-BUILD_UNIVERSAL="${ROOT_DIR}/build-universal"
-mkdir -p "$BUILD_UNIVERSAL"
+echo "==> Creating macOS universal binary..."
+BUILD_MACOS_UNIVERSAL="${ROOT_DIR}/build-macos-universal"
+mkdir -p "$BUILD_MACOS_UNIVERSAL"
 lipo -create \
-    "$BUILD_ARM64/libspeech_core.a" \
-    "$BUILD_X86/libspeech_core.a" \
-    -output "$BUILD_UNIVERSAL/libspeech_core.a"
+    "$BUILD_MACOS_ARM64/libspeech_core.a" \
+    "$BUILD_MACOS_X86/libspeech_core.a" \
+    -output "$BUILD_MACOS_UNIVERSAL/libspeech_core.a"
+
+# --- iOS device ---
+
+echo "==> Building iOS device (arm64)..."
+IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+BUILD_IOS="${ROOT_DIR}/build-ios-arm64"
+cmake -B "$BUILD_IOS" -S "$ROOT_DIR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_SYSROOT="$IOS_SDK" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+    -DSPEECH_CORE_BUILD_TESTS=OFF
+cmake --build "$BUILD_IOS" --config Release -j "$NCPU"
+
+# --- iOS Simulator ---
+
+echo "==> Building iOS Simulator (arm64)..."
+SIM_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+BUILD_SIM_ARM64="${ROOT_DIR}/build-sim-arm64"
+cmake -B "$BUILD_SIM_ARM64" -S "$ROOT_DIR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_SYSROOT="$SIM_SDK" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+    -DSPEECH_CORE_BUILD_TESTS=OFF
+cmake --build "$BUILD_SIM_ARM64" --config Release -j "$NCPU"
+
+echo "==> Building iOS Simulator (x86_64)..."
+BUILD_SIM_X86="${ROOT_DIR}/build-sim-x86_64"
+cmake -B "$BUILD_SIM_X86" -S "$ROOT_DIR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+    -DCMAKE_OSX_SYSROOT="$SIM_SDK" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+    -DSPEECH_CORE_BUILD_TESTS=OFF
+cmake --build "$BUILD_SIM_X86" --config Release -j "$NCPU"
+
+echo "==> Creating iOS Simulator universal binary..."
+BUILD_SIM_UNIVERSAL="${ROOT_DIR}/build-sim-universal"
+mkdir -p "$BUILD_SIM_UNIVERSAL"
+lipo -create \
+    "$BUILD_SIM_ARM64/libspeech_core.a" \
+    "$BUILD_SIM_X86/libspeech_core.a" \
+    -output "$BUILD_SIM_UNIVERSAL/libspeech_core.a"
+
+# --- Headers ---
 
 echo "==> Preparing headers..."
-HEADERS_DIR="${BUILD_UNIVERSAL}/Headers"
+HEADERS_DIR="${ROOT_DIR}/build-headers"
 mkdir -p "$HEADERS_DIR"
 cp "$ROOT_DIR/include/speech_core/speech_core_c.h" "$HEADERS_DIR/"
 
@@ -55,13 +112,19 @@ module CSpeechCore {
 }
 EOF
 
+# --- XCFramework ---
+
 echo "==> Creating xcframework..."
 XCFW_PATH="${OUTPUT_DIR}/SpeechCore.xcframework"
 rm -rf "$XCFW_PATH"
 mkdir -p "$OUTPUT_DIR"
 
 xcodebuild -create-xcframework \
-    -library "$BUILD_UNIVERSAL/libspeech_core.a" \
+    -library "$BUILD_MACOS_UNIVERSAL/libspeech_core.a" \
+    -headers "$HEADERS_DIR" \
+    -library "$BUILD_IOS/libspeech_core.a" \
+    -headers "$HEADERS_DIR" \
+    -library "$BUILD_SIM_UNIVERSAL/libspeech_core.a" \
     -headers "$HEADERS_DIR" \
     -output "$XCFW_PATH"
 

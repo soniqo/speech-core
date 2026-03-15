@@ -48,6 +48,9 @@ public:
 
     /// Expected input sample rate in Hz.
     virtual int input_sample_rate() const = 0;
+
+    /// Cancel any in-progress transcription. Thread-safe.
+    virtual void cancel() {}
 };
 
 // ---------------------------------------------------------------------------
