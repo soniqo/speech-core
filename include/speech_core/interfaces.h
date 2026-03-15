@@ -49,6 +49,9 @@ public:
     /// Expected input sample rate in Hz.
     virtual int input_sample_rate() const = 0;
 
+    /// Cancel any in-progress transcription. Thread-safe.
+    virtual void cancel() {}
+
     // --- Optional streaming interface ---
     // Override these to enable real-time partial transcription.
     // When supports_streaming() returns true, the pipeline feeds audio
