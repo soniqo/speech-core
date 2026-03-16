@@ -3039,6 +3039,122 @@ void test_stt_cancel_default() {
     printf("  PASS: stt_cancel_default\n");
 }
 
+// Test: low-confidence transcriptions are filtered out when threshold is set.
+void test_confidence_filtering() {
+    MockSTT stt;
+    stt.next_confidence = 0.3f;  // low confidence
+    MockTTS tts;
+    MockVAD vad;
+    MockLLM llm;
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f,
+        0.0f, 0.0f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.min_transcription_confidence = 0.5f;  // filter below 0.5
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // STT ran but low confidence should have prevented LLM/TTS
+    assert(stt.call_count >= 1);
+    assert(llm.call_count == 0);  // LLM should NOT have been called
+    assert(tts.call_count == 0);  // TTS should NOT have been called
+
+    pipeline.stop();
+    printf("  PASS: confidence_filtering\n");
+}
+
+// Test: high-confidence transcription passes through normally.
+void test_confidence_passes_above_threshold() {
+    MockSTT stt;
+    stt.next_confidence = 0.9f;  // high confidence
+    MockTTS tts;
+    MockVAD vad;
+    MockLLM llm;
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f,
+        0.0f, 0.0f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    config.min_transcription_confidence = 0.5f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // High confidence — LLM and TTS should have been called
+    assert(stt.call_count >= 1);
+    assert(llm.call_count == 1);
+    assert(tts.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: confidence_passes_above_threshold\n");
+}
+
+// Test: confidence filtering disabled when threshold is 0 (default).
+void test_confidence_disabled_by_default() {
+    MockSTT stt;
+    stt.next_confidence = 0.1f;  // very low confidence
+    MockTTS tts;
+    MockVAD vad;
+    MockLLM llm;
+
+    vad.probs = {
+        0.0f,
+        0.8f, 0.8f, 0.8f, 0.8f,
+        0.1f, 0.1f, 0.1f, 0.1f,
+        0.0f, 0.0f,
+    };
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Pipeline;
+    config.vad.min_speech_duration = 0.064f;
+    // min_transcription_confidence defaults to 0.0 (disabled)
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, &llm, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+
+    // Default threshold 0 — everything passes through
+    assert(llm.call_count == 1);
+    assert(tts.call_count == 1);
+
+    pipeline.stop();
+    printf("  PASS: confidence_disabled_by_default\n");
+}
+
 int main() {
     printf("test_pipeline_e2e:\n");
     test_echo_mode_e2e();
@@ -3099,6 +3215,9 @@ int main() {
     test_llm_cancel_on_interruption();
     test_agent_speaking_not_set_during_stt();
     test_stt_cancel_default();
+    test_confidence_filtering();
+    test_confidence_passes_above_threshold();
+    test_confidence_disabled_by_default();
     printf("All pipeline E2E tests passed.\n");
     return 0;
 }
