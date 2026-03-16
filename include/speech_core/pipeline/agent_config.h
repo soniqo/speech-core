@@ -73,6 +73,11 @@ struct AgentConfig {
     /// Interval between partial transcription attempts (seconds).
     float partial_transcription_interval = 1.0f;
 
+    /// Minimum STT confidence to accept a transcription (0.0–1.0).
+    /// Transcriptions below this threshold are discarded (treated as noise).
+    /// 0.0 = disabled (accept everything, backward compatible).
+    float min_transcription_confidence = 0.0f;
+
     /// Language hint for STT/TTS (e.g. "en", "zh", "de"). Empty = auto-detect.
     std::string language;
 

@@ -229,13 +229,17 @@ void VoicePipeline::worker_loop() {
                 on_event_(transcript_event);
             }
 
-            if (!invalidated && !result.text.empty()) {
+            // Filter low-confidence transcriptions (noise, coughs, mic bumps)
+            bool low_confidence = config_.min_transcription_confidence > 0 &&
+                                  result.confidence < config_.min_transcription_confidence;
+
+            if (!invalidated && !result.text.empty() && !low_confidence) {
                 process_utterance(result.text, result.language, stt_ms);
             } else if (invalidated) {
                 // Eager utterance discarded — turn detector is tracking
                 // active speech, state is already Listening.
             } else {
-                // Empty transcription (noise/breath) — resume idle
+                // Empty/low-confidence transcription — resume idle
                 state_.store(State::Idle);
                 std::lock_guard<std::mutex> lock(mutex_);
                 turn_detector_.reset();
