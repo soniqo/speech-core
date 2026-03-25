@@ -2504,6 +2504,235 @@ void test_speech_enhancement() {
 }
 
 // ---------------------------------------------------------------------------
+// Echo cancellation test
+// ---------------------------------------------------------------------------
+
+void test_echo_cancellation() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    class TestAEC : public EchoCancellerInterface {
+    public:
+        std::atomic<int> cancel_count{0};
+        std::atomic<int> reference_count{0};
+
+        void feed_reference(const float* /*samples*/, size_t /*length*/) override {
+            reference_count++;
+        }
+
+        void cancel_echo(const float* input, size_t length, float* output) override {
+            cancel_count++;
+            // Pass through with 0.5x scale (simulates echo removal)
+            for (size_t i = 0; i < length; i++) {
+                output[i] = input[i] * 0.5f;
+            }
+        }
+
+        int input_sample_rate() const override { return 16000; }
+        void reset() override {}
+    };
+
+    TestAEC aec;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.set_echo_canceller(&aec);
+    pipeline.start();
+
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // AEC cancel_echo should have been called for each push_audio chunk
+    assert(aec.cancel_count.load() > 0);
+
+    // TTS produced audio → reference should have been fed
+    assert(aec.reference_count.load() > 0);
+
+    // Pipeline still works normally
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: echo_cancellation\n");
+}
+
+void test_echo_cancellation_with_enhancer() {
+    // Both AEC and enhancer set — verify processing order: AEC → enhance → VAD
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    // AEC that scales by 0.5
+    class OrderAEC : public EchoCancellerInterface {
+    public:
+        std::atomic<int> call_order{0};
+        int* counter;
+        OrderAEC(int* c) : counter(c) {}
+        void feed_reference(const float*, size_t) override {}
+        void cancel_echo(const float* input, size_t length, float* output) override {
+            call_order = ++(*counter);
+            for (size_t i = 0; i < length; i++) output[i] = input[i] * 0.5f;
+        }
+        int input_sample_rate() const override { return 16000; }
+        void reset() override {}
+    };
+
+    // Enhancer that scales by 0.5
+    class OrderEnhancer : public EnhancerInterface {
+    public:
+        std::atomic<int> call_order{0};
+        int* counter;
+        OrderEnhancer(int* c) : counter(c) {}
+        void enhance(const float* audio, size_t length, int, float* output) override {
+            call_order = ++(*counter);
+            for (size_t i = 0; i < length; i++) output[i] = audio[i] * 0.5f;
+        }
+        int input_sample_rate() const override { return 16000; }
+    };
+
+    int call_counter = 0;
+    OrderAEC aec(&call_counter);
+    OrderEnhancer enhancer(&call_counter);
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); },
+        &enhancer);
+
+    pipeline.set_echo_canceller(&aec);
+    pipeline.start();
+
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Both should have been called
+    assert(aec.call_order.load() > 0);
+    assert(enhancer.call_order.load() > 0);
+    // AEC must run before enhancer
+    assert(aec.call_order.load() < enhancer.call_order.load());
+
+    pipeline.stop();
+    printf("  PASS: echo_cancellation_with_enhancer\n");
+}
+
+void test_echo_cancellation_no_reference_transcribe_only() {
+    // TranscribeOnly mode — no TTS, so no reference fed
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    class TestAEC : public EchoCancellerInterface {
+    public:
+        std::atomic<int> cancel_count{0};
+        std::atomic<int> reference_count{0};
+        void feed_reference(const float*, size_t) override { reference_count++; }
+        void cancel_echo(const float* input, size_t length, float* output) override {
+            cancel_count++;
+            for (size_t i = 0; i < length; i++) output[i] = input[i];
+        }
+        int input_sample_rate() const override { return 16000; }
+        void reset() override {}
+    };
+
+    TestAEC aec;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.set_echo_canceller(&aec);
+    pipeline.start();
+
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // cancel_echo runs on push_audio
+    assert(aec.cancel_count.load() > 0);
+    // No TTS in TranscribeOnly → no reference fed
+    assert(aec.reference_count.load() == 0);
+
+    pipeline.stop();
+    printf("  PASS: echo_cancellation_no_reference_transcribe_only\n");
+}
+
+void test_echo_cancellation_reset_on_start() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+    vad.probs = {0.0f};
+
+    class TestAEC : public EchoCancellerInterface {
+    public:
+        std::atomic<int> reset_count{0};
+        void feed_reference(const float*, size_t) override {}
+        void cancel_echo(const float* input, size_t length, float* output) override {
+            for (size_t i = 0; i < length; i++) output[i] = input[i];
+        }
+        int input_sample_rate() const override { return 16000; }
+        void reset() override { reset_count++; }
+    };
+
+    TestAEC aec;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.set_echo_canceller(&aec);
+
+    pipeline.start();
+    assert(aec.reset_count.load() == 1);
+
+    pipeline.stop();
+    printf("  PASS: echo_cancellation_reset_on_start\n");
+}
+
+// ---------------------------------------------------------------------------
 // Partial transcription test
 // ---------------------------------------------------------------------------
 
@@ -3206,6 +3435,10 @@ int main() {
     test_history_token_limit();
     test_history_mask_tool_results();
     test_speech_enhancement();
+    test_echo_cancellation();
+    test_echo_cancellation_with_enhancer();
+    test_echo_cancellation_no_reference_transcribe_only();
+    test_echo_cancellation_reset_on_start();
     test_partial_transcription();
     test_partial_transcription_batch_fallback();
     test_partial_transcription_disabled();

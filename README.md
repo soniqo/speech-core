@@ -21,6 +21,7 @@ ML inference is **not** in this library. Consumers implement the abstract interf
                     │   LLMInterface            │  Abstract language model
                     │   VADInterface            │  Abstract voice activity detection
                     │   EnhancerInterface       │  Abstract speech enhancement
+                    │   EchoCancellerInterface  │  Abstract echo cancellation (AEC)
                     │                           │
                     └───────────────────────────┘
 ```

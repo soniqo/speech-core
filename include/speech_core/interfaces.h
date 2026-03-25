@@ -195,4 +195,44 @@ public:
     virtual int input_sample_rate() const = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Echo Cancellation
+// ---------------------------------------------------------------------------
+
+/// Acoustic echo cancellation interface.
+///
+/// The pipeline feeds TTS output as far-end reference via feed_reference(),
+/// then runs cancel_echo() on mic input before VAD:
+///
+///   TTS output ──► feed_reference()
+///   Mic input  ──► cancel_echo() ──► clean signal ──► enhance ──► VAD ──► STT
+///
+/// Implementations may use SpeexDSP, WebRTC AEC, or platform-native AEC.
+/// The interface is intentionally simple — frame alignment, sample rate
+/// conversion, and internal buffering are the implementation's responsibility.
+class EchoCancellerInterface {
+public:
+    virtual ~EchoCancellerInterface() = default;
+
+    /// Feed far-end (TTS playback) reference samples.
+    /// Called from the TTS synthesis callback on the worker thread.
+    /// Thread-safe: may be called concurrently with cancel_echo().
+    /// @param samples  PCM Float32 at input_sample_rate()
+    /// @param length   Number of samples
+    virtual void feed_reference(const float* samples, size_t length) = 0;
+
+    /// Remove echo from near-end (mic) audio.
+    /// Called from push_audio() on the audio thread.
+    /// @param input   Mic input PCM Float32
+    /// @param length  Number of samples
+    /// @param output  Pre-allocated output buffer (same length)
+    virtual void cancel_echo(const float* input, size_t length, float* output) = 0;
+
+    /// Expected sample rate in Hz (must match both mic and reference).
+    virtual int input_sample_rate() const = 0;
+
+    /// Reset internal state (e.g. on pipeline start/stop).
+    virtual void reset() = 0;
+};
+
 }  // namespace speech_core

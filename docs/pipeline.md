@@ -9,10 +9,14 @@ The `VoicePipeline` is the central orchestrator. It connects STT, TTS, LLM, and 
 Full voice agent loop:
 
 ```
-audio → VAD → STT → [tools?] → LLM → TTS → audio
+audio → [AEC] → [enhance] → VAD → STT → [tools?] → LLM → TTS → audio
+                                                              │
+                                                              └──► AEC reference
 ```
 
-1. VAD detects user speech via `TurnDetector`
+1. Optional echo cancellation removes TTS playback from mic signal
+2. Optional speech enhancement (denoising) runs on the clean signal
+3. VAD detects user speech via `TurnDetector`
 2. On speech end, the buffered audio is sent to `STTInterface.transcribe()`
 3. Transcript + conversation history are sent to `LLMInterface.chat()`
 4. If the LLM returns tool calls, the pipeline executes them, injects results, and calls the LLM again

@@ -122,6 +122,15 @@ typedef struct {
     int (*input_sample_rate)(void* ctx);
 } sc_enhancer_vtable_t;
 
+typedef struct {
+    void* context;
+    void (*feed_reference)(void* ctx, const float* samples, size_t length);
+    void (*cancel_echo)(void* ctx, const float* input, size_t length,
+                        float* output);
+    int (*input_sample_rate)(void* ctx);
+    void (*reset)(void* ctx);
+} sc_echo_canceller_vtable_t;
+
 // ---------------------------------------------------------------------------
 // Tool definition (callback-based, no popen)
 // ---------------------------------------------------------------------------
@@ -249,6 +258,12 @@ bool sc_pipeline_is_running(sc_pipeline_t pipeline);
 /// Must be called before sc_pipeline_start(). Pass NULL to disable.
 void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
                                sc_enhancer_vtable_t enhancer);
+
+/// Set an optional echo canceller (runs before enhancer/VAD on every push_audio).
+/// TTS output is automatically fed as far-end reference during synthesis.
+/// Must be called before sc_pipeline_start().
+void sc_pipeline_set_echo_canceller(sc_pipeline_t pipeline,
+                                     sc_echo_canceller_vtable_t aec);
 
 /// Register a tool with platform callback handler.
 /// Must be called before sc_pipeline_start().
