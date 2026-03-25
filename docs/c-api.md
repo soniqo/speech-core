@@ -195,6 +195,23 @@ Event types: `SC_EVENT_SESSION_CREATED`, `SC_EVENT_SPEECH_STARTED`, `SC_EVENT_SP
 
 All pointers in `sc_event_t` are valid only during the callback. Copy if needed.
 
+### Echo cancellation
+
+`sc_pipeline_set_echo_canceller()` sets an optional echo canceller that runs before enhancement and VAD on every `push_audio()`. TTS output is automatically fed as far-end reference during synthesis.
+
+```c
+sc_echo_canceller_vtable_t aec = {
+    .context = my_aec_state,
+    .feed_reference = my_feed_reference_fn,   // called with TTS chunks
+    .cancel_echo = my_cancel_echo_fn,         // called on mic input
+    .input_sample_rate = my_aec_sample_rate_fn,
+    .reset = my_aec_reset_fn
+};
+sc_pipeline_set_echo_canceller(pipeline, aec);
+```
+
+Processing chain: `mic → AEC → enhance → VAD → STT`. Implementations can use SpeexDSP, WebRTC AEC, or platform-native echo cancellation.
+
 ## Null safety
 
 All API functions handle `NULL` pipeline gracefully — they are no-ops. `sc_pipeline_state(NULL)` returns `SC_STATE_IDLE`, `sc_pipeline_is_running(NULL)` returns `false`. `sc_pipeline_clear_tools(NULL)` and `sc_pipeline_load_tools_json(NULL, ...)` are safe no-ops.
