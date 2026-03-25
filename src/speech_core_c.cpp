@@ -165,6 +165,28 @@ public:
     }
 };
 
+class CEchoCancellerAdapter : public EchoCancellerInterface {
+    sc_echo_canceller_vtable_t vt_;
+public:
+    explicit CEchoCancellerAdapter(sc_echo_canceller_vtable_t vt) : vt_(vt) {}
+
+    void feed_reference(const float* samples, size_t length) override {
+        vt_.feed_reference(vt_.context, samples, length);
+    }
+
+    void cancel_echo(const float* input, size_t length, float* output) override {
+        vt_.cancel_echo(vt_.context, input, length, output);
+    }
+
+    int input_sample_rate() const override {
+        return vt_.input_sample_rate(vt_.context);
+    }
+
+    void reset() override {
+        if (vt_.reset) vt_.reset(vt_.context);
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Pipeline handle
 // ---------------------------------------------------------------------------
@@ -175,6 +197,7 @@ struct sc_pipeline_s {
     std::unique_ptr<CLLMAdapter> llm;
     std::unique_ptr<CVADAdapter> vad;
     std::unique_ptr<CEnhancerAdapter> enhancer;
+    std::unique_ptr<CEchoCancellerAdapter> echo_canceller;
     std::unique_ptr<VoicePipeline> pipeline;
     sc_event_fn event_fn;
     void* event_context;
@@ -352,6 +375,13 @@ void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
     if (!pipeline) return;
     pipeline->enhancer = std::make_unique<CEnhancerAdapter>(enhancer);
     pipeline->pipeline->set_enhancer(pipeline->enhancer.get());
+}
+
+void sc_pipeline_set_echo_canceller(sc_pipeline_t pipeline,
+                                     sc_echo_canceller_vtable_t aec) {
+    if (!pipeline) return;
+    pipeline->echo_canceller = std::make_unique<CEchoCancellerAdapter>(aec);
+    pipeline->pipeline->set_echo_canceller(pipeline->echo_canceller.get());
 }
 
 void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool) {

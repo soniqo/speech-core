@@ -2504,6 +2504,75 @@ void test_speech_enhancement() {
 }
 
 // ---------------------------------------------------------------------------
+// Echo cancellation test
+// ---------------------------------------------------------------------------
+
+void test_echo_cancellation() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    vad.probs = {
+        0.0f,
+        0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
+        0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f
+    };
+
+    class TestAEC : public EchoCancellerInterface {
+    public:
+        std::atomic<int> cancel_count{0};
+        std::atomic<int> reference_count{0};
+
+        void feed_reference(const float* /*samples*/, size_t /*length*/) override {
+            reference_count++;
+        }
+
+        void cancel_echo(const float* input, size_t length, float* output) override {
+            cancel_count++;
+            // Pass through with 0.5x scale (simulates echo removal)
+            for (size_t i = 0; i < length; i++) {
+                output[i] = input[i] * 0.5f;
+            }
+        }
+
+        int input_sample_rate() const override { return 16000; }
+        void reset() override {}
+    };
+
+    TestAEC aec;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::Echo;
+    config.vad.min_speech_duration = 0.064f;
+    config.post_playback_guard = 0;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.set_echo_canceller(&aec);
+    pipeline.start();
+
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    pipeline.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // AEC cancel_echo should have been called for each push_audio chunk
+    assert(aec.cancel_count.load() > 0);
+
+    // TTS produced audio → reference should have been fed
+    assert(aec.reference_count.load() > 0);
+
+    // Pipeline still works normally
+    assert(log.has(EventType::TranscriptionCompleted));
+    assert(log.has(EventType::ResponseDone));
+
+    pipeline.stop();
+    printf("  PASS: echo_cancellation\n");
+}
+
+// ---------------------------------------------------------------------------
 // Partial transcription test
 // ---------------------------------------------------------------------------
 
@@ -3090,6 +3159,7 @@ int main() {
     test_history_token_limit();
     test_history_mask_tool_results();
     test_speech_enhancement();
+    test_echo_cancellation();
     test_partial_transcription();
     test_partial_transcription_batch_fallback();
     test_partial_transcription_disabled();

@@ -95,6 +95,11 @@ public:
     /// Must be called before start(). Pass nullptr to disable.
     void set_enhancer(EnhancerInterface* enhancer) { enhancer_ = enhancer; }
 
+    /// Set an optional echo canceller (runs before enhancer/VAD in push_audio).
+    /// TTS output is automatically fed as reference during synthesis.
+    /// Must be called before start(). Pass nullptr to disable.
+    void set_echo_canceller(EchoCancellerInterface* aec) { echo_canceller_ = aec; }
+
     /// Access the tool registry for adding tools.
     ToolRegistry& tool_registry() { return tool_registry_; }
 
@@ -106,6 +111,7 @@ private:
     TTSInterface& tts_;
     LLMInterface* llm_;
     EnhancerInterface* enhancer_;
+    EchoCancellerInterface* echo_canceller_ = nullptr;
     AgentConfig config_;
     EventCallback on_event_;
 
@@ -120,6 +126,7 @@ private:
     std::atomic<bool> running_{false};
     mutable std::mutex mutex_;  // protects turn_detector_ and push_audio
     std::vector<float> enhance_buf_;  // reusable buffer for enhancement output
+    std::vector<float> aec_buf_;      // reusable buffer for echo cancellation output
 
     // Worker thread for STT/LLM/TTS — keeps push_audio non-blocking
     struct PendingUtterance {

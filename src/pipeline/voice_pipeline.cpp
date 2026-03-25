@@ -36,6 +36,7 @@ void VoicePipeline::start() {
         std::lock_guard<std::mutex> lock(mutex_);
         running_.store(true);
         state_.store(State::Idle);
+        if (echo_canceller_) echo_canceller_->reset();
     }
     worker_thread_ = std::thread(&VoicePipeline::worker_loop, this);
 }
@@ -77,14 +78,24 @@ void VoicePipeline::push_audio(const float* samples, size_t count) {
     if (!running_.load()) return;
     std::lock_guard<std::mutex> lock(mutex_);
 
+    const float* audio = samples;
+
+    // Echo cancellation (if set) — removes TTS playback from mic signal
+    if (echo_canceller_ && count > 0) {
+        aec_buf_.resize(count);
+        echo_canceller_->cancel_echo(audio, count, aec_buf_.data());
+        audio = aec_buf_.data();
+    }
+
+    // Speech enhancement (if set) — denoising after AEC
     if (enhancer_ && count > 0) {
         enhance_buf_.resize(count);
-        enhancer_->enhance(samples, count, enhancer_->input_sample_rate(),
+        enhancer_->enhance(audio, count, enhancer_->input_sample_rate(),
                            enhance_buf_.data());
-        turn_detector_.push_audio(enhance_buf_.data(), count);
-    } else {
-        turn_detector_.push_audio(samples, count);
+        audio = enhance_buf_.data();
     }
+
+    turn_detector_.push_audio(audio, count);
 }
 
 void VoicePipeline::worker_loop() {
@@ -487,6 +498,11 @@ void VoicePipeline::speak(const std::string& text, const std::string& language,
                 total_samples += emit_length;
 
                 if (emit_length > 0) {
+                    // Feed TTS audio as far-end reference for echo cancellation
+                    if (echo_canceller_) {
+                        echo_canceller_->feed_reference(samples, emit_length);
+                    }
+
                     auto pcm = PCMCodec::float_to_pcm16(samples, emit_length);
                     PipelineEvent audio_event;
                     audio_event.type = EventType::ResponseAudioDelta;
