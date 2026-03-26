@@ -277,9 +277,8 @@ void TurnDetector::flush() {
 
 void TurnDetector::reset() {
     streaming_vad_.reset();
-    // Do NOT reset vad_ model state — its internal RNN needs ~0.5-1s to
-    // re-warm after reset, causing missed speech right after resume.
-    // Only reset turn-tracking state.
+    // Do NOT reset vad_ model state — its internal LSTM needs continuous
+    // context to detect speech/silence transitions accurately.
     utterance_buffer_.clear();
     // Keep pre_speech_ring_ — it holds recent audio that may overlap with
     // the onset of the next utterance. Clearing it after resume_listening()

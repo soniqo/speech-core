@@ -250,10 +250,15 @@ void VoicePipeline::worker_loop() {
                 // Eager utterance discarded — turn detector is tracking
                 // active speech, state is already Listening.
             } else {
-                // Empty/low-confidence transcription — resume idle
+                // Empty/low-confidence transcription — resume idle.
+                // Reset turn detector and agent_speaking so VAD
+                // can detect new speech immediately.
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    turn_detector_.set_agent_speaking(false);
+                    turn_detector_.reset();
+                }
                 state_.store(State::Idle);
-                std::lock_guard<std::mutex> lock(mutex_);
-                turn_detector_.reset();
             }
         } catch (const std::exception& ex) {
             emit_error(std::string("STT failed: ") + ex.what());

@@ -81,6 +81,28 @@ void test_reset() {
     printf("  PASS: reset\n");
 }
 
+/// Regression: after reset during active speech, silence should not
+/// produce false SpeechStarted events.
+void test_no_false_start_after_reset() {
+    StreamingVAD vad(VADConfig::silero_default(), 0.032f);
+
+    // Drive into speech state
+    for (int i = 0; i < 15; i++) vad.process(0.9f);
+
+    // Reset (simulates resume_listening after TTS)
+    vad.reset();
+
+    // Feed silence — should NOT produce SpeechStarted
+    for (int i = 0; i < 50; i++) {
+        auto events = vad.process(0.1f);
+        for (auto& e : events) {
+            assert(e.type != VADEvent::SpeechStarted &&
+                   "False SpeechStarted after reset with silence input");
+        }
+    }
+    printf("  PASS: no_false_start_after_reset\n");
+}
+
 int main() {
     printf("test_streaming_vad:\n");
     test_silence_only();
@@ -88,6 +110,7 @@ int main() {
     test_false_alarm();
     test_flush_active_speech();
     test_reset();
+    test_no_false_start_after_reset();
     printf("All streaming VAD tests passed.\n");
     return 0;
 }
