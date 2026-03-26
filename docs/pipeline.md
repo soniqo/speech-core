@@ -47,7 +47,7 @@ Five states with automatic transitions:
 |---|---|---|
 | **Idle** | Waiting for user speech | Listening (on VAD speech_started) |
 | **Listening** | User is speaking, audio being buffered | Transcribing (on VAD speech_ended) |
-| **Transcribing** | STT is processing the utterance | Thinking or Idle |
+| **Transcribing** | STT is processing the utterance | Thinking, Speaking (echo mode), or Idle (empty STT) |
 | **Thinking** | LLM is generating a response | Speaking or Idle |
 | **Speaking** | TTS audio is being emitted / waiting for playback to finish | Idle (on resume_listening) or Listening (on interruption) |
 
@@ -77,6 +77,10 @@ When the agent is speaking (`agent_speaking_ == true`) and the user starts talki
 **Retroactive interruption**: if the user is already speaking when `set_agent_speaking(true)` is called (e.g., user spoke during STT processing after an eager utterance), the deferred interruption timer starts immediately.
 
 **Interruption recovery**: if the user stops speaking within `interruption_recovery_timeout` (default 0.4s), an `InterruptionRecovered` event is emitted instead of processing the utterance — allowing the platform to resume playback.
+
+### Empty / low-confidence STT recovery
+
+When STT returns empty text or confidence below `min_transcription_confidence`, the pipeline resets to Idle and clears `agent_speaking` + turn detector state. Without this, queued speech during TTS playback could produce an empty STT result that leaves the pipeline stuck — `agent_speaking` stays true and the turn detector has stale speech state, preventing new speech detection.
 
 ## Conversation Context
 
