@@ -168,6 +168,10 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
 See [`docs/models.md`](docs/models.md) for the full test setup.
 
+### Examples
+
+Add `-DSPEECH_CORE_BUILD_EXAMPLES=ON` to build the Linux example: a small C ABI library (`libspeech.so`), an ALSA demo, three CLI tools (`speech_transcribe`, `speech_synthesize`, `speech_phonemize`), and a C-ABI integration test. See [`examples/linux/README.md`](examples/linux/README.md) for details.
+
 ## Design Principles
 
 - **ML inference is opt-in.** The orchestration core is pure C++17 with no ML deps. ONNX Runtime models are compiled in only when explicitly requested.

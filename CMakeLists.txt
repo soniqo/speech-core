@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
+option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 
 # ---------------------------------------------------------------------------
 # speech_core — orchestration core (always built, no ML deps)
@@ -137,3 +138,16 @@ install(TARGETS ${_install_targets}
 install(DIRECTORY include/speech_core
     DESTINATION include
 )
+
+# ---------------------------------------------------------------------------
+# Examples (optional)
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_BUILD_EXAMPLES)
+    if(NOT SPEECH_CORE_WITH_ONNX)
+        message(FATAL_ERROR
+            "SPEECH_CORE_BUILD_EXAMPLES=ON requires SPEECH_CORE_WITH_ONNX=ON"
+            " (the examples consume speech_core_models)")
+    endif()
+    add_subdirectory(examples/linux)
+endif()
