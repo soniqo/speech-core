@@ -79,3 +79,55 @@ jobs:
         # Integration tests (test_models, speech_linux_pipeline) skip
         # cleanly when SPEECH_MODEL_DIR isn't set; everything else runs.
         run: ctest --test-dir build --output-on-failure
+
+  # aarch64 cross-compile — proves the Yocto/automotive path still compiles
+  # after every change. Build-only (GitHub runners are x86_64; we don't try
+  # to execute the cross binaries). The Yocto-specific toolchain file reads
+  # $CC/$CXX/$SDKTARGETSYSROOT from environment-setup-* scripts; on CI we
+  # instead pass the cross compilers directly to CMake.
+  linux-examples-aarch64:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              g++-aarch64-linux-gnu \
+              gcc-aarch64-linux-gnu \
+              cmake \
+              curl \
+              ca-certificates
+
+      - name: Download ONNX Runtime (aarch64)
+        run: |
+          ./examples/linux/setup_linux.sh aarch64
+          file ort-linux/lib/libonnxruntime.so | grep -q "aarch64"
+
+      - name: Configure
+        run: |
+          cmake -B build-aarch64 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+              -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+              -DCMAKE_SYSTEM_NAME=Linux \
+              -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_TESTS=OFF \
+              -DSPEECH_LINUX_BUILD_DEMO=OFF \
+              -DSPEECH_LINUX_BUILD_TESTS=OFF \
+              -DORT_DIR=ort-linux
+
+      - name: Build
+        run: cmake --build build-aarch64 --parallel
+
+      - name: Verify aarch64 artefacts
+        run: |
+          file build-aarch64/libspeech_core.a
+          file build-aarch64/libspeech_core_models.a
+          file build-aarch64/examples/linux/libspeech.so | tee /dev/stderr | grep -q "aarch64"
+          file build-aarch64/examples/linux/speech_transcribe | tee /dev/stderr | grep -q "aarch64"

@@ -40,6 +40,16 @@ docker run --rm -v "$(pwd)/scripts/models:/models" speech-core-linux \
 
 The same path runs in CI via `.github/workflows/ci.yml`'s `linux-examples` job on every PR.
 
+## What CI does and does not cover
+
+| Path | Where |
+|---|---|
+| Orchestration build + unit tests on macOS + Linux | `unit-tests` job |
+| Full ONNX-on + examples build on Linux x86_64, libspeech.so + ALSA linkage, ctest | `linux-examples` job |
+| aarch64 cross-compile (build-only, validates the Yocto/automotive toolchain path) | `linux-examples-aarch64` job |
+| **Manual pre-release** — speech_demo against a real ALSA capture device | not automatable on hosted runners |
+| **Manual pre-release** — QNN provider on Qualcomm hardware (SA8295P / SA8255P) | needs target hardware |
+
 Build artefacts:
 
 | Target | What |
