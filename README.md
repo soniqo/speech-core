@@ -152,7 +152,21 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build
 ```
 
+This builds two static libraries:
+
+- `libspeech_core.a` — orchestration core, no ML deps
+- `libspeech_core_models.a` — ONNX model wrappers, links `speech_core` + `onnxruntime`
+
 `ORT_DIR` must contain `include/onnxruntime_c_api.h` and a platform shared library (`libonnxruntime.dylib` on macOS, `libonnxruntime.so` on Linux, `lib/${ANDROID_ABI}/libonnxruntime.so` on Android).
+
+To run the model integration tests (requires ~1.2 GB of model files):
+
+```bash
+scripts/download_models.sh
+SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
+```
+
+See [`docs/models.md`](docs/models.md) for the full test setup.
 
 ## Design Principles
 

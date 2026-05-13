@@ -42,7 +42,7 @@ float prob = vad.process_chunk(samples_512, 512);  // → [0, 1]
 - 512 samples per chunk (32 ms @ 16 kHz)
 - LSTM state carried across chunks; `reset()` clears it between sessions
 - Returns speech probability; feed to `StreamingVAD` for start/end events
-- Model: [Silero VAD v5](https://github.com/snakers4/silero-vad), ~2 MB
+- Model files: [aufklarer/Silero-VAD-v5-ONNX](https://huggingface.co/aufklarer/Silero-VAD-v5-ONNX) — `silero-vad.onnx` (~2 MB)
 
 ## ParakeetStt
 
@@ -63,7 +63,7 @@ auto result = stt.transcribe(audio, length, 16000);
 - Greedy TDT decoding with per-frame duration prediction
 - Language detection via `<|xx|>` BPE tokens
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
-- Model: [Parakeet-TDT-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) exported via NeMo, ~600 MB
+- Model files: [aufklarer/Parakeet-TDT-v3-ONNX](https://huggingface.co/aufklarer/Parakeet-TDT-v3-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`
 
 ## KokoroTts
 
@@ -87,7 +87,7 @@ tts.synthesize("Hello world", "en",
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
 - Output post-processing: peak-clip detection (drops numerically unstable short prompts), trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
-- Model: [Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M), ~310 MB
+- Model files: [aufklarer/Kokoro-82M-ONNX](https://huggingface.co/aufklarer/Kokoro-82M-ONNX) — `kokoro-e2e.onnx` + `kokoro-e2e.onnx.data` (~90 MB total), `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, `voices/*.bin`
 
 ### Voice files
 
@@ -130,7 +130,25 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 - 48 kHz input (caller must resample if needed)
 - STFT (960/480) → ERB filterbank → neural mask + deep filter coefficients → inverse STFT
 - Auxiliary binary file holds precomputed ERB filterbanks and Vorbis window: `erb_fb [481*32] | erb_inv_fb [32*481] | window [960]` (float32)
-- Model: [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet), ~8 MB FP16
+- Model files: [aufklarer/DeepFilterNet3-ONNX](https://huggingface.co/aufklarer/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
+
+## Testing
+
+A `test_models` target is added when `SPEECH_CORE_WITH_ONNX=ON`. It loads each of the four model wrappers against real ONNX files and runs a smoke check (silence-vs-tone for VAD, silence transcribe for STT, "hello world" synth for TTS, noise enhancement for the enhancer).
+
+```bash
+# 1. Download model files (~1.2 GB total)
+scripts/download_models.sh
+
+# 2. Build with ONNX support
+cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/ort
+cmake --build build
+
+# 3. Run
+SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
+```
+
+`test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
 
 ## Bring-your-own model
 
