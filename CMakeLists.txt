@@ -5,8 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Library sources
-set(SOURCES
+# Options
+option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
+option(SPEECH_CORE_WITH_ONNX "Build ONNX Runtime model wrappers (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
+
+# Core sources (always built — orchestration + interfaces + audio utilities, no ML deps)
+set(CORE_SOURCES
     src/pipeline/voice_pipeline.cpp
     src/pipeline/turn_detector.cpp
     src/pipeline/speech_queue.cpp
@@ -15,13 +19,26 @@ set(SOURCES
     src/audio/audio_buffer.cpp
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
+    src/audio/fft.cpp
+    src/audio/mel.cpp
+    src/audio/stft.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
     src/speech_core_c.cpp
 )
 
-add_library(speech_core ${SOURCES})
+# ONNX Runtime model wrappers (optional)
+set(MODEL_SOURCES
+    src/models/silero/silero_vad.cpp
+    src/models/parakeet/parakeet_stt.cpp
+    src/models/kokoro/kokoro_tts.cpp
+    src/models/kokoro/kokoro_phonemizer.cpp
+    src/models/kokoro/kokoro_multilingual.cpp
+    src/models/deepfilter/deepfilter.cpp
+)
+
+add_library(speech_core ${CORE_SOURCES})
 
 target_include_directories(speech_core
     PUBLIC
@@ -34,9 +51,30 @@ target_compile_options(speech_core PRIVATE
     $<$<CONFIG:Release>:-O2>
 )
 
-# Tests
-option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
+if(SPEECH_CORE_WITH_ONNX)
+    if(NOT DEFINED ORT_DIR)
+        message(FATAL_ERROR "SPEECH_CORE_WITH_ONNX=ON requires ORT_DIR (path to ONNX Runtime with include/ and lib/)")
+    endif()
 
+    # ONNX Runtime — imported shared library
+    add_library(onnxruntime SHARED IMPORTED)
+    if(APPLE)
+        set(_ORT_LIB "${ORT_DIR}/lib/libonnxruntime.dylib")
+    elseif(ANDROID)
+        set(_ORT_LIB "${ORT_DIR}/lib/${ANDROID_ABI}/libonnxruntime.so")
+    else()
+        set(_ORT_LIB "${ORT_DIR}/lib/libonnxruntime.so")
+    endif()
+    set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_LOCATION "${_ORT_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${ORT_DIR}/include"
+    )
+
+    target_sources(speech_core PRIVATE ${MODEL_SOURCES})
+    target_link_libraries(speech_core PUBLIC onnxruntime)
+endif()
+
+# Tests
 if(SPEECH_CORE_BUILD_TESTS)
     enable_testing()
 

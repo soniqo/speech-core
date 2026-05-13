@@ -1,30 +1,35 @@
 # Speech Core
 
-Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, and speech queuing.
+Voice agent pipeline engine in C++. Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, and speech queuing — plus a set of optional ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilterNet3 enhancer).
 
-ML inference is **not** in this library. Consumers implement the abstract interfaces (STT, TTS, LLM, VAD) with their own models.
+The orchestration core has zero ML dependencies. Consumers either bring their own model implementations of the abstract interfaces (STT, TTS, LLM, VAD, Enhancer), or compile in the reference implementations via `SPEECH_CORE_WITH_ONNX=ON`.
 
 ## Architecture
 
 ```
-                    ┌───────────────────────────┐
-                    │       speech-core          │
-                    │                           │
-                    │   VoicePipeline           │  STT -> LLM -> TTS orchestration
-                    │   TurnDetector            │  VAD-driven turn boundaries
-                    │   SpeechQueue             │  Priority queue, cancel/resume
-                    │   StreamingVAD            │  Hysteresis state machine
-                    │   AudioBuffer             │  Ring buffer, resampler, PCM
-                    │                           │
-                    │   STTInterface            │  Abstract speech-to-text
-                    │   TTSInterface            │  Abstract text-to-speech
-                    │   LLMInterface            │  Abstract language model
-                    │   VADInterface            │  Abstract voice activity detection
-                    │   EnhancerInterface       │  Abstract speech enhancement
-                    │   EchoCancellerInterface  │  Abstract echo cancellation (AEC)
-                    │                           │
-                    └───────────────────────────┘
+┌──────────────────────────────────────────────┐
+│            speech-core (always built)         │
+│                                              │
+│  VoicePipeline / TurnDetector / SpeechQueue  │  orchestration
+│  StreamingVAD / AudioBuffer / Resampler      │
+│                                              │
+│  STTInterface  TTSInterface  LLMInterface    │  abstract interfaces
+│  VADInterface  EnhancerInterface  AEC        │
+└──────────────────────────────────────────────┘
+                       ▲
+                       │ implements (optional)
+                       │
+┌──────────────────────┴───────────────────────┐
+│   Reference models (SPEECH_CORE_WITH_ONNX)   │
+│                                              │
+│   SileroVad         : VADInterface           │
+│   ParakeetStt       : STTInterface           │
+│   KokoroTts         : TTSInterface           │
+│   DeepFilterEnhancer: EnhancerInterface      │
+└──────────────────────────────────────────────┘
 ```
+
+See [`docs/interfaces.md`](docs/interfaces.md) and [`docs/models.md`](docs/models.md) for details.
 
 ## Pipeline Modes
 
@@ -62,6 +67,23 @@ See [`docs/pipeline.md`](docs/pipeline.md) for state machine, turn detection, in
 | `audio_buffer.h` | Lock-free ring buffer for streaming mic input |
 | `resampler.h` | Windowed-sinc resampler with anti-aliasing and precomputed kernel cache |
 | `pcm_codec.h` | Float32 / PCM16-LE / base64 conversions |
+| `fft.h` | Radix-2 FFT for real signals |
+| `mel.h` | Log-mel spectrogram (HTK / Slaney scales) |
+| `stft.h` | Forward / inverse STFT with overlap-add |
+
+### Models (`include/speech_core/models/`, optional)
+
+ONNX Runtime reference implementations, compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
+
+| File | Implements | Notes |
+|---|---|---|
+| `silero_vad.h` | `VADInterface` | Silero VAD v5, 512 samples @ 16 kHz |
+| `parakeet_stt.h` | `STTInterface` | Parakeet TDT v3, batch + streaming, language detection |
+| `kokoro_tts.h` | `TTSInterface` | Kokoro 82M, 24 kHz, eSpeak-free phonemizer (9 languages) |
+| `deepfilter.h` | `EnhancerInterface` | DeepFilterNet3, 48 kHz noise cancellation |
+| `onnx_engine.h` | (internal) | ORT singleton, NNAPI/QNN/CPU provider auto-selection |
+
+See [`docs/models.md`](docs/models.md) for usage.
 
 ### Protocol (`include/speech_core/protocol/`)
 
@@ -111,6 +133,8 @@ C wrapper for FFI — vtable-based interface bridging for Swift, Kotlin, etc. Se
 
 ## Build
 
+Default build (orchestration only, no ML deps):
+
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
@@ -119,10 +143,21 @@ cmake --build build
 cd build && ctest
 ```
 
+With ONNX Runtime reference models:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    -DSPEECH_CORE_WITH_ONNX=ON \
+    -DORT_DIR=/path/to/onnxruntime
+cmake --build build
+```
+
+`ORT_DIR` must contain `include/onnxruntime_c_api.h` and a platform shared library (`libonnxruntime.dylib` on macOS, `libonnxruntime.so` on Linux, `lib/${ANDROID_ABI}/libonnxruntime.so` on Android).
+
 ## Design Principles
 
-- **No ML inference** — this library never loads models or runs neural networks.
-- **No platform dependencies** — pure C++17, no OS-specific APIs.
+- **ML inference is opt-in.** The orchestration core is pure C++17 with no ML deps. ONNX Runtime models are compiled in only when explicitly requested.
+- **No platform dependencies in the core** — pure C++17, no OS-specific APIs. The ORT-backed models use platform features (NNAPI on Android, QNN elsewhere) but only when enabled.
 - **No network I/O** — no sockets, no HTTP, no WebSocket.
 - **No audio I/O** — audio buffer and resampler operate on float arrays.
 - **Callback-driven** — pipeline emits events via `std::function` callbacks.
