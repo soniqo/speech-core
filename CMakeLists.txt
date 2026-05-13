@@ -43,6 +43,12 @@ target_compile_options(speech_core PRIVATE
     $<$<CONFIG:Release>:-O2>
 )
 
+# Build with -fPIC so the static library can be linked into shared libraries
+# (the Linux examples libspeech.so, the Android JNI .so, etc.). Apple's linker
+# doesn't require this; GNU ld does, and complains with "relocation R_X86_64_*
+# can not be used when making a shared object; recompile with -fPIC".
+set_target_properties(speech_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ---------------------------------------------------------------------------
 # speech_core_models — ONNX Runtime reference implementations (optional)
 # ---------------------------------------------------------------------------
@@ -87,6 +93,9 @@ if(SPEECH_CORE_WITH_ONNX)
         -Wall -Wextra
         $<$<CONFIG:Release>:-O2>
     )
+
+    # See speech_core above — same reason.
+    set_target_properties(speech_core_models PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models PUBLIC speech_core onnxruntime)
 endif()
