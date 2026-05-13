@@ -8,7 +8,7 @@ Targets embedded ARM64 platforms (Yocto, automotive — Qualcomm SA8295P / SA825
 
 ```bash
 # From the top of speech-core:
-./examples/linux/setup_linux.sh       # download ONNX Runtime into ../ort-linux
+./examples/linux/setup_linux.sh       # download ONNX Runtime into ort-linux/
 cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DSPEECH_CORE_WITH_ONNX=ON \
@@ -20,6 +20,25 @@ cmake --build build
 scripts/download_models.sh
 SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 ```
+
+### Docker
+
+For a reproducible Linux build without setting up a local toolchain:
+
+```bash
+# Build the image (from repo root)
+docker build -f examples/linux/Dockerfile -t speech-core-linux .
+
+# Run tests with no models (unit + skip integration)
+docker run --rm speech-core-linux
+
+# Run tests with real models mounted
+scripts/download_models.sh
+docker run --rm -v "$(pwd)/scripts/models:/models" speech-core-linux \
+    ctest --test-dir /work/build --output-on-failure
+```
+
+The same path runs in CI via `.github/workflows/ci.yml`'s `linux-examples` job on every PR.
 
 Build artefacts:
 

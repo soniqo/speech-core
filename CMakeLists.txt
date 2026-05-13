@@ -51,6 +51,8 @@ if(SPEECH_CORE_WITH_ONNX)
     if(NOT DEFINED ORT_DIR)
         message(FATAL_ERROR "SPEECH_CORE_WITH_ONNX=ON requires ORT_DIR (path to ONNX Runtime with include/ and lib/)")
     endif()
+    # Imported targets' INTERFACE_INCLUDE_DIRECTORIES must be absolute.
+    get_filename_component(ORT_DIR "${ORT_DIR}" ABSOLUTE)
 
     # ONNX Runtime — imported shared library
     add_library(onnxruntime SHARED IMPORTED)

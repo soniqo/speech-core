@@ -5,7 +5,8 @@ ORT_VERSION="1.19.0"
 OS="${OS:-$(uname -s)}"
 ARCH="${1:-$(uname -m)}"
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Script lives at examples/linux/setup_linux.sh — repo root is two levels up.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ORT_DIR="${ROOT}/ort-linux"
 
 echo "=== speech-linux setup (${OS} ${ARCH}) ==="
@@ -57,4 +58,9 @@ fi
 
 echo ""
 echo "Build with:"
-echo "  cd linux && cmake -B build -DORT_DIR=${ORT_DIR} && cmake --build build"
+echo "  cmake -B build \\"
+echo "      -DCMAKE_BUILD_TYPE=Release \\"
+echo "      -DSPEECH_CORE_WITH_ONNX=ON \\"
+echo "      -DSPEECH_CORE_BUILD_EXAMPLES=ON \\"
+echo "      -DORT_DIR=${ORT_DIR}"
+echo "  cmake --build build"
