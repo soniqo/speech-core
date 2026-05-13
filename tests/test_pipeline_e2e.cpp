@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -102,8 +103,16 @@ public:
     size_t chunk_size() const override { return 512; }
 };
 
-// Helper to collect events
+// Helper to collect events.
+//
+// The pipeline's event callback can be invoked from either the main thread
+// (during push_audio, when TurnDetector emits SpeechStarted/Paused events)
+// or the worker thread (STT/TTS/LLM events). All mutators and queries
+// therefore take a mutex — without it, concurrent vector::push_back calls
+// from both threads were corrupting the heap and aborting in libmalloc.
+// (Caught by ThreadSanitizer in test_max_utterance_force_split.)
 struct EventLog {
+    mutable std::mutex m;
     std::vector<EventType> types;
     std::vector<std::string> texts;
     std::vector<float> confidences;
@@ -112,6 +121,7 @@ struct EventLog {
     std::vector<float> tts_durations;
 
     void on_event(const PipelineEvent& e) {
+        std::lock_guard<std::mutex> lock(m);
         types.push_back(e.type);
         texts.push_back(e.text);
         confidences.push_back(e.confidence);
@@ -121,17 +131,20 @@ struct EventLog {
     }
 
     bool has(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (auto& et : types) if (et == t) return true;
         return false;
     }
 
     size_t count(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         size_t n = 0;
         for (auto& et : types) if (et == t) n++;
         return n;
     }
 
     std::string text_for(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return texts[i];
         }
@@ -139,6 +152,7 @@ struct EventLog {
     }
 
     float stt_duration_for(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return stt_durations[i];
         }
@@ -146,6 +160,7 @@ struct EventLog {
     }
 
     float llm_duration_for(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return llm_durations[i];
         }
@@ -153,6 +168,7 @@ struct EventLog {
     }
 
     float tts_duration_for(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return tts_durations[i];
         }
@@ -160,6 +176,7 @@ struct EventLog {
     }
 
     float confidence_for(EventType t) const {
+        std::lock_guard<std::mutex> lock(m);
         for (size_t i = 0; i < types.size(); i++) {
             if (types[i] == t) return confidences[i];
         }

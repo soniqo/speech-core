@@ -44,14 +44,25 @@ void VoicePipeline::start() {
 void VoicePipeline::stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        running_.store(false);
         tts_.cancel();
         if (llm_) llm_->cancel();
         speech_queue_.cancel_all();
         state_.store(State::Idle);
     }
-    // Wake and join the worker thread
+    // Mark the worker for shutdown under worker_mutex_, NOT just atomically.
+    // The worker's cv predicate reads running_ while holding worker_mutex_,
+    // and entering cv.wait releases the mutex atomically with sleeping.
+    // If we stored running_ outside the mutex and notified, the worker could
+    // be between "predicate returned true" and "actually sleeping": the
+    // notify would have no waiter to wake, the worker would then sleep
+    // forever, and join() would hang. Holding worker_mutex_ here serializes
+    // the store with the worker's predicate evaluation, closing the window.
+    {
+        std::lock_guard<std::mutex> wlock(worker_mutex_);
+        running_.store(false);
+    }
     worker_cv_.notify_all();
+    worker_idle_cv_.notify_all();
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
@@ -108,6 +119,22 @@ void VoicePipeline::worker_loop() {
 
     bool streaming_active = false;
     size_t stream_offset = 0;  // samples already sent to push_chunk
+
+    // Cancel any active streaming STT on exit from any path — the inner
+    // !running_ check at the top of the loop only fires when the worker
+    // wakes via the cv. If stop() is called while push_chunk is blocking,
+    // the worker returns to the while-condition check and exits without
+    // touching the stream. This guard catches that.
+    struct StreamGuard {
+        STTInterface& stt;
+        bool& active;
+        ~StreamGuard() {
+            if (active) {
+                try { stt.cancel_stream(); } catch (...) {}
+                active = false;
+            }
+        }
+    } stream_guard{stt_, streaming_active};
 
     while (running_.load()) {
         PendingUtterance utterance;
