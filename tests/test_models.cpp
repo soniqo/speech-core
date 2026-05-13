@@ -1,8 +1,12 @@
 // Integration tests for the speech_core_models target.
 //
 // Each test loads real ONNX models from $SPEECH_MODEL_DIR and exercises one
-// model wrapper. Skipped (with exit code 0) when SPEECH_MODEL_DIR is unset or
-// the expected files are missing — keeps CI green when models aren't fetched.
+// model wrapper. Includes a TTS→STT roundtrip that catches token/vocab bugs
+// the per-model smoke tests miss (e.g. the BOS/EOS regression documented in
+// kokoro_phonemizer.h:23-28).
+//
+// Skipped (with exit code 0) when SPEECH_MODEL_DIR is unset or the expected
+// files are missing — keeps CI green when models aren't fetched.
 //
 // To run locally:
 //     scripts/download_models.sh
@@ -10,12 +14,15 @@
 //     cmake --build build
 //     SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
+#include "speech_core/audio/resampler.h"
 #include "speech_core/interfaces.h"
 #include "speech_core/models/deepfilter.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -182,6 +189,69 @@ void test_deepfilter(const std::string& dir) {
     std::printf("ok\n");
 }
 
+// ---------------------------------------------------------------------------
+// Roundtrip: Kokoro TTS → resample 24→16 kHz → Parakeet STT
+//
+// Catches end-to-end issues that the per-model smoke tests miss:
+//   - Phonemizer BOS/EOS misalignment (kokoro_phonemizer.h:23-28 documents a
+//     past bug where "Hello world" came back as "I wrote")
+//   - Vocab ID off-by-ones in either model
+//   - Sample-rate / Hz mismatch between TTS output and STT input
+//   - Voice file loading failures producing silent or distorted audio
+// ---------------------------------------------------------------------------
+
+std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
+void test_kokoro_parakeet_roundtrip(const std::string& dir) {
+    std::string kokoro_model = dir + "/kokoro-e2e.onnx";
+    std::string parakeet_enc = dir + "/parakeet-encoder-int8.onnx";
+    std::string parakeet_dec = dir + "/parakeet-decoder-joint-int8.onnx";
+    std::string parakeet_vocab = dir + "/vocab.json";
+    if (!file_exists(kokoro_model) || !file_exists(parakeet_enc)
+        || !file_exists(parakeet_dec) || !file_exists(parakeet_vocab)
+        || !file_exists(dir + "/vocab_index.json"))
+    {
+        std::printf("  [skip] roundtrip needs both kokoro and parakeet files in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_kokoro_parakeet_roundtrip ... ");
+
+    speech_core::KokoroTts tts(kokoro_model, dir + "/voices", dir, /*hw_accel=*/false);
+    speech_core::ParakeetStt stt(parakeet_enc, parakeet_dec, parakeet_vocab, /*hw_accel=*/false);
+
+    const std::string input = "Hello world.";
+    std::vector<float> audio_24k;
+    tts.synthesize(input, "en",
+        [&](const float* samples, size_t len, bool /*is_final*/) {
+            audio_24k.insert(audio_24k.end(), samples, samples + len);
+        });
+    REQUIRE(!audio_24k.empty());
+
+    // Kokoro outputs 24 kHz, Parakeet expects 16 kHz.
+    auto audio_16k = speech_core::Resampler::resample(
+        audio_24k.data(), audio_24k.size(), 24000, 16000);
+    REQUIRE(!audio_16k.empty());
+
+    auto result = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+    std::string transcript = to_lower(result.text);
+
+    // Content-word check: at least one of "hello"/"world" should appear.
+    // Strict equality is too brittle (TTS adds pauses, STT may insert filler).
+    bool has_hello = transcript.find("hello") != std::string::npos;
+    bool has_world = transcript.find("world") != std::string::npos;
+    int matched = (has_hello ? 1 : 0) + (has_world ? 1 : 0);
+
+    std::printf("input=\"%s\" transcript=\"%s\" matched=%d/2 ",
+                input.c_str(), result.text.c_str(), matched);
+
+    REQUIRE(matched >= 1);
+    std::printf("ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +268,7 @@ int main() {
     test_parakeet_stt(dir);
     test_kokoro_tts(dir);
     test_deepfilter(dir);
+    test_kokoro_parakeet_roundtrip(dir);
 
     if (failures > 0) {
         std::fprintf(stderr, "\n%d test(s) failed\n", failures);
