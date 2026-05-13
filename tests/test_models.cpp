@@ -20,10 +20,12 @@
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
+#include "speech_core/vad/streaming_vad.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -51,6 +53,73 @@ bool file_exists(const std::string& path) {
 std::string env_model_dir() {
     const char* env = std::getenv("SPEECH_MODEL_DIR");
     return env ? env : "";
+}
+
+/// Path to the test audio fixture, sourced from speech-swift
+/// (Tests/Qwen3ASRTests/Resources/test_audio.wav, 24 kHz mono PCM16).
+/// CMake passes the source dir via SPEECH_CORE_TEST_DATA_DIR.
+std::string test_audio_path() {
+#ifdef SPEECH_CORE_TEST_DATA_DIR
+    return std::string(SPEECH_CORE_TEST_DATA_DIR) + "/test_audio.wav";
+#else
+    return "tests/data/test_audio.wav";
+#endif
+}
+
+/// Minimal WAV reader — mono PCM16 little-endian only.
+/// Returns audio as Float32 normalised to [-1, 1], plus the sample rate.
+/// Returns empty samples on any failure (caller should skip the test).
+struct WavData {
+    std::vector<float> samples;
+    int sample_rate = 0;
+};
+WavData load_wav_mono_pcm16(const std::string& path) {
+    WavData out;
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return out;
+
+    char riff[4], wave[4];
+    uint32_t file_size, fmt_size;
+    f.read(riff, 4);
+    f.read(reinterpret_cast<char*>(&file_size), 4);
+    f.read(wave, 4);
+    if (std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0) return out;
+
+    // Iterate chunks until we find "fmt " and "data".
+    char chunk_id[4];
+    uint32_t chunk_size;
+    uint16_t audio_format = 0, num_channels = 0, bits_per_sample = 0;
+    uint32_t sample_rate = 0;
+    bool have_fmt = false, have_data = false;
+
+    while (f.read(chunk_id, 4)) {
+        f.read(reinterpret_cast<char*>(&chunk_size), 4);
+        if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
+            f.read(reinterpret_cast<char*>(&audio_format), 2);
+            f.read(reinterpret_cast<char*>(&num_channels), 2);
+            f.read(reinterpret_cast<char*>(&sample_rate), 4);
+            f.seekg(6, std::ios::cur);  // byte_rate (4) + block_align (2)
+            f.read(reinterpret_cast<char*>(&bits_per_sample), 2);
+            if (chunk_size > 16) f.seekg(chunk_size - 16, std::ios::cur);
+            have_fmt = true;
+        } else if (std::memcmp(chunk_id, "data", 4) == 0) {
+            if (!have_fmt || audio_format != 1 || num_channels != 1 || bits_per_sample != 16) return out;
+            size_t n_samples = chunk_size / 2;
+            std::vector<int16_t> pcm(n_samples);
+            f.read(reinterpret_cast<char*>(pcm.data()), chunk_size);
+            out.samples.resize(n_samples);
+            for (size_t i = 0; i < n_samples; ++i) {
+                out.samples[i] = static_cast<float>(pcm[i]) / 32768.0f;
+            }
+            out.sample_rate = static_cast<int>(sample_rate);
+            have_data = true;
+            break;
+        } else {
+            f.seekg(chunk_size, std::ios::cur);
+        }
+    }
+    if (!have_data) out = {};
+    return out;
 }
 
 // Generate a 16 kHz tone (sine) and 16 kHz silence chunk.
@@ -98,6 +167,62 @@ void test_silero_vad(const std::string& dir) {
     REQUIRE(std::abs(p_after_reset - p_silence) < 0.2f);
 
     std::printf("ok (silence=%.3f tone_peak=%.3f)\n", p_silence, p_tone_max);
+}
+
+// ---------------------------------------------------------------------------
+// VAD on real speech — uses the test_audio.wav fixture from speech-swift.
+// The fixture contains roughly 5.2s–8.4s of speech in an otherwise quiet
+// recording. The Swift test asserts speech_start ∈ (3, 7) and speech_end
+// ∈ (7, 10) seconds. We mirror that here through StreamingVAD.
+// ---------------------------------------------------------------------------
+
+void test_silero_vad_real_speech(const std::string& dir) {
+    std::string model = dir + "/silero-vad.onnx";
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (!file_exists(model)) {
+        std::printf("  [skip] silero-vad.onnx not in %s\n", dir.c_str());
+        return;
+    }
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_silero_vad_real_speech ... ");
+
+    speech_core::SileroVad vad(model);
+
+    auto audio_16k = wav.sample_rate == 16000
+        ? wav.samples
+        : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                           wav.sample_rate, 16000);
+    REQUIRE(!audio_16k.empty());
+
+    // Feed 512-sample chunks through StreamingVAD's event-driven wrapper.
+    constexpr size_t kChunk = 512;
+    const float chunk_dur = static_cast<float>(kChunk) / 16000.0f;
+    speech_core::StreamingVAD events(speech_core::VADConfig::silero_default(), chunk_dur);
+
+    float speech_start = -1.0f, speech_end = -1.0f;
+    for (size_t i = 0; i + kChunk <= audio_16k.size(); i += kChunk) {
+        float p = vad.process_chunk(audio_16k.data() + i, kChunk);
+        for (const auto& ev : events.process(p)) {
+            if (ev.type == speech_core::VADEvent::SpeechStarted && speech_start < 0)
+                speech_start = ev.start_time;
+            if (ev.type == speech_core::VADEvent::SpeechEnded)
+                speech_end = ev.end_time;
+        }
+    }
+    for (const auto& ev : events.flush()) {
+        if (ev.type == speech_core::VADEvent::SpeechEnded)
+            speech_end = ev.end_time;
+    }
+
+    std::printf("start=%.2fs end=%.2fs ", speech_start, speech_end);
+
+    REQUIRE(speech_start >= 3.0f && speech_start <= 7.0f);
+    REQUIRE(speech_end   >= 7.0f && speech_end   <= 10.0f);
+
+    std::printf("ok\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +390,7 @@ int main() {
     std::printf("Running model tests against %s\n", dir.c_str());
 
     test_silero_vad(dir);
+    test_silero_vad_real_speech(dir);
     test_parakeet_stt(dir);
     test_kokoro_tts(dir);
     test_deepfilter(dir);
