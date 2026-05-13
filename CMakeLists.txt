@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
+option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 
 # ---------------------------------------------------------------------------
 # speech_core — orchestration core (always built, no ML deps)
@@ -42,6 +43,12 @@ target_compile_options(speech_core PRIVATE
     $<$<CONFIG:Release>:-O2>
 )
 
+# Build with -fPIC so the static library can be linked into shared libraries
+# (the Linux examples libspeech.so, the Android JNI .so, etc.). Apple's linker
+# doesn't require this; GNU ld does, and complains with "relocation R_X86_64_*
+# can not be used when making a shared object; recompile with -fPIC".
+set_target_properties(speech_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ---------------------------------------------------------------------------
 # speech_core_models — ONNX Runtime reference implementations (optional)
 # ---------------------------------------------------------------------------
@@ -50,6 +57,8 @@ if(SPEECH_CORE_WITH_ONNX)
     if(NOT DEFINED ORT_DIR)
         message(FATAL_ERROR "SPEECH_CORE_WITH_ONNX=ON requires ORT_DIR (path to ONNX Runtime with include/ and lib/)")
     endif()
+    # Imported targets' INTERFACE_INCLUDE_DIRECTORIES must be absolute.
+    get_filename_component(ORT_DIR "${ORT_DIR}" ABSOLUTE)
 
     # ONNX Runtime — imported shared library
     add_library(onnxruntime SHARED IMPORTED)
@@ -84,6 +93,9 @@ if(SPEECH_CORE_WITH_ONNX)
         -Wall -Wextra
         $<$<CONFIG:Release>:-O2>
     )
+
+    # See speech_core above — same reason.
+    set_target_properties(speech_core_models PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models PUBLIC speech_core onnxruntime)
 endif()
@@ -137,3 +149,16 @@ install(TARGETS ${_install_targets}
 install(DIRECTORY include/speech_core
     DESTINATION include
 )
+
+# ---------------------------------------------------------------------------
+# Examples (optional)
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_BUILD_EXAMPLES)
+    if(NOT SPEECH_CORE_WITH_ONNX)
+        message(FATAL_ERROR
+            "SPEECH_CORE_BUILD_EXAMPLES=ON requires SPEECH_CORE_WITH_ONNX=ON"
+            " (the examples consume speech_core_models)")
+    endif()
+    add_subdirectory(examples/linux)
+endif()

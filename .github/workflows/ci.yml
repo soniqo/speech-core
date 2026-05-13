@@ -7,8 +7,14 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
-    runs-on: macos-latest
+  # Fast lane: orchestration-only build, no ML deps. Catches anything that
+  # breaks the core library on either platform.
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +23,111 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --parallel
 
       - name: Test
-        run: cd build && ctest --output-on-failure
+        run: ctest --test-dir build --output-on-failure
+
+  # Heavy lane: ONNX-on build with the Linux example (libspeech.so + demo +
+  # tools + C-ABI integration test). Exercises the speech_core_models target,
+  # the examples/linux subtree, and ALSA linkage. Integration tests that
+  # need real model files skip cleanly (we don't download ~1.2 GB in CI).
+  linux-examples:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake libasound2-dev curl ca-certificates
+
+      - name: Download ONNX Runtime
+        run: |
+          ./examples/linux/setup_linux.sh
+          ls -la ort-linux/include/onnxruntime_c_api.h
+          ls -la ort-linux/lib/libonnxruntime.so
+
+      - name: Configure
+        run: |
+          cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DORT_DIR=ort-linux
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify artefacts
+        run: |
+          file build/libspeech_core.a
+          file build/libspeech_core_models.a
+          file build/examples/linux/libspeech.so
+          file build/examples/linux/speech_demo
+          file build/examples/linux/speech_transcribe
+          file build/examples/linux/speech_synthesize
+          file build/examples/linux/speech_phonemize
+          # ALSA must actually be linked (the message "ALSA not found"
+          # would mean we built a no-op stub instead of the real demo).
+          ldd build/examples/linux/speech_demo | grep -q libasound
+
+      - name: Test
+        # Integration tests (test_models, speech_linux_pipeline) skip
+        # cleanly when SPEECH_MODEL_DIR isn't set; everything else runs.
+        run: ctest --test-dir build --output-on-failure
+
+  # aarch64 cross-compile — proves the Yocto/automotive path still compiles
+  # after every change. Build-only (GitHub runners are x86_64; we don't try
+  # to execute the cross binaries). The Yocto-specific toolchain file reads
+  # $CC/$CXX/$SDKTARGETSYSROOT from environment-setup-* scripts; on CI we
+  # instead pass the cross compilers directly to CMake.
+  linux-examples-aarch64:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              g++-aarch64-linux-gnu \
+              gcc-aarch64-linux-gnu \
+              cmake \
+              curl \
+              ca-certificates
+
+      - name: Download ONNX Runtime (aarch64)
+        run: |
+          ./examples/linux/setup_linux.sh aarch64
+          file ort-linux/lib/libonnxruntime.so | grep -q "aarch64"
+
+      - name: Configure
+        run: |
+          cmake -B build-aarch64 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+              -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+              -DCMAKE_SYSTEM_NAME=Linux \
+              -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_TESTS=OFF \
+              -DSPEECH_LINUX_BUILD_DEMO=OFF \
+              -DSPEECH_LINUX_BUILD_TESTS=OFF \
+              -DORT_DIR=ort-linux
+
+      - name: Build
+        run: cmake --build build-aarch64 --parallel
+
+      - name: Verify aarch64 artefacts
+        run: |
+          file build-aarch64/libspeech_core.a
+          file build-aarch64/libspeech_core_models.a
+          file build-aarch64/examples/linux/libspeech.so | tee /dev/stderr | grep -q "aarch64"
+          file build-aarch64/examples/linux/speech_transcribe | tee /dev/stderr | grep -q "aarch64"
