@@ -1,6 +1,8 @@
 # Reference Model Implementations
 
-speech-core ships with four ONNX Runtime model wrappers under `include/speech_core/models/`. Each implements one of the interfaces in `interfaces.h` and is compiled in when `SPEECH_CORE_WITH_ONNX=ON`.
+speech-core ships two parallel sets of model wrappers under `include/speech_core/models/`. Each implements one of the interfaces in `interfaces.h` and is compiled in via a backend-specific CMake flag. The two backends can be enabled simultaneously — consumers link only the targets they need.
+
+### ONNX Runtime backend (`SPEECH_CORE_WITH_ONNX`)
 
 | Model | Interface | Header |
 |---|---|---|
@@ -9,7 +11,16 @@ speech-core ships with four ONNX Runtime model wrappers under `include/speech_co
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` |
 
-All four share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. The first model construction initializes it; subsequent constructions reuse it.
+### LiteRT (TFLite) backend (`SPEECH_CORE_WITH_LITERT`)
+
+| Model | Interface | Header |
+|---|---|---|
+| `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` |
+| `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` |
+
+Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
+
+All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. All LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`) which currently configures CPU-only inference with a configurable thread count. NNAPI / GPU / Hexagon delegates are not yet wired through the C API in this version.
 
 ## Building with ONNX support
 
@@ -29,6 +40,32 @@ cmake --build build
 | Android | `lib/${ANDROID_ABI}/libonnxruntime.so` |
 
 Hardware-accelerated execution providers are picked automatically: NNAPI on Android, QNN on non-Android (if available), CPU fallback otherwise.
+
+## Building with LiteRT support
+
+```bash
+cmake -S . -B build \
+    -DSPEECH_CORE_WITH_LITERT=ON \
+    -DLITERT_DIR=/path/to/litert
+cmake --build build
+```
+
+`LITERT_DIR` must contain the TFLite C API headers and a platform-appropriate shared library:
+
+| Platform | Header | Library |
+|---|---|---|
+| macOS | `include/tensorflow/lite/c/c_api.h` | `lib/libtensorflowlite_c.dylib` |
+| Linux | `include/tensorflow/lite/c/c_api.h` | `lib/libtensorflowlite_c.so` |
+| Android | `include/tensorflow/lite/c/c_api.h` | `lib/${ANDROID_ABI}/libtensorflowlite_c.so` |
+
+If you don't have a TFLite C library handy, build one from TensorFlow source:
+
+```bash
+scripts/setup_litert.sh build/litert v2.18.0
+# → build/litert/{include,lib} ready for use as LITERT_DIR
+```
+
+`SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent — enable either, both, or neither. Both flags produce separate static libraries (`speech_core_models`, `speech_core_models_litert`); consumers link only what they use.
 
 ## SileroVad
 
@@ -64,6 +101,37 @@ auto result = stt.transcribe(audio, length, 16000);
 - Language detection via `<|xx|>` BPE tokens
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
 - Model files: [aufklarer/Parakeet-TDT-v3-ONNX](https://huggingface.co/aufklarer/Parakeet-TDT-v3-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`
+
+## LiteRTSileroVad
+
+```cpp
+#include <speech_core/models/litert_silero_vad.h>
+
+speech_core::LiteRTSileroVad vad("/path/to/silero-vad.tflite");
+float prob = vad.process_chunk(samples_512, 512);
+```
+
+- Same public contract as `SileroVad` (512-sample chunks, 16 kHz, [0,1] probability)
+- The LiteRT model itself takes `[1, 576]` (64 left-context + 512 chunk); the wrapper hides the context buffer so callers see the same `VADInterface`
+- Model files: [soniqo/Silero-VAD-v5-LiteRT](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) — `silero-vad.tflite` (~1.3 MB)
+
+## LiteRTParakeetStt
+
+```cpp
+#include <speech_core/models/litert_parakeet_stt.h>
+
+speech_core::LiteRTParakeetStt stt(
+    "/models/parakeet-encoder.tflite",
+    "/models/parakeet-decoder-joint.tflite",
+    "/models/vocab.json");
+
+auto result = stt.transcribe(audio, length, 16000);
+```
+
+- Same public contract and TDT decode loop as `ParakeetStt`
+- Encoder INT8 weight-quantized (~595 MB on disk vs ~840 MB ONNX FP32), decoder-joint stays FP32 to avoid LSTM drift
+- Decoder-joint exposes `(encoder_out, target, h, c)` as four discrete tensors (ORT bundles `target_length` and uses suffix-`_1`/`_2` for h/c)
+- Model files: [soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) — `parakeet-encoder.tflite`, `parakeet-decoder-joint.tflite`, `vocab.json`
 
 ## KokoroTts
 
@@ -149,6 +217,16 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 ```
 
 `test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
+
+A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the two LiteRT wrappers against `.tflite` artifacts:
+
+```bash
+scripts/download_models_litert.sh
+scripts/setup_litert.sh                # builds libtensorflowlite_c locally
+cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
+cmake --build build
+SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
+```
 
 ## Bring-your-own model
 
