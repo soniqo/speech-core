@@ -1,8 +1,9 @@
 name: Build LiteRT prebuilds
 
-# Produces libtensorflowlite_c.{so,dylib,dll} (+ headers) for Linux x86_64,
-# macOS arm64, and Windows x86_64, packaged so it can drop directly into
-# LITERT_DIR. Manually triggered — refresh whenever bumping TF version.
+# Produces libtensorflowlite_c.{so,dll} (+ headers) for Linux x86_64 and
+# Windows x86_64, packaged so it can drop directly into LITERT_DIR. Manually
+# triggered — refresh whenever bumping TF version. macOS arm64 is deferred
+# (kleidiai download flake from gitlab.arm.com).
 #
 # Pinned CMake 3.24 because the TFLite source tree's older subprojects
 # (xnnpack, fp16, etc.) declare deprecated CMake policies that newer CMake
@@ -29,10 +30,18 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: linux-x86_64
-          - os: macos-latest
-            platform: macos-arm64
+            # GH-hosted Linux runners have only ~7 GB usable RAM. Full-parallel
+            # TF compilation (4-wide) OOM-killed the runner at ~5 min; cap to
+            # 2 parallel jobs so peak memory stays under the limit.
+            build_jobs: 2
           - os: windows-latest
             platform: windows-x86_64
+            # Windows runners have more headroom and finished in ~18 min on
+            # full parallelism — keep as-is.
+            build_jobs: 0
+          # macOS arm64 deferred: xnnpack pulls in Arm's kleidiai library from
+          # gitlab.arm.com, which has intermittent TLS failures. Users on
+          # Apple Silicon can build locally with scripts/setup_litert.sh.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
 
@@ -65,10 +74,15 @@ jobs:
       - name: Build tensorflowlite_c
         shell: bash
         run: |
-          cmake --build build --target tensorflowlite_c --config Release -j
+          # build_jobs=0 means "use all cores"; >0 caps parallelism.
+          if [[ "${{ matrix.build_jobs }}" == "0" ]]; then
+              cmake --build build --target tensorflowlite_c --config Release -j
+          else
+              cmake --build build --target tensorflowlite_c --config Release -j ${{ matrix.build_jobs }}
+          fi
 
-      - name: Package (Linux / macOS)
-        if: runner.os != 'Windows'
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           PLATFORM=${{ matrix.platform }}
@@ -82,11 +96,7 @@ jobs:
           cp tensorflow-src/tensorflow/lite/core/c/c_api.h        $OUT/include/tensorflow/lite/core/c/
           cp tensorflow-src/tensorflow/lite/core/c/c_api_types.h  $OUT/include/tensorflow/lite/core/c/
           cp tensorflow-src/tensorflow/lite/core/c/common.h       $OUT/include/tensorflow/lite/core/c/
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-              cp build/libtensorflowlite_c.dylib $OUT/lib/
-          else
-              cp build/libtensorflowlite_c.so $OUT/lib/
-          fi
+          cp build/libtensorflowlite_c.so $OUT/lib/
           tar -czf libtensorflowlite_c-${{ inputs.tf_version }}-${PLATFORM}.tar.gz -C $OUT .
 
       - name: Package (Windows)
@@ -137,4 +147,4 @@ jobs:
           gh release create litert-prebuilt-${{ inputs.tf_version }} \
               artifacts/* \
               --title "LiteRT prebuilds ${{ inputs.tf_version }}" \
-              --notes "Prebuilt libtensorflowlite_c for Linux x86_64, macOS arm64, and Windows x86_64. Consumed by the linux-litert / windows-litert CI lanes; see scripts/setup_litert.sh for the equivalent local build recipe."
+              --notes "Prebuilt libtensorflowlite_c for Linux x86_64 and Windows x86_64. Consumed by the linux-litert / windows-litert CI lanes; see scripts/setup_litert.sh for the equivalent local build recipe (macOS users build locally — kleidiai/arm64 prebuild deferred)."
