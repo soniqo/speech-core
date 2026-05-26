@@ -90,6 +90,9 @@ jobs:
           mkdir -p $OUT/include/tensorflow/lite/c \
                    $OUT/include/tensorflow/lite/core/c \
                    $OUT/lib
+          # builtin_ops.h is transitively included by core/c/c_api.h and
+          # core/c/common.h, so it has to ship alongside them.
+          cp tensorflow-src/tensorflow/lite/builtin_ops.h     $OUT/include/tensorflow/lite/
           cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
           cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
           cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
@@ -108,6 +111,9 @@ jobs:
           mkdir -p $OUT/include/tensorflow/lite/c \
                    $OUT/include/tensorflow/lite/core/c \
                    $OUT/lib
+          # builtin_ops.h is transitively included by core/c/c_api.h and
+          # core/c/common.h, so it has to ship alongside them.
+          cp tensorflow-src/tensorflow/lite/builtin_ops.h     $OUT/include/tensorflow/lite/
           cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
           cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
           cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
