@@ -41,7 +41,8 @@ cmake "$TF_SRC/tensorflow/lite/c" \
     -DTFLITE_ENABLE_NNAPI=OFF \
     -DTFLITE_ENABLE_GPU=OFF \
     -DTFLITE_ENABLE_METAL=OFF \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
 
 echo "[setup_litert] Building tensorflowlite_c (this takes ~20-30 minutes)..."
 cmake --build . --target tensorflowlite_c -j

@@ -64,12 +64,18 @@ jobs:
         run: |
           mkdir -p build
           cd build
+          # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS auto-generates a .def file that
+          # exports every extern function from the DLL. Needed because TF
+          # v2.18's c_api headers reference TfLiteOperator* via inline alias
+          # functions, but the DLL only marks the older TfLiteRegistration*
+          # entry points with __declspec(dllexport). Harmless on non-Windows.
           cmake ../tensorflow-src/tensorflow/lite/c \
               -DCMAKE_BUILD_TYPE=Release \
               -DTFLITE_C_BUILD_SHARED_LIBS=ON \
               -DTFLITE_ENABLE_NNAPI=OFF \
               -DTFLITE_ENABLE_GPU=OFF \
-              -DTFLITE_ENABLE_METAL=OFF
+              -DTFLITE_ENABLE_METAL=OFF \
+              -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
 
       - name: Build tensorflowlite_c
         shell: bash
