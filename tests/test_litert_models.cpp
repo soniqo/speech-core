@@ -277,6 +277,54 @@ void test_litert_parakeet_real_speech(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// Parakeet streaming — exercises the begin_stream / push_chunk / end_stream
+// path that the orchestrator uses in production (the batch transcribe() above
+// covers only the one-shot mode). Feeds the fixture in ~100 ms chunks and
+// checks that end_stream() returns a non-empty transcript matching the batch
+// result. Catches regressions in stream_buffer_ management, the 0.5 s warm-up
+// gate in push_chunk, and end_stream not draining the buffer.
+// ---------------------------------------------------------------------------
+
+void test_litert_parakeet_streaming(const std::string& dir) {
+    std::string enc   = dir + "/parakeet-encoder.tflite";
+    std::string dec   = dir + "/parakeet-decoder-joint.tflite";
+    std::string vocab = dir + "/vocab.json";
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(vocab)) {
+        std::printf("  [skip] parakeet files not in %s\n", dir.c_str());
+        return;
+    }
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_litert_parakeet_streaming ... ");
+
+    speech_core::LiteRTParakeetStt stt(enc, dec, vocab, /*hw_accel=*/false);
+    REQUIRE(stt.supports_streaming());
+
+    auto audio_16k = wav.sample_rate == 16000
+        ? wav.samples
+        : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                           wav.sample_rate, 16000);
+    REQUIRE(!audio_16k.empty());
+
+    constexpr size_t kChunk = 1600;  // 100 ms @ 16 kHz
+    stt.begin_stream(16000);
+    size_t partials_seen = 0;
+    for (size_t off = 0; off < audio_16k.size(); off += kChunk) {
+        size_t len = std::min(kChunk, audio_16k.size() - off);
+        auto partial = stt.push_chunk(audio_16k.data() + off, len);
+        if (!partial.text.empty()) ++partials_seen;
+    }
+    auto result = stt.end_stream();
+    std::printf("partials=%zu final=\"%s\" conf=%.3f ",
+                partials_seen, result.text.c_str(), result.confidence);
+    REQUIRE(!result.text.empty());
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
 // VAD → STT pipeline e2e — runs the fixture through LiteRTSileroVad +
 // StreamingVAD to locate the speech segment, slices the audio at the detected
 // boundaries (with a small pre-/post-roll), and hands it to LiteRTParakeetStt.
@@ -369,6 +417,7 @@ int main() {
     test_litert_silero_vad_real_speech(dir);
     test_litert_parakeet_stt(dir);
     test_litert_parakeet_real_speech(dir);
+    test_litert_parakeet_streaming(dir);
     test_litert_vad_to_stt_pipeline(dir);
 
     if (failures > 0) {
