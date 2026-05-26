@@ -49,7 +49,13 @@ for entry in "${FILES[@]}"; do
 
     url="$BASE_URL/$repo/resolve/main/$rel"
     echo "[fetch] $rel"
-    curl -fL --retry 3 -o "$dest" "$url"
+    # Tolerate 404s so a single missing file (e.g. DeepFilterNet3-ONNX/deepfilter.onnx
+    # is not yet published) doesn't kill the whole download. The corresponding
+    # test_* function in test_models.cpp skips at runtime when its files are absent.
+    if ! curl -fL --retry 3 -o "$dest" "$url"; then
+        echo "[warn] $rel not available (HTTP error) — leaving missing"
+        rm -f "$dest"
+    fi
 done
 
 echo ""

@@ -34,6 +34,12 @@ private:
     static constexpr size_t kTotalSamples   = kContextSamples + kChunkSamples;  // 576
     static constexpr size_t kStateSize      = 2 * 1 * 128;
 
+    // Output indices vary between TFLite converter runs (it doesn't preserve
+    // the source model's output order). Resolved at construction by tensor
+    // byte size — prob = 1 float, state_out = 256 floats.
+    int prob_idx_  = -1;
+    int state_idx_ = -1;
+
     std::array<float, kContextSamples> context_{};
     std::array<float, kStateSize>      state_{};
     std::array<float, kTotalSamples>   input_buffer_{};
