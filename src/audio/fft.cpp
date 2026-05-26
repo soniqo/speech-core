@@ -6,6 +6,9 @@
 
 namespace speech_core::audio {
 
+// MSVC's <cmath> doesn't define M_PI without _USE_MATH_DEFINES.
+static constexpr float kPi = 3.14159265358979323846f;
+
 static void fft_complex(float* re, float* im, size_t n, bool inverse) {
     // Bit-reversal permutation
     for (size_t i = 1, j = 0; i < n; i++) {
@@ -21,7 +24,7 @@ static void fft_complex(float* re, float* im, size_t n, bool inverse) {
     // Cooley-Tukey
     float sign = inverse ? 1.0f : -1.0f;
     for (size_t len = 2; len <= n; len <<= 1) {
-        float ang = sign * 2.0f * static_cast<float>(M_PI) / static_cast<float>(len);
+        float ang = sign * 2.0f * kPi / static_cast<float>(len);
         float wr = std::cos(ang), wi = std::sin(ang);
 
         for (size_t i = 0; i < n; i += len) {

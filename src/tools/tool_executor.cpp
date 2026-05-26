@@ -3,6 +3,13 @@
 #include <array>
 #include <cstdio>
 
+// MSVC names these _popen / _pclose. POSIX names match Windows on MinGW so the
+// alias is only needed for the MSVC toolchain.
+#ifdef _MSC_VER
+#  define popen  _popen
+#  define pclose _pclose
+#endif
+
 namespace speech_core {
 
 ToolResult ToolExecutor::execute(const ToolDefinition& tool) {
@@ -44,8 +51,10 @@ ToolResult ToolExecutor::execute(const ToolDefinition& tool) {
         result.output = output;
     }
 
-    // Trim trailing newline
-    while (!result.output.empty() && result.output.back() == '\n') {
+    // Trim trailing newline (handle both LF and CRLF so Windows cmd.exe output
+    // round-trips cleanly).
+    while (!result.output.empty() &&
+           (result.output.back() == '\n' || result.output.back() == '\r')) {
         result.output.pop_back();
     }
 

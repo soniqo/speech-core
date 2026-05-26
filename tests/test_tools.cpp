@@ -254,14 +254,16 @@ void test_matcher_no_tools() {
 void test_executor_echo() {
     ToolDefinition tool;
     tool.name = "echo_test";
-    tool.command = "echo 'hello from tool'";
+    // Use an unquoted, single-token argument: works identically under both
+    // /bin/sh and Windows cmd.exe (which interprets single-quotes literally).
+    tool.command = "echo hello";
     tool.cooldown = 0;
 
     ToolExecutor executor;
     auto result = executor.execute(tool);
     assert(result.success);
     assert(result.tool_name == "echo_test");
-    assert(result.output == "hello from tool");
+    assert(result.output == "hello");
     assert(!result.on_cooldown);
     printf("  PASS: executor_echo\n");
 }

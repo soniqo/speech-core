@@ -35,6 +35,9 @@
 
 namespace {
 
+// MSVC's <cmath> doesn't define M_PI without _USE_MATH_DEFINES.
+constexpr float kPi = 3.14159265358979323846f;
+
 int failures = 0;
 
 #define REQUIRE(cond) do { \
@@ -127,7 +130,7 @@ std::vector<float> generate_tone(int sample_rate, float freq, float seconds, flo
     size_t n = static_cast<size_t>(seconds * sample_rate);
     std::vector<float> out(n);
     for (size_t i = 0; i < n; ++i) {
-        out[i] = amp * std::sin(2.0f * static_cast<float>(M_PI) * freq * i / sample_rate);
+        out[i] = amp * std::sin(2.0f * kPi * freq * static_cast<float>(i) / static_cast<float>(sample_rate));
     }
     return out;
 }
@@ -296,7 +299,7 @@ void test_deepfilter(const std::string& dir) {
     // 1 second of low-amplitude noise at 48 kHz
     std::vector<float> noisy(48000);
     for (size_t i = 0; i < noisy.size(); ++i) {
-        noisy[i] = 0.05f * std::sin(2.0f * static_cast<float>(M_PI) * 440.0f * i / 48000.0f);
+        noisy[i] = 0.05f * std::sin(2.0f * kPi * 440.0f * static_cast<float>(i) / 48000.0f);
     }
     std::vector<float> clean(noisy.size(), 0.0f);
     enh.enhance(noisy.data(), noisy.size(), 48000, clean.data());
