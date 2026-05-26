@@ -158,6 +158,7 @@ if(SPEECH_CORE_WITH_LITERT)
     add_library(speech_core_models_litert
         src/models/litert/litert_silero_vad.cpp
         src/models/litert/litert_parakeet_stt.cpp
+        src/models/litert/litert_voxcpm2_tts.cpp
     )
 
     target_include_directories(speech_core_models_litert

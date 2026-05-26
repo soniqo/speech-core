@@ -13,12 +13,15 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 
 ### LiteRT (TFLite) backend (`SPEECH_CORE_WITH_LITERT`)
 
-| Model | Interface | Header |
-|---|---|---|
-| `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` |
-| `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` |
+| Model | Interface | Header | Status |
+|---|---|---|---|
+| `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
+| `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
+| `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | **skeleton** |
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
+
+`LiteRTVoxCPM2Tts` is intentionally a load-and-validate skeleton: the constructor loads the four LiteRT graphs (`text-prefill`, `token-step`, `audio-encoder`, `audio-decoder`) and verifies the HF `tokenizer.json` exists, but `synthesize()` throws. The full orchestration loop (HF BPE tokenizer → `text_prefill` → `token_step` ×N → `audio_decode`, with explicit K/V cache handoff every step) is deferred to a follow-up.
 
 All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. All LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`) which currently configures CPU-only inference with a configurable thread count. NNAPI / GPU / Hexagon delegates are not yet wired through the C API in this version.
 
@@ -132,6 +135,31 @@ auto result = stt.transcribe(audio, length, 16000);
 - Encoder INT8 weight-quantized (~595 MB on disk vs ~840 MB ONNX FP32), decoder-joint stays FP32 to avoid LSTM drift
 - Decoder-joint exposes `(encoder_out, target, h, c)` as four discrete tensors (ORT bundles `target_length` and uses suffix-`_1`/`_2` for h/c)
 - Model files: [soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) — `parakeet-encoder.tflite`, `parakeet-decoder-joint.tflite`, `vocab.json`
+
+## LiteRTVoxCPM2Tts (skeleton)
+
+```cpp
+#include <speech_core/models/litert_voxcpm2_tts.h>
+
+speech_core::LiteRTVoxCPM2Tts tts(
+    "/models/voxcpm2-text-prefill.tflite",
+    "/models/voxcpm2-token-step.tflite",
+    "/models/voxcpm2-audio-encoder.tflite",
+    "/models/voxcpm2-audio-decoder.tflite",
+    "/models/tokenizer.json");
+
+// tts.synthesize(...) currently throws std::runtime_error — skeleton only.
+```
+
+- 2B-parameter multilingual TTS, 48 kHz studio-quality output. Voice cloning and instruction-driven voice design supported by the upstream model.
+- Ships as **four** LiteRT graphs plus an HF BPE tokenizer:
+  - `text-prefill`: text + (optional) reference-audio prefix → LM hidden + initial K/V cache
+  - `token-step`: one autoregressive step (called up to 2048 times per generation), consumes and emits the K/V cache explicitly
+  - `audio-encoder`: 16 kHz PCM reference clip → conditioning features
+  - `audio-decoder`: latent → 48 kHz PCM output
+- **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists. **`synthesize()` throws** — the orchestration loop and the HF-tokenizer integration are deferred.
+- Bundle is large (~4.6 GB total). Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
+- Model files: [aufklarer/VoxCPM2-LiteRT](https://huggingface.co/aufklarer/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 
 ## KokoroTts
 
