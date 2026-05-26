@@ -1,0 +1,133 @@
+name: Nightly integration
+
+# Runs the heavy end-to-end tests that need real model files (~1.2 GB ORT,
+# ~700 MB LiteRT). PR CI proves the build links; this lane proves inference
+# still produces sane output. Linux only for cost — most regressions surface
+# on Linux first; we can add macOS/Windows once a Linux-specific gap shows up.
+#
+# Models and backend prebuilds are cached via actions/cache keyed on the
+# download script's contents, so daily runs hit cache and finish in ~5 min.
+# First run after a model-list change re-downloads (~2 min from HuggingFace).
+#
+# Failures email the repo admin by default. We can wire a Slack/Discord
+# webhook later if we want louder alerts.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'   # 05:00 UTC daily, low traffic
+  workflow_dispatch:
+
+jobs:
+  ort-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake libasound2-dev curl ca-certificates
+
+      - name: Cache ONNX Runtime + models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ort-linux
+            scripts/models
+          key: ort-models-${{ hashFiles('examples/linux/setup_linux.sh', 'scripts/download_models.sh') }}
+
+      - name: Download ONNX Runtime (if not cached)
+        run: |
+          if [ ! -f ort-linux/lib/libonnxruntime.so ]; then
+              ./examples/linux/setup_linux.sh
+          fi
+          test -f ort-linux/lib/libonnxruntime.so
+
+      - name: Download ONNX models (if not cached)
+        run: |
+          if [ ! -f scripts/models/parakeet-encoder-int8.onnx ]; then
+              ./scripts/download_models.sh
+          fi
+          test -f scripts/models/silero-vad.onnx
+          test -f scripts/models/parakeet-encoder-int8.onnx
+
+      - name: Configure
+        run: |
+          cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DORT_DIR=ort-linux
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (with models)
+        env:
+          SPEECH_MODEL_DIR: ${{ github.workspace }}/scripts/models
+        run: ctest --test-dir build --output-on-failure
+
+  litert-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LITERT_TAG: litert-prebuilt-v2.18.0
+      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake curl ca-certificates
+
+      - name: Cache LiteRT prebuild + models
+        uses: actions/cache@v4
+        with:
+          path: |
+            litert
+            scripts/models-litert
+          # LITERT_TAG in the key means a tag bump triggers a clean re-fetch.
+          key: litert-models-${{ env.LITERT_TAG }}-${{ hashFiles('scripts/download_models_litert.sh') }}
+
+      - name: Download LiteRT prebuild (if not cached)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f litert/lib/libtensorflowlite_c.so ]; then
+              mkdir -p litert
+              gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
+              tar -xzf "$LITERT_ASSET" -C litert
+          fi
+          test -f litert/include/tensorflow/lite/c/c_api.h
+          test -f litert/lib/libtensorflowlite_c.so
+
+      - name: Download LiteRT models (if not cached)
+        run: |
+          if [ ! -f scripts/models-litert/parakeet-encoder.tflite ]; then
+              ./scripts/download_models_litert.sh
+          fi
+          test -f scripts/models-litert/silero-vad.tflite
+          test -f scripts/models-litert/parakeet-encoder.tflite
+
+      - name: Configure
+        run: |
+          cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_LITERT=ON \
+              -DLITERT_DIR=$PWD/litert
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (with models)
+        env:
+          SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-litert
+        run: |
+          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          ctest --test-dir build --output-on-failure
