@@ -1,0 +1,140 @@
+name: Build LiteRT prebuilds
+
+# Produces libtensorflowlite_c.{so,dylib,dll} (+ headers) for Linux x86_64,
+# macOS arm64, and Windows x86_64, packaged so it can drop directly into
+# LITERT_DIR. Manually triggered — refresh whenever bumping TF version.
+#
+# Pinned CMake 3.24 because the TFLite source tree's older subprojects
+# (xnnpack, fp16, etc.) declare deprecated CMake policies that newer CMake
+# versions (>=3.27) refuse to honor even with CMAKE_POLICY_VERSION_MINIMUM.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tf_version:
+        description: 'TensorFlow tag to build (e.g. v2.18.0)'
+        required: true
+        default: 'v2.18.0'
+      create_release:
+        description: 'Publish a GitHub release with the artifacts'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: macos-latest
+            platform: macos-arm64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned CMake 3.24
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.24.x'
+
+      - name: Clone TensorFlow ${{ inputs.tf_version }}
+        shell: bash
+        run: |
+          git clone --depth=1 --branch=${{ inputs.tf_version }} \
+              https://github.com/tensorflow/tensorflow tensorflow-src
+
+      - name: Configure
+        shell: bash
+        run: |
+          mkdir -p build
+          cd build
+          cmake ../tensorflow-src/tensorflow/lite/c \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DTFLITE_C_BUILD_SHARED_LIBS=ON \
+              -DTFLITE_ENABLE_NNAPI=OFF \
+              -DTFLITE_ENABLE_GPU=OFF \
+              -DTFLITE_ENABLE_METAL=OFF
+
+      - name: Build tensorflowlite_c
+        shell: bash
+        run: |
+          cmake --build build --target tensorflowlite_c --config Release -j
+
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          PLATFORM=${{ matrix.platform }}
+          OUT=litert-${PLATFORM}
+          mkdir -p $OUT/include/tensorflow/lite/c \
+                   $OUT/include/tensorflow/lite/core/c \
+                   $OUT/lib
+          cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/core/c/c_api.h        $OUT/include/tensorflow/lite/core/c/
+          cp tensorflow-src/tensorflow/lite/core/c/c_api_types.h  $OUT/include/tensorflow/lite/core/c/
+          cp tensorflow-src/tensorflow/lite/core/c/common.h       $OUT/include/tensorflow/lite/core/c/
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+              cp build/libtensorflowlite_c.dylib $OUT/lib/
+          else
+              cp build/libtensorflowlite_c.so $OUT/lib/
+          fi
+          tar -czf libtensorflowlite_c-${{ inputs.tf_version }}-${PLATFORM}.tar.gz -C $OUT .
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          PLATFORM=${{ matrix.platform }}
+          OUT=litert-${PLATFORM}
+          mkdir -p $OUT/include/tensorflow/lite/c \
+                   $OUT/include/tensorflow/lite/core/c \
+                   $OUT/lib
+          cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
+          cp tensorflow-src/tensorflow/lite/core/c/c_api.h        $OUT/include/tensorflow/lite/core/c/
+          cp tensorflow-src/tensorflow/lite/core/c/c_api_types.h  $OUT/include/tensorflow/lite/core/c/
+          cp tensorflow-src/tensorflow/lite/core/c/common.h       $OUT/include/tensorflow/lite/core/c/
+          cp build/Release/tensorflowlite_c.dll $OUT/lib/
+          cp build/Release/tensorflowlite_c.lib $OUT/lib/
+          # 7z is preinstalled on windows runners; use it to make a zip.
+          7z a "libtensorflowlite_c-${{ inputs.tf_version }}-${PLATFORM}.zip" "./${OUT}/*"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtensorflowlite_c-${{ matrix.platform }}
+          path: libtensorflowlite_c-${{ inputs.tf_version }}-*
+
+  release:
+    needs: build
+    if: ${{ inputs.create_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create litert-prebuilt-${{ inputs.tf_version }} \
+              artifacts/* \
+              --title "LiteRT prebuilds ${{ inputs.tf_version }}" \
+              --notes "Prebuilt libtensorflowlite_c for Linux x86_64, macOS arm64, and Windows x86_64. Consumed by the linux-litert / windows-litert CI lanes; see scripts/setup_litert.sh for the equivalent local build recipe."
