@@ -7,12 +7,15 @@
 
 using namespace speech_core;
 
+// MSVC's <cmath> doesn't define M_PI without _USE_MATH_DEFINES.
+static constexpr float kPi = 3.14159265358979323846f;
+
 // Generate a sine wave at a given frequency and sample rate
 static std::vector<float> make_sine(float freq, int sample_rate, size_t samples) {
     std::vector<float> buf(samples);
     for (size_t i = 0; i < samples; i++) {
-        buf[i] = std::sin(2.0f * static_cast<float>(M_PI) * freq
-                          * static_cast<float>(i) / sample_rate);
+        buf[i] = std::sin(2.0f * kPi * freq
+                          * static_cast<float>(i) / static_cast<float>(sample_rate));
     }
     return buf;
 }

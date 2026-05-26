@@ -8,6 +8,9 @@
 
 namespace speech_core::audio {
 
+// MSVC's <cmath> doesn't define M_PI without _USE_MATH_DEFINES.
+static constexpr float kPi = 3.14159265358979323846f;
+
 // HTK mel scale (used when slaney_norm=false).
 static float htk_hz_to_mel(float hz) {
     return 2595.0f * std::log10(1.0f + hz / 700.0f);
@@ -134,8 +137,8 @@ std::vector<float> mel_spectrogram(
     // Hann window
     std::vector<float> window(win_length);
     for (int i = 0; i < win_length; i++) {
-        window[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI)
-                    * i / (win_length - 1)));
+        window[i] = 0.5f * (1.0f - std::cos(2.0f * kPi
+                    * static_cast<float>(i) / static_cast<float>(win_length - 1)));
     }
 
     // STFT + mel

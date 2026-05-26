@@ -5,6 +5,9 @@
 
 namespace speech_core {
 
+// MSVC's <cmath> doesn't define M_PI without _USE_MATH_DEFINES.
+static constexpr double kPi = 3.14159265358979323846;
+
 std::mutex Resampler::cache_mutex_;
 std::unordered_map<uint64_t, Resampler::KernelTable> Resampler::cache_;
 
@@ -12,13 +15,13 @@ std::unordered_map<uint64_t, Resampler::KernelTable> Resampler::cache_;
 static inline double blackman(double x, double half) {
     if (x <= -half || x >= half) return 0.0;
     double n = (x / half + 1.0) * 0.5;  // normalize to [0, 1]
-    return 0.42 - 0.5 * std::cos(2.0 * M_PI * n)
-                + 0.08 * std::cos(4.0 * M_PI * n);
+    return 0.42 - 0.5 * std::cos(2.0 * kPi * n)
+                + 0.08 * std::cos(4.0 * kPi * n);
 }
 
 static inline double sinc(double x) {
     if (std::abs(x) < 1e-9) return 1.0;
-    double px = M_PI * x;
+    double px = kPi * x;
     return std::sin(px) / px;
 }
 

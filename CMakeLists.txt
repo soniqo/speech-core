@@ -39,15 +39,23 @@ target_include_directories(speech_core
         $<INSTALL_INTERFACE:include>
 )
 
-target_compile_options(speech_core PRIVATE
-    -Wall -Wextra -Wpedantic
-    $<$<CONFIG:Release>:-O2>
-)
+if(MSVC)
+    target_compile_options(speech_core PRIVATE /W4)
+    # cmd.exe / MSVC don't define M_PI etc. without this; we still want it
+    # belt-and-suspenders even though sources now use local kPi constants.
+    target_compile_definitions(speech_core PRIVATE _USE_MATH_DEFINES NOMINMAX)
+else()
+    target_compile_options(speech_core PRIVATE
+        -Wall -Wextra -Wpedantic
+        $<$<CONFIG:Release>:-O2>
+    )
+endif()
 
 # Build with -fPIC so the static library can be linked into shared libraries
 # (the Linux examples libspeech.so, the Android JNI .so, etc.). Apple's linker
 # doesn't require this; GNU ld does, and complains with "relocation R_X86_64_*
 # can not be used when making a shared object; recompile with -fPIC".
+# No-op on Windows (DLLs use a different model), but harmless.
 set_target_properties(speech_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
@@ -56,14 +64,20 @@ set_target_properties(speech_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(SPEECH_CORE_WITH_ONNX)
     if(NOT DEFINED ORT_DIR)
-        message(FATAL_ERROR "SPEECH_CORE_WITH_ONNX=ON requires ORT_DIR (path to ONNX Runtime with include/ and lib/)")
+        message(FATAL_ERROR "SPEECH_CORE_WITH_ONNX=ON requires ORT_DIR (path to ONNX Runtime with include/ and lib/, plus onnxruntime.dll/.lib on Windows)")
     endif()
     # Imported targets' INTERFACE_INCLUDE_DIRECTORIES must be absolute.
     get_filename_component(ORT_DIR "${ORT_DIR}" ABSOLUTE)
 
-    # ONNX Runtime — imported shared library
+    # ONNX Runtime — imported shared library.
+    # On Windows we need IMPORTED_LOCATION (the .dll, loaded at runtime) AND
+    # IMPORTED_IMPLIB (the .lib import library, used at link time). Everywhere
+    # else IMPORTED_LOCATION points directly at the shared object.
     add_library(onnxruntime SHARED IMPORTED)
-    if(APPLE)
+    if(WIN32)
+        set(_ORT_LIB    "${ORT_DIR}/lib/onnxruntime.dll")
+        set(_ORT_IMPLIB "${ORT_DIR}/lib/onnxruntime.lib")
+    elseif(APPLE)
         set(_ORT_LIB "${ORT_DIR}/lib/libonnxruntime.dylib")
     elseif(ANDROID)
         set(_ORT_LIB "${ORT_DIR}/lib/${ANDROID_ABI}/libonnxruntime.so")
@@ -74,6 +88,9 @@ if(SPEECH_CORE_WITH_ONNX)
         IMPORTED_LOCATION "${_ORT_LIB}"
         INTERFACE_INCLUDE_DIRECTORIES "${ORT_DIR}/include"
     )
+    if(WIN32)
+        set_target_properties(onnxruntime PROPERTIES IMPORTED_IMPLIB "${_ORT_IMPLIB}")
+    endif()
 
     add_library(speech_core_models
         src/models/silero/silero_vad.cpp
@@ -90,10 +107,15 @@ if(SPEECH_CORE_WITH_ONNX)
             $<INSTALL_INTERFACE:include>
     )
 
-    target_compile_options(speech_core_models PRIVATE
-        -Wall -Wextra
-        $<$<CONFIG:Release>:-O2>
-    )
+    if(MSVC)
+        target_compile_options(speech_core_models PRIVATE /W4)
+        target_compile_definitions(speech_core_models PRIVATE _USE_MATH_DEFINES NOMINMAX)
+    else()
+        target_compile_options(speech_core_models PRIVATE
+            -Wall -Wextra
+            $<$<CONFIG:Release>:-O2>
+        )
+    endif()
 
     # See speech_core above — same reason.
     set_target_properties(speech_core_models PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -107,13 +129,18 @@ endif()
 
 if(SPEECH_CORE_WITH_LITERT)
     if(NOT DEFINED LITERT_DIR)
-        message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT=ON requires LITERT_DIR (path to a directory with include/tensorflow/lite/c/c_api.h and lib/libtensorflowlite_c.{so,dylib})")
+        message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT=ON requires LITERT_DIR (path to a directory with include/tensorflow/lite/c/c_api.h and lib/libtensorflowlite_c.{so,dylib} — or lib/tensorflowlite_c.{dll,lib} on Windows)")
     endif()
     get_filename_component(LITERT_DIR "${LITERT_DIR}" ABSOLUTE)
 
-    # LiteRT (TFLite C API) — imported shared library
+    # LiteRT (TFLite C API) — imported shared library.
+    # Windows needs both .dll (runtime) and .lib (link-time import library);
+    # other platforms only need the shared object itself.
     add_library(litert SHARED IMPORTED)
-    if(APPLE)
+    if(WIN32)
+        set(_LITERT_LIB    "${LITERT_DIR}/lib/tensorflowlite_c.dll")
+        set(_LITERT_IMPLIB "${LITERT_DIR}/lib/tensorflowlite_c.lib")
+    elseif(APPLE)
         set(_LITERT_LIB "${LITERT_DIR}/lib/libtensorflowlite_c.dylib")
     elseif(ANDROID)
         set(_LITERT_LIB "${LITERT_DIR}/lib/${ANDROID_ABI}/libtensorflowlite_c.so")
@@ -124,6 +151,9 @@ if(SPEECH_CORE_WITH_LITERT)
         IMPORTED_LOCATION "${_LITERT_LIB}"
         INTERFACE_INCLUDE_DIRECTORIES "${LITERT_DIR}/include"
     )
+    if(WIN32)
+        set_target_properties(litert PROPERTIES IMPORTED_IMPLIB "${_LITERT_IMPLIB}")
+    endif()
 
     add_library(speech_core_models_litert
         src/models/litert/litert_silero_vad.cpp
@@ -136,10 +166,15 @@ if(SPEECH_CORE_WITH_LITERT)
             $<INSTALL_INTERFACE:include>
     )
 
-    target_compile_options(speech_core_models_litert PRIVATE
-        -Wall -Wextra
-        $<$<CONFIG:Release>:-O2>
-    )
+    if(MSVC)
+        target_compile_options(speech_core_models_litert PRIVATE /W4)
+        target_compile_definitions(speech_core_models_litert PRIVATE _USE_MATH_DEFINES NOMINMAX)
+    else()
+        target_compile_options(speech_core_models_litert PRIVATE
+            -Wall -Wextra
+            $<$<CONFIG:Release>:-O2>
+        )
+    endif()
 
     set_target_properties(speech_core_models_litert PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

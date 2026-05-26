@@ -8,25 +8,28 @@ on:
 
 jobs:
   # Fast lane: orchestration-only build, no ML deps. Catches anything that
-  # breaks the core library on either platform.
+  # breaks the core library on macOS, Linux, or Windows.
   unit-tests:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure
+        # Windows runners default to the Visual Studio (multi-config) generator,
+        # which ignores CMAKE_BUILD_TYPE at configure time — we pass --config on
+        # build and test instead, below.
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel --config Release
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -C Release
 
   # Heavy lane: ONNX-on build with the Linux example (libspeech.so + demo +
   # tools + C-ABI integration test). Exercises the speech_core_models target,
