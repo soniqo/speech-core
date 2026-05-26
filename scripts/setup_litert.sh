@@ -46,18 +46,17 @@ cmake "$TF_SRC/tensorflow/lite/c" \
 echo "[setup_litert] Building tensorflowlite_c (this takes ~20-30 minutes)..."
 cmake --build . --target tensorflowlite_c -j
 
-mkdir -p "$OUT/include/tensorflow/lite/c" "$OUT/include/tensorflow/lite/core/c" "$OUT/lib"
+mkdir -p "$OUT/include/tensorflow/lite" "$OUT/lib"
 
-# Copy public C headers (only what the wrappers consume).
-# builtin_ops.h is transitively included by core/c/{c_api,common}.h, so it
-# has to ship alongside them.
-cp "$TF_SRC/tensorflow/lite/builtin_ops.h"         "$OUT/include/tensorflow/lite/"
-cp "$TF_SRC/tensorflow/lite/c/c_api.h"             "$OUT/include/tensorflow/lite/c/"
-cp "$TF_SRC/tensorflow/lite/c/c_api_types.h"       "$OUT/include/tensorflow/lite/c/"
-cp "$TF_SRC/tensorflow/lite/c/common.h"            "$OUT/include/tensorflow/lite/c/"
-cp "$TF_SRC/tensorflow/lite/core/c/c_api.h"        "$OUT/include/tensorflow/lite/core/c/"
-cp "$TF_SRC/tensorflow/lite/core/c/c_api_types.h"  "$OUT/include/tensorflow/lite/core/c/"
-cp "$TF_SRC/tensorflow/lite/core/c/common.h"       "$OUT/include/tensorflow/lite/core/c/"
+# Copy every .h under tensorflow/lite/{c,core/c,core/async/c} plus the top-level
+# builtin_ops.h. Globbing is safer than enumerating individual files — the C
+# API has transitive includes (builtin_ops.h, core/async/c/types.h, …) that
+# changed between TF releases.
+cp "$TF_SRC/tensorflow/lite/builtin_ops.h" "$OUT/include/tensorflow/lite/"
+for subdir in c core/c core/async/c; do
+    mkdir -p "$OUT/include/tensorflow/lite/$subdir"
+    cp "$TF_SRC/tensorflow/lite/$subdir"/*.h "$OUT/include/tensorflow/lite/$subdir/"
+done
 
 # Library
 if [[ "$OSTYPE" == "darwin"* ]]; then
