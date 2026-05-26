@@ -1,9 +1,11 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
+#include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <tensorflow/lite/c/c_api.h>
 
+#include <memory>
 #include <string>
 
 namespace speech_core {
@@ -47,8 +49,8 @@ private:
     TfLiteModel*       audio_decoder_model_  = nullptr;
     TfLiteInterpreter* audio_decoder_        = nullptr;
 
-    std::string tokenizer_path_;
-    bool        cancelled_ = false;
+    std::unique_ptr<VoxCPM2Tokenizer> tokenizer_;
+    bool                              cancelled_ = false;
 };
 
 }  // namespace speech_core
