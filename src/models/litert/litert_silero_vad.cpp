@@ -18,6 +18,19 @@ LiteRTSileroVad::LiteRTSileroVad(const std::string& model_path, bool hw_accel) {
                                  + std::to_string(in_count) + "/" + std::to_string(out_count));
     }
 
+    // Resolve output indices by byte size — the TFLite converter does not
+    // preserve the original output order, and the two outputs are unambiguously
+    // distinguishable: prob is exactly one float, state_out is 256 floats.
+    for (int i = 0; i < out_count; ++i) {
+        const TfLiteTensor* t = TfLiteInterpreterGetOutputTensor(interp_, i);
+        const size_t bytes = TfLiteTensorByteSize(t);
+        if      (bytes == sizeof(float))               prob_idx_  = i;
+        else if (bytes == kStateSize * sizeof(float))  state_idx_ = i;
+    }
+    if (prob_idx_ < 0 || state_idx_ < 0) {
+        throw std::runtime_error("LiteRT Silero: could not identify prob/state_out outputs by size");
+    }
+
     reset();
 }
 
@@ -53,8 +66,8 @@ float LiteRTSileroVad::process_chunk(const float* samples, size_t length) {
 
     litert_check(TfLiteInterpreterInvoke(interp_), "Invoke");
 
-    const TfLiteTensor* out_prob  = TfLiteInterpreterGetOutputTensor(interp_, 0);
-    const TfLiteTensor* out_state = TfLiteInterpreterGetOutputTensor(interp_, 1);
+    const TfLiteTensor* out_prob  = TfLiteInterpreterGetOutputTensor(interp_, prob_idx_);
+    const TfLiteTensor* out_state = TfLiteInterpreterGetOutputTensor(interp_, state_idx_);
 
     float prob = 0.0f;
     litert_check(TfLiteTensorCopyToBuffer(out_prob, &prob, sizeof(float)),
