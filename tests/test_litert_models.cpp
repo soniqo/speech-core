@@ -15,6 +15,7 @@
 #include "speech_core/interfaces.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_silero_vad.h"
+#include "speech_core/models/litert_voxcpm2_tts.h"
 #include "speech_core/vad/streaming_vad.h"
 
 #include <algorithm>
@@ -400,6 +401,30 @@ void test_litert_vad_to_stt_pipeline(const std::string& dir) {
     std::printf("ok\n");
 }
 
+// ---------------------------------------------------------------------------
+// VoxCPM2 skeleton load — proves the four LiteRT graphs and the HF tokenizer
+// file parse. The wrapper's synthesize() is intentionally a stub; this test
+// only covers what the skeleton does.
+// ---------------------------------------------------------------------------
+
+void test_litert_voxcpm2_load(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string enc  = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_voxcpm2_load ... ");
+
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
+    REQUIRE(tts.output_sample_rate() == 48000);
+    std::printf("ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -419,6 +444,7 @@ int main() {
     test_litert_parakeet_real_speech(dir);
     test_litert_parakeet_streaming(dir);
     test_litert_vad_to_stt_pipeline(dir);
+    test_litert_voxcpm2_load(dir);
 
     if (failures > 0) {
         std::fprintf(stderr, "\n%d test(s) failed\n", failures);
