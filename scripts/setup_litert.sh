@@ -49,6 +49,9 @@ cmake --build . --target tensorflowlite_c -j
 mkdir -p "$OUT/include/tensorflow/lite/c" "$OUT/include/tensorflow/lite/core/c" "$OUT/lib"
 
 # Copy public C headers (only what the wrappers consume).
+# builtin_ops.h is transitively included by core/c/{c_api,common}.h, so it
+# has to ship alongside them.
+cp "$TF_SRC/tensorflow/lite/builtin_ops.h"         "$OUT/include/tensorflow/lite/"
 cp "$TF_SRC/tensorflow/lite/c/c_api.h"             "$OUT/include/tensorflow/lite/c/"
 cp "$TF_SRC/tensorflow/lite/c/c_api_types.h"       "$OUT/include/tensorflow/lite/c/"
 cp "$TF_SRC/tensorflow/lite/c/common.h"            "$OUT/include/tensorflow/lite/c/"
