@@ -7,6 +7,7 @@ speech-core — voice agent pipeline engine in C++17. Provides:
 1. **Orchestration core** — state machine, turn detection, interruption handling, speech queue, conversation context, streaming VAD state machine, audio utilities. Zero ML dependencies, pure C++17.
 2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface` in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, …) implement these with their own model backends.
 3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
+4. **Optional LiteRT (TFLite) reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Kokoro and DeepFilter LiteRT exports don't exist yet; wrappers will follow once `speech-models` ships them.
 
 ## Structure
 
@@ -47,16 +48,29 @@ cmake --build build
 - Linux: `lib/libonnxruntime.so`
 - Android: `lib/${ANDROID_ABI}/libonnxruntime.so`
 
+### With LiteRT (TFLite) reference models
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    -DSPEECH_CORE_WITH_LITERT=ON \
+    -DLITERT_DIR=/path/to/litert
+cmake --build build
+```
+
+`LITERT_DIR` must contain `include/tensorflow/lite/c/c_api.h` and a platform shared library (`lib/libtensorflowlite_c.{so,dylib}`). Use `scripts/setup_litert.sh` to build one from TF source. Both `SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent and can be enabled together.
+
 ## CMake targets
 
 - **`speech_core`** — static library, orchestration + interfaces + audio utilities. No ORT. Always built.
 - **`speech_core_models`** — static library, ONNX Runtime reference implementations. Links `speech_core` + imported `onnxruntime`. Only built when `SPEECH_CORE_WITH_ONNX=ON`.
+- **`speech_core_models_litert`** — static library, LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT). Links `speech_core` + imported `litert`. Only built when `SPEECH_CORE_WITH_LITERT=ON`.
 
 Consumers link the targets they need:
 
 ```cmake
-target_link_libraries(my_app PRIVATE speech_core)                  # orchestration only
-target_link_libraries(my_app PRIVATE speech_core speech_core_models)  # + ONNX models
+target_link_libraries(my_app PRIVATE speech_core)                         # orchestration only
+target_link_libraries(my_app PRIVATE speech_core speech_core_models)       # + ONNX models
+target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + LiteRT models
 ```
 
 ## Key files
@@ -74,6 +88,9 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models)  # + ONNX m
 | `include/speech_core/models/kokoro_tts.h` | Kokoro 82M (ORT) — implements `TTSInterface` |
 | `include/speech_core/models/deepfilter.h` | DeepFilterNet3 (ORT) — implements `EnhancerInterface` |
 | `include/speech_core/models/onnx_engine.h` | ORT singleton with NNAPI/QNN/CPU EP selection |
+| `include/speech_core/models/litert_silero_vad.h` | Silero VAD v5 (LiteRT) — implements `VADInterface` |
+| `include/speech_core/models/litert_parakeet_stt.h` | Parakeet TDT v3 (LiteRT, INT8 encoder) — implements `STTInterface` |
+| `include/speech_core/models/litert_engine.h` | TFLite C API loader singleton (CPU only in v1) |
 
 ## Tests
 

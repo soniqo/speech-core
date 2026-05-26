@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
+option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,51 @@ if(SPEECH_CORE_WITH_ONNX)
 endif()
 
 # ---------------------------------------------------------------------------
+# speech_core_models_litert — LiteRT (TFLite) reference implementations (optional)
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_WITH_LITERT)
+    if(NOT DEFINED LITERT_DIR)
+        message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT=ON requires LITERT_DIR (path to a directory with include/tensorflow/lite/c/c_api.h and lib/libtensorflowlite_c.{so,dylib})")
+    endif()
+    get_filename_component(LITERT_DIR "${LITERT_DIR}" ABSOLUTE)
+
+    # LiteRT (TFLite C API) — imported shared library
+    add_library(litert SHARED IMPORTED)
+    if(APPLE)
+        set(_LITERT_LIB "${LITERT_DIR}/lib/libtensorflowlite_c.dylib")
+    elseif(ANDROID)
+        set(_LITERT_LIB "${LITERT_DIR}/lib/${ANDROID_ABI}/libtensorflowlite_c.so")
+    else()
+        set(_LITERT_LIB "${LITERT_DIR}/lib/libtensorflowlite_c.so")
+    endif()
+    set_target_properties(litert PROPERTIES
+        IMPORTED_LOCATION "${_LITERT_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LITERT_DIR}/include"
+    )
+
+    add_library(speech_core_models_litert
+        src/models/litert/litert_silero_vad.cpp
+        src/models/litert/litert_parakeet_stt.cpp
+    )
+
+    target_include_directories(speech_core_models_litert
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
+
+    target_compile_options(speech_core_models_litert PRIVATE
+        -Wall -Wextra
+        $<$<CONFIG:Release>:-O2>
+    )
+
+    set_target_properties(speech_core_models_litert PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    target_link_libraries(speech_core_models_litert PUBLIC speech_core litert)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -112,7 +158,8 @@ if(SPEECH_CORE_BUILD_TESTS)
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         # test_models.cpp needs ORT — handled below when SPEECH_CORE_WITH_ONNX=ON.
-        if(TEST_NAME STREQUAL "test_models")
+        # test_litert_models.cpp needs LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
+        if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -129,6 +176,16 @@ if(SPEECH_CORE_BUILD_TESTS)
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_models COMMAND test_models)
     endif()
+
+    # LiteRT model integration tests — require SPEECH_CORE_WITH_LITERT=ON.
+    # Skip gracefully at runtime when SPEECH_LITERT_MODEL_DIR isn't set.
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_litert_models.cpp)
+        add_executable(test_litert_models tests/test_litert_models.cpp)
+        target_link_libraries(test_litert_models PRIVATE speech_core_models_litert)
+        target_compile_definitions(test_litert_models PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME test_litert_models COMMAND test_litert_models)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -138,6 +195,9 @@ endif()
 set(_install_targets speech_core)
 if(SPEECH_CORE_WITH_ONNX)
     list(APPEND _install_targets speech_core_models)
+endif()
+if(SPEECH_CORE_WITH_LITERT)
+    list(APPEND _install_targets speech_core_models_litert)
 endif()
 
 install(TARGETS ${_install_targets}
