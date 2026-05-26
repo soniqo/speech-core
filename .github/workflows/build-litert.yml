@@ -87,18 +87,16 @@ jobs:
         run: |
           PLATFORM=${{ matrix.platform }}
           OUT=litert-${PLATFORM}
-          mkdir -p $OUT/include/tensorflow/lite/c \
-                   $OUT/include/tensorflow/lite/core/c \
-                   $OUT/lib
-          # builtin_ops.h is transitively included by core/c/c_api.h and
-          # core/c/common.h, so it has to ship alongside them.
-          cp tensorflow-src/tensorflow/lite/builtin_ops.h     $OUT/include/tensorflow/lite/
-          cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/core/c/c_api.h        $OUT/include/tensorflow/lite/core/c/
-          cp tensorflow-src/tensorflow/lite/core/c/c_api_types.h  $OUT/include/tensorflow/lite/core/c/
-          cp tensorflow-src/tensorflow/lite/core/c/common.h       $OUT/include/tensorflow/lite/core/c/
+          mkdir -p $OUT/include/tensorflow/lite $OUT/lib
+          # Copy every .h under tensorflow/lite/{c,core/c,core/async/c} plus
+          # the top-level builtin_ops.h — these are what the C API includes
+          # transitively. Globbing is safer than enumerating one file at a
+          # time (cf. fix #27 for builtin_ops.h, this one for async/c/types.h).
+          cp tensorflow-src/tensorflow/lite/builtin_ops.h $OUT/include/tensorflow/lite/
+          for subdir in c core/c core/async/c; do
+              mkdir -p $OUT/include/tensorflow/lite/$subdir
+              cp tensorflow-src/tensorflow/lite/$subdir/*.h $OUT/include/tensorflow/lite/$subdir/
+          done
           cp build/libtensorflowlite_c.so $OUT/lib/
           tar -czf libtensorflowlite_c-${{ inputs.tf_version }}-${PLATFORM}.tar.gz -C $OUT .
 
@@ -108,18 +106,13 @@ jobs:
         run: |
           PLATFORM=${{ matrix.platform }}
           OUT=litert-${PLATFORM}
-          mkdir -p $OUT/include/tensorflow/lite/c \
-                   $OUT/include/tensorflow/lite/core/c \
-                   $OUT/lib
-          # builtin_ops.h is transitively included by core/c/c_api.h and
-          # core/c/common.h, so it has to ship alongside them.
-          cp tensorflow-src/tensorflow/lite/builtin_ops.h     $OUT/include/tensorflow/lite/
-          cp tensorflow-src/tensorflow/lite/c/c_api.h         $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/c/c_api_types.h   $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/c/common.h        $OUT/include/tensorflow/lite/c/
-          cp tensorflow-src/tensorflow/lite/core/c/c_api.h        $OUT/include/tensorflow/lite/core/c/
-          cp tensorflow-src/tensorflow/lite/core/c/c_api_types.h  $OUT/include/tensorflow/lite/core/c/
-          cp tensorflow-src/tensorflow/lite/core/c/common.h       $OUT/include/tensorflow/lite/core/c/
+          mkdir -p $OUT/include/tensorflow/lite $OUT/lib
+          # Same header set as Linux — see comment above.
+          cp tensorflow-src/tensorflow/lite/builtin_ops.h $OUT/include/tensorflow/lite/
+          for subdir in c core/c core/async/c; do
+              mkdir -p $OUT/include/tensorflow/lite/$subdir
+              cp tensorflow-src/tensorflow/lite/$subdir/*.h $OUT/include/tensorflow/lite/$subdir/
+          done
           cp build/Release/tensorflowlite_c.dll $OUT/lib/
           cp build/Release/tensorflowlite_c.lib $OUT/lib/
           # 7z is preinstalled on windows runners; use it to make a zip.
