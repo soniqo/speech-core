@@ -17,6 +17,12 @@ namespace {
 void set_input(TfLiteInterpreter* interp, int idx, const void* data, size_t bytes,
                const char* what) {
     TfLiteTensor* t = TfLiteInterpreterGetInputTensor(interp, idx);
+    const size_t actual = TfLiteTensorByteSize(t);
+    if (actual != bytes) {
+        LOGE("%s: byte mismatch — tensor expects %zu, we passed %zu (rank=%d type=%d)",
+             what, actual, bytes, TfLiteTensorNumDims(t),
+             static_cast<int>(TfLiteTensorType(t)));
+    }
     litert_check(TfLiteTensorCopyFromBuffer(t, data, bytes), what);
 }
 
@@ -45,6 +51,24 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
     token_step_    = engine.load(token_step_path,    hw_accel, &token_step_model_);
     audio_encoder_ = engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_);
     audio_decoder_ = engine.load(audio_decoder_path, hw_accel, &audio_decoder_model_);
+
+    // Diagnostic — log input/output counts and per-input byte sizes for
+    // text_prefill so we can compare against the Python reference (which
+    // works on the same .tflite). If a tensor reports byte_size 0 here,
+    // AllocateTensors didn't fully initialise it, which is the most
+    // likely cause of "Input tensor N lacks data" at first Invoke.
+    {
+        const int nin  = TfLiteInterpreterGetInputTensorCount(text_prefill_);
+        const int nout = TfLiteInterpreterGetOutputTensorCount(text_prefill_);
+        LOGI("text_prefill inputs=%d outputs=%d", nin, nout);
+        for (int i = 0; i < nin; ++i) {
+            const TfLiteTensor* t = TfLiteInterpreterGetInputTensor(text_prefill_, i);
+            LOGI("  input[%d] name=%s rank=%d type=%d bytes=%zu",
+                 i, TfLiteTensorName(t) ? TfLiteTensorName(t) : "?",
+                 TfLiteTensorNumDims(t), static_cast<int>(TfLiteTensorType(t)),
+                 TfLiteTensorByteSize(t));
+        }
+    }
 
     tokenizer_         = std::make_unique<VoxCPM2Tokenizer>(tokenizer_path);
     audio_start_token_ = tokenizer_->token_id("<|audio_start|>");
