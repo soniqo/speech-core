@@ -69,13 +69,22 @@ jobs:
           # v2.18's c_api headers reference TfLiteOperator* via inline alias
           # functions, but the DLL only marks the older TfLiteRegistration*
           # entry points with __declspec(dllexport). Harmless on non-Windows.
+          # Parse vX.Y.Z to extract version components for TF_*_VERSION macros
+          # that v2.20+ release_version.h requires (Bazel build sets these
+          # automatically; standalone CMake needs them passed in).
+          TFV="${{ inputs.tf_version }}"
+          TFV_STRIPPED="${TFV#v}"
+          TF_MAJOR="${TFV_STRIPPED%%.*}"
+          TF_MINOR="$(echo "$TFV_STRIPPED" | cut -d. -f2)"
+          TF_PATCH="$(echo "$TFV_STRIPPED" | cut -d. -f3)"
           cmake ../tensorflow-src/tensorflow/lite/c \
               -DCMAKE_BUILD_TYPE=Release \
               -DTFLITE_C_BUILD_SHARED_LIBS=ON \
               -DTFLITE_ENABLE_NNAPI=OFF \
               -DTFLITE_ENABLE_GPU=OFF \
               -DTFLITE_ENABLE_METAL=OFF \
-              -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
+              -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
+              -DCMAKE_CXX_FLAGS="-DTF_MAJOR_VERSION=$TF_MAJOR -DTF_MINOR_VERSION=$TF_MINOR -DTF_PATCH_VERSION=$TF_PATCH -DTF_VERSION_SUFFIX='\"\"'"
 
       - name: Build tensorflowlite_c
         shell: bash
