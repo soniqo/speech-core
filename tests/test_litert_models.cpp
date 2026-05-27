@@ -456,6 +456,11 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
     // has enough audio to recognise. min_stop_steps_=32 ignores stop-signal
     // for the first 32 steps (~5 s) — empirically enough to cover the
     // phrase before the model flips its stop bit on a natural pause.
+    //
+    // Also set a non-empty instruction: VoxCPM2 was trained on
+    // "({instruction}){text}" prompts and an empty "()..." prefix tends to
+    // make the model emit a one-word filler ("Yeah.") instead of the text.
+    tts.set_instruction("clear, natural delivery");
     tts.set_max_steps(128);
     tts.set_min_steps_before_stop(32);
 
