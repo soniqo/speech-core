@@ -15,9 +15,12 @@
 #include "speech_core/interfaces.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_silero_vad.h"
+#include "speech_core/models/litert_engine.h"
 #include "speech_core/models/litert_voxcpm2_tts.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 #include "speech_core/vad/streaming_vad.h"
+
+#include <tensorflow/lite/c/c_api.h>
 
 #include <algorithm>
 #include <cctype>
@@ -408,6 +411,51 @@ void test_litert_vad_to_stt_pipeline(const std::string& dir) {
 // only covers what the skeleton does.
 // ---------------------------------------------------------------------------
 
+// Isolation diagnostic: load text_prefill ALONE (no other graphs), set the
+// 5 inputs to zero, Invoke. If this fails the same way as the wrapper-driven
+// path, the bug is in our setup of text_prefill itself. If it succeeds, the
+// bug is multi-interpreter contamination from loading the other 3 graphs.
+void test_litert_voxcpm2_prefill_isolation(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    if (!file_exists(pref)) {
+        std::printf("  [skip] voxcpm2-text-prefill.tflite not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_voxcpm2_prefill_isolation ... ");
+
+    TfLiteModel* model = nullptr;
+    TfLiteInterpreter* interp = speech_core::LiteRTEngine::get().load(pref, false, &model);
+
+    std::vector<int64_t> text_tokens(512, 0);
+    std::vector<float>   text_mask  (512, 0.0f);
+    std::vector<float>   audio_feats(512 * 256, 0.0f);
+    std::vector<float>   audio_mask (512, 0.0f);
+    int64_t              ctx_len = 1;
+    text_tokens[0] = 1;
+    text_mask[0]   = 1.0f;
+
+    auto set = [&](int idx, const void* d, size_t n) {
+        TfLiteTensor* t = TfLiteInterpreterGetInputTensor(interp, idx);
+        speech_core::litert_check(TfLiteTensorCopyFromBuffer(t, d, n), "isolation set");
+    };
+    set(0, text_tokens.data(), text_tokens.size() * 8);
+    set(1, text_mask.data(),   text_mask.size()   * 4);
+    set(2, audio_feats.data(), audio_feats.size() * 4);
+    set(3, audio_mask.data(),  audio_mask.size()  * 4);
+    set(4, &ctx_len,           8);
+
+    try {
+        speech_core::litert_check(TfLiteInterpreterInvoke(interp), "isolation Invoke");
+        std::printf("ok (Invoke succeeded with ONLY text_prefill loaded)\n");
+    } catch (const std::exception& e) {
+        std::printf("\n    FAILED: %s\n", e.what());
+        REQUIRE(false);
+    }
+
+    TfLiteInterpreterDelete(interp);
+    TfLiteModelDelete(model);
+}
+
 void test_litert_voxcpm2_load(const std::string& dir) {
     std::string pref = dir + "/voxcpm2-text-prefill.tflite";
     std::string step = dir + "/voxcpm2-token-step.tflite";
@@ -596,6 +644,7 @@ int main() {
     test_litert_parakeet_streaming(dir);
     test_litert_vad_to_stt_pipeline(dir);
     test_voxcpm2_tokenizer(dir);
+    test_litert_voxcpm2_prefill_isolation(dir);
     test_litert_voxcpm2_load(dir);
     test_litert_voxcpm2_synthesize(dir);
 
