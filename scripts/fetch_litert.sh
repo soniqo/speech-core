@@ -58,17 +58,38 @@ cp "$LIB" "$OUT/"
 if [[ "$LIB" == *libLiteRt.dll ]]; then
     if command -v dumpbin >/dev/null 2>&1 && command -v lib >/dev/null 2>&1; then
         echo "[fetch_litert] Generating libLiteRt.lib import library"
-        (cd "$OUT" && \
-         dumpbin /EXPORTS libLiteRt.dll \
-            | awk 'BEGIN{p=0} /ordinal +hint +RVA +name/{p=1;next} p && NF>=4 && $4!=""{print $4}' \
-            > LiteRt.exports
-         {
-             echo "LIBRARY libLiteRt"
-             echo "EXPORTS"
-             sed 's/^/    /' LiteRt.exports
-         } > libLiteRt.def
-         lib /MACHINE:X64 /DEF:libLiteRt.def /OUT:libLiteRt.lib >/dev/null
-         rm -f LiteRt.exports libLiteRt.def libLiteRt.exp)
+        cd "$OUT"
+
+        # 1. Dump exports and extract just the symbol names.
+        # dumpbin /EXPORTS output has 4 header lines then rows like:
+        #     1    0 00012345 LiteRtCreateEnvironment
+        # We want column 4. Python is easier to debug than awk on multi-platform.
+        dumpbin //EXPORTS libLiteRt.dll > litert_exports.txt
+        "$PY" -c "
+import sys
+syms, start = [], False
+for line in open('litert_exports.txt', encoding='utf-8', errors='replace'):
+    t = line.split()
+    if not start:
+        if len(t) >= 4 and t[0]=='ordinal' and t[1]=='hint' and t[2]=='RVA' and t[3]=='name':
+            start = True
+        continue
+    if not t: continue
+    if len(t) < 4: continue
+    if t[0].lower() == 'summary': break
+    if not t[0].isdigit(): continue
+    name = t[3]
+    if name and name not in ('=',): syms.append(name)
+print(f'parsed {len(syms)} exports', file=sys.stderr)
+with open('libLiteRt.def', 'w', encoding='ascii') as f:
+    f.write('LIBRARY libLiteRt\nEXPORTS\n')
+    for s in syms:
+        f.write('    ' + s + '\n')
+"
+        # 2. Build the import lib from the .def file.
+        lib //MACHINE:X64 //DEF:libLiteRt.def //OUT:libLiteRt.lib
+        rm -f litert_exports.txt libLiteRt.def libLiteRt.exp
+        cd - >/dev/null
     else
         echo "[fetch_litert] WARNING: dumpbin/lib not in PATH; skipping .lib generation."
         echo "                  (Run from an MSVC Developer Command Prompt to get one.)"
