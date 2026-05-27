@@ -11,7 +11,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` |
 
-### LiteRT (TFLite) backend (`SPEECH_CORE_WITH_LITERT`)
+### LiteRT backend (`SPEECH_CORE_WITH_LITERT`)
 
 | Model | Interface | Header | Status |
 |---|---|---|---|
@@ -248,15 +248,18 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
 `test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
 
-A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the two LiteRT wrappers against `.tflite` artifacts:
+A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the three LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS) + the VoxCPM2 tokenizer against `.tflite` artifacts:
 
 ```bash
-scripts/download_models_litert.sh
-scripts/setup_litert.sh                # builds libtensorflowlite_c locally
+scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel
+scripts/download_models_litert.sh           # Silero + Parakeet
+scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (~4.6 GB, optional)
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
 cmake --build build
 SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
 ```
+
+Each per-model test skips cleanly when its files aren't in `SPEECH_LITERT_MODEL_DIR`. The weekly CI workflow (`.github/workflows/weekly-voxcpm2.yml`) downloads the VoxCPM2 bundle and runs an end-to-end synth → Parakeet STT round-trip; the daily nightly skips VoxCPM2 to keep the cache budget reasonable.
 
 ## Bring-your-own model
 

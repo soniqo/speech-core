@@ -7,7 +7,7 @@ speech-core — voice agent pipeline engine in C++17. Provides:
 1. **Orchestration core** — state machine, turn detection, interruption handling, speech queue, conversation context, streaming VAD state machine, audio utilities. Zero ML dependencies, pure C++17.
 2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface` in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, …) implement these with their own model backends.
 3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
-4. **Optional LiteRT (TFLite) reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Kokoro and DeepFilter LiteRT exports don't exist yet; wrappers will follow once `speech-models` ships them.
+4. **Optional LiteRT reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt`, `LiteRTVoxCPM2Tts` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Backed by `libLiteRt` from Google's `ai-edge-litert` package (extracted from the PyPI wheel by `scripts/fetch_litert.sh`). Kokoro and DeepFilter LiteRT exports don't exist yet; wrappers will follow once `speech-models` ships them.
 
 ## Structure
 
@@ -48,7 +48,7 @@ cmake --build build
 - Linux: `lib/libonnxruntime.so`
 - Android: `lib/${ANDROID_ABI}/libonnxruntime.so`
 
-### With LiteRT (TFLite) reference models
+### With LiteRT reference models
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
@@ -63,7 +63,7 @@ cmake --build build
 
 - **`speech_core`** — static library, orchestration + interfaces + audio utilities. No ORT. Always built.
 - **`speech_core_models`** — static library, ONNX Runtime reference implementations. Links `speech_core` + imported `onnxruntime`. Only built when `SPEECH_CORE_WITH_ONNX=ON`.
-- **`speech_core_models_litert`** — static library, LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT). Links `speech_core` + imported `litert`. Only built when `SPEECH_CORE_WITH_LITERT=ON`.
+- **`speech_core_models_litert`** — static library, LiteRT reference implementations (Silero VAD, Parakeet STT, VoxCPM2 TTS, VoxCPM2 tokenizer). Links `speech_core` + imported `litert` (`libLiteRt` from ai-edge-litert). Only built when `SPEECH_CORE_WITH_LITERT=ON`.
 
 Consumers link the targets they need:
 
@@ -90,7 +90,10 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 | `include/speech_core/models/onnx_engine.h` | ORT singleton with NNAPI/QNN/CPU EP selection |
 | `include/speech_core/models/litert_silero_vad.h` | Silero VAD v5 (LiteRT) — implements `VADInterface` |
 | `include/speech_core/models/litert_parakeet_stt.h` | Parakeet TDT v3 (LiteRT, INT8 encoder) — implements `STTInterface` |
-| `include/speech_core/models/litert_engine.h` | TFLite C API loader singleton (CPU only in v1) |
+| `include/speech_core/models/litert_voxcpm2_tts.h` | VoxCPM2 (LiteRT) — implements `TTSInterface` (4-graph pipeline) |
+| `include/speech_core/models/voxcpm2_tokenizer.h` | Hand-rolled BPE tokenizer for VoxCPM2 (pure C++17, no deps) |
+| `include/speech_core/models/litert_engine.h` | LiteRT environment + CompiledModel + TensorBuffer RAII (CPU only) |
+| `third_party/litert/` | Vendored LiteRT C API headers (~44 files, ~408 KB) |
 
 ## Tests
 

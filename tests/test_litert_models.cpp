@@ -451,8 +451,13 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
     // Long enough that the model can actually utter "the quick brown fox jumps
     // over the lazy dog" before stop-signal kicks in (~25-30 AR steps in
     // upstream Python runs).
-    tts.set_max_steps(64);
-    tts.set_min_steps_before_stop(8);
+    // The 9-word test phrase takes ~25-40 AR steps to fully utter; bump
+    // both knobs up from defaults so the ASR round-trip in the weekly CI
+    // has enough audio to recognise. min_stop_steps_=32 ignores stop-signal
+    // for the first 32 steps (~5 s) — empirically enough to cover the
+    // phrase before the model flips its stop bit on a natural pause.
+    tts.set_max_steps(128);
+    tts.set_min_steps_before_stop(32);
 
     std::vector<float> audio;
     bool got_final = false;
