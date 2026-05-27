@@ -2,7 +2,6 @@
 
 #include "speech_core/models/litert_engine.h"
 
-#include <fstream>
 #include <stdexcept>
 
 namespace speech_core {
@@ -13,7 +12,6 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
                                     const std::string& audio_decoder_path,
                                     const std::string& tokenizer_path,
                                     bool hw_accel)
-    : tokenizer_path_(tokenizer_path)
 {
     // The four graphs are independent .tflite files; load each via the shared
     // LiteRT engine. The model handles are owned by this wrapper and freed in
@@ -24,14 +22,9 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
     audio_encoder_ = engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_);
     audio_decoder_ = engine.load(audio_decoder_path, hw_accel, &audio_decoder_model_);
 
-    // The full pipeline needs a HuggingFace BPE tokenizer at runtime; for the
-    // skeleton we just verify the file is readable so a misconfiguration is
-    // caught at construction rather than during synthesize().
-    std::ifstream tf(tokenizer_path);
-    if (!tf) {
-        throw std::runtime_error("LiteRT VoxCPM2: tokenizer file not readable: "
-                                 + tokenizer_path);
-    }
+    // Tokenizer is parsed at construction so a malformed tokenizer.json is
+    // caught immediately rather than on the first synthesize() call.
+    tokenizer_ = std::make_unique<VoxCPM2Tokenizer>(tokenizer_path);
 }
 
 LiteRTVoxCPM2Tts::~LiteRTVoxCPM2Tts() {
