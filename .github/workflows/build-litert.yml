@@ -69,12 +69,17 @@ jobs:
           # v2.18's c_api headers reference TfLiteOperator* via inline alias
           # functions, but the DLL only marks the older TfLiteRegistration*
           # entry points with __declspec(dllexport). Harmless on non-Windows.
+          # TFLITE_ENABLE_XNNPACK=OFF — VoxCPM2's int8 quantized graphs fail
+          # at Invoke ("Input tensor N lacks data") with XNNPACK delegate
+          # active in our C API path. Python tf.lite with XNNPACK works on
+          # the same files, but the C API's delegate registration differs.
           cmake ../tensorflow-src/tensorflow/lite/c \
               -DCMAKE_BUILD_TYPE=Release \
               -DTFLITE_C_BUILD_SHARED_LIBS=ON \
               -DTFLITE_ENABLE_NNAPI=OFF \
               -DTFLITE_ENABLE_GPU=OFF \
               -DTFLITE_ENABLE_METAL=OFF \
+              -DTFLITE_ENABLE_XNNPACK=OFF \
               -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
 
       - name: Build tensorflowlite_c
