@@ -84,37 +84,33 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   # LiteRT build lanes — prove the speech_core_models_litert target compiles
-  # and links against a real libtensorflowlite_c on Linux and Windows. The
-  # prebuilt library comes from a litert-prebuilt-vX.Y.Z release produced by
-  # .github/workflows/build-litert.yml (manually triggered, not run per PR).
+  # and links against a real libLiteRt on Linux and Windows. The runtime is
+  # extracted from Google's ai-edge-litert PyPI wheel by scripts/fetch_litert.sh;
+  # headers are vendored in third_party/litert/ and committed to the repo.
   # test_litert_models skips at runtime when SPEECH_LITERT_MODEL_DIR isn't
-  # set, so these lanes don't need ~700 MB of .tflite files in CI — the
-  # nightly workflow does that.
+  # set, so these lanes don't pay for ~700 MB of .tflite downloads per PR —
+  # the nightly / weekly-voxcpm2 workflows do that.
   linux-litert:
     runs-on: ubuntu-latest
     needs: unit-tests
-    env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential cmake curl ca-certificates
+              build-essential cmake curl ca-certificates unzip
 
-      - name: Download LiteRT prebuild
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch libLiteRt from ai-edge-litert wheel
         run: |
-          mkdir -p litert
-          gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
-          tar -xzf "$LITERT_ASSET" -C litert
-          test -f litert/include/tensorflow/lite/c/c_api.h
-          test -f litert/lib/libtensorflowlite_c.so
+          ./scripts/fetch_litert.sh "$PWD/litert"
+          test -f litert/libLiteRt.so
 
       - name: Configure
         run: |
@@ -128,34 +124,33 @@ jobs:
 
       - name: Test
         # test_litert_models skips when SPEECH_LITERT_MODEL_DIR isn't set;
-        # the other unit tests run normally. LD_LIBRARY_PATH so the
-        # dynamic loader can find libtensorflowlite_c.so.
+        # the other unit tests run normally. LD_LIBRARY_PATH so the dynamic
+        # loader can find libLiteRt.so when ctest launches the test exe.
         run: |
-          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build --output-on-failure
 
   windows-litert:
     runs-on: windows-latest
     needs: unit-tests
-    env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-windows-x86_64.zip
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download LiteRT prebuild
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Puts MSVC dumpbin + lib in PATH so fetch_litert.sh can generate the
+      # import library from the runtime DLL (Google's wheel doesn't ship one).
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Fetch libLiteRt from ai-edge-litert wheel
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p litert
-          gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
-          # 7z is preinstalled on windows-latest runners.
-          7z x "$LITERT_ASSET" -olitert
-          test -f litert/include/tensorflow/lite/c/c_api.h
-          test -f litert/lib/tensorflowlite_c.dll
-          test -f litert/lib/tensorflowlite_c.lib
+          ./scripts/fetch_litert.sh "$PWD/litert"
+          test -f litert/libLiteRt.dll
+          test -f litert/libLiteRt.lib
 
       - name: Configure
         shell: bash
@@ -170,11 +165,11 @@ jobs:
         run: cmake --build build --parallel --config Release
 
       - name: Test
-        # Windows uses PATH for DLL resolution; prepend the litert lib dir
-        # so tensorflowlite_c.dll resolves when ctest launches the test exe.
+        # Windows uses PATH for DLL resolution; prepend the litert dir so
+        # libLiteRt.dll resolves when ctest launches the test exe.
         shell: bash
         run: |
-          export PATH="$PWD/litert/lib:$PATH"
+          export PATH="$PWD/litert:$PATH"
           ctest --test-dir build --output-on-failure -C Release
 
   # aarch64 cross-compile — proves the Yocto/automotive path still compiles

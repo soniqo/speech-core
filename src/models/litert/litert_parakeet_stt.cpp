@@ -1,7 +1,6 @@
 #include "speech_core/models/litert_parakeet_stt.h"
 
 #include "speech_core/audio/mel.h"
-#include "speech_core/models/litert_engine.h"
 #include "speech_core/util/json.h"
 
 #include <algorithm>
@@ -27,24 +26,23 @@ static void replace_sp_marker(std::string& s) {
 // Construction
 // ---------------------------------------------------------------------------
 
-LiteRTParakeetStt::LiteRTParakeetStt(
-    const std::string& encoder_path,
-    const std::string& decoder_joint_path,
-    const std::string& vocab_path,
-    bool hw_accel)
+LiteRTParakeetStt::LiteRTParakeetStt(const std::string& encoder_path,
+                                      const std::string& decoder_joint_path,
+                                      const std::string& vocab_path,
+                                      bool hw_accel)
 {
     auto& engine = LiteRTEngine::get();
-    enc_interp_ = engine.load(encoder_path,       hw_accel, &enc_model_);
-    dec_interp_ = engine.load(decoder_joint_path, false,    &dec_model_);
+    engine.load(encoder_path,       hw_accel, &enc_model_, &enc_compiled_);
+    engine.load(decoder_joint_path, false,    &dec_model_, &dec_compiled_);
 
     load_vocab(vocab_path);
 }
 
 LiteRTParakeetStt::~LiteRTParakeetStt() {
-    if (dec_interp_) TfLiteInterpreterDelete(dec_interp_);
-    if (dec_model_)  TfLiteModelDelete(dec_model_);
-    if (enc_interp_) TfLiteInterpreterDelete(enc_interp_);
-    if (enc_model_)  TfLiteModelDelete(enc_model_);
+    if (dec_compiled_) LiteRtDestroyCompiledModel(dec_compiled_);
+    if (dec_model_)    LiteRtDestroyModel(dec_model_);
+    if (enc_compiled_) LiteRtDestroyCompiledModel(enc_compiled_);
+    if (enc_model_)    LiteRtDestroyModel(enc_model_);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,15 +61,14 @@ bool LiteRTParakeetStt::load_vocab(const std::string& path) {
 
             if (val.size() >= 5 && val.size() <= 6 &&
                 val.substr(0, 2) == "<|" && val.substr(val.size() - 2) == "|>") {
-                std::string code = val.substr(2, val.size() - 4);
-                lang_tokens_[id] = code;
+                lang_tokens_[id] = val.substr(2, val.size() - 4);
             }
         } catch (...) {}
     }
 
     if (!vocab_.empty()) {
-        cfg_.vocab_size = static_cast<int>(vocab_.size());
-        cfg_.blank_id = cfg_.vocab_size;
+        cfg_.vocab_size   = static_cast<int>(vocab_.size());
+        cfg_.blank_id     = cfg_.vocab_size;
         cfg_.total_logits = cfg_.vocab_size + 1 + cfg_.num_dur_bins;
     }
 
@@ -95,7 +92,7 @@ std::string LiteRTParakeetStt::decode_tokens(const std::vector<int>& token_ids) 
 }
 
 // ---------------------------------------------------------------------------
-// Mel spectrogram (same as ORT wrapper)
+// Mel spectrogram (per-utterance mean/var normalised, same as ORT wrapper)
 // ---------------------------------------------------------------------------
 
 std::vector<float> LiteRTParakeetStt::compute_mel(const float* audio, size_t length) {
@@ -116,74 +113,77 @@ std::vector<float> LiteRTParakeetStt::compute_mel(const float* audio, size_t len
             float sum = 0, sq_sum = 0;
             for (int t = 0; t < num_frames; t++) {
                 float v = mel[m * num_frames + t];
-                sum += v;
+                sum    += v;
                 sq_sum += v * v;
             }
-            float mean = sum / num_frames;
-            float var = sq_sum / num_frames - mean * mean;
+            float mean   = sum / num_frames;
+            float var    = sq_sum / num_frames - mean * mean;
             float stddev = (var > 0) ? std::sqrt(var) : 1.0f;
             for (int t = 0; t < num_frames; t++) {
                 mel[m * num_frames + t] = (mel[m * num_frames + t] - mean) / stddev;
             }
         }
     }
-
     return mel;
 }
 
 // ---------------------------------------------------------------------------
-// Decode (mel → encoder → tdt_decode)
+// Encoder (dynamic T) + TDT decode
 // ---------------------------------------------------------------------------
 
 LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::decode(const float* audio, size_t length) {
     auto mel = compute_mel(audio, length);
-    int64_t num_frames = static_cast<int64_t>(mel.size() / cfg_.num_mel_bins);
+    const int64_t num_frames = static_cast<int64_t>(mel.size() / cfg_.num_mel_bins);
 
-    // Encoder input 0: audio_signal [1, 128, T]
-    // Encoder input 1: length [1] int64
+    // Resize the encoder's dynamic time dim to match the current input.
     const int enc_audio_dims[] = {1, cfg_.num_mel_bins, static_cast<int>(num_frames)};
-    litert_check(TfLiteInterpreterResizeInputTensor(enc_interp_, 0, enc_audio_dims, 3),
+    litert_check(LiteRtCompiledModelResizeInputTensorNonStrict(
+                     enc_compiled_, 0, 0, enc_audio_dims, 3),
                  "Encoder ResizeInputTensor(audio_signal)");
     const int enc_len_dims[] = {1};
-    litert_check(TfLiteInterpreterResizeInputTensor(enc_interp_, 1, enc_len_dims, 1),
+    litert_check(LiteRtCompiledModelResizeInputTensorNonStrict(
+                     enc_compiled_, 0, 1, enc_len_dims, 1),
                  "Encoder ResizeInputTensor(length)");
-    litert_check(TfLiteInterpreterAllocateTensors(enc_interp_), "Encoder AllocateTensors");
 
-    TfLiteTensor* in_audio  = TfLiteInterpreterGetInputTensor(enc_interp_, 0);
-    TfLiteTensor* in_length = TfLiteInterpreterGetInputTensor(enc_interp_, 1);
-
-    litert_check(TfLiteTensorCopyFromBuffer(in_audio, mel.data(),
-                                            mel.size() * sizeof(float)),
-                 "Encoder CopyFromBuffer(audio_signal)");
-    int64_t mel_len = num_frames;
-    litert_check(TfLiteTensorCopyFromBuffer(in_length, &mel_len, sizeof(int64_t)),
-                 "Encoder CopyFromBuffer(length)");
-
-    litert_check(TfLiteInterpreterInvoke(enc_interp_), "Encoder Invoke");
-
-    // Encoder output 0: encoded [1, hidden, T']
-    // Encoder output 1: encoded_lengths [1] int64
-    const TfLiteTensor* out_encoded     = TfLiteInterpreterGetOutputTensor(enc_interp_, 0);
-    const TfLiteTensor* out_encoded_len = TfLiteInterpreterGetOutputTensor(enc_interp_, 1);
-
-    int32_t enc_dims = TfLiteTensorNumDims(out_encoded);
-    int64_t hidden  = (enc_dims >= 3) ? TfLiteTensorDim(out_encoded, 1) : cfg_.encoder_hidden;
-    int64_t enc_t   = (enc_dims >= 3) ? TfLiteTensorDim(out_encoded, 2) : 0;
+    // Query the resized output layouts. update_allocation=true propagates the
+    // new dynamic shape from the resized inputs to the outputs (encoded[0]
+    // shape = [1, hidden, T']; encoded_lengths[1] shape = [1]).
+    LiteRtLayout enc_out_layouts[2]{};
+    litert_check(LiteRtGetCompiledModelOutputTensorLayouts(
+                     enc_compiled_, 0, 2, enc_out_layouts, /*update_allocation=*/true),
+                 "GetOutputTensorLayouts(encoder)");
+    const int64_t hidden = enc_out_layouts[0].dimensions[1];
+    const int64_t enc_t  = enc_out_layouts[0].dimensions[2];
 
     std::vector<float> encoded(static_cast<size_t>(hidden * enc_t));
-    litert_check(TfLiteTensorCopyToBuffer(out_encoded, encoded.data(),
-                                          encoded.size() * sizeof(float)),
-                 "Encoder CopyToBuffer(encoded)");
-
+    int64_t mel_len = num_frames;
     int64_t enc_len = 0;
-    litert_check(TfLiteTensorCopyToBuffer(out_encoded_len, &enc_len, sizeof(int64_t)),
-                 "Encoder CopyToBuffer(encoded_lengths)");
+
+    auto env       = LiteRTEngine::get().env();
+    auto t_audio   = make_type(kLiteRtElementTypeFloat32,
+                                {1, cfg_.num_mel_bins, static_cast<int32_t>(num_frames)});
+    auto t_length  = make_type(kLiteRtElementTypeInt64,  {1});
+    auto t_encoded = make_type(kLiteRtElementTypeFloat32,
+                                {1, static_cast<int32_t>(hidden), static_cast<int32_t>(enc_t)});
+    auto t_enc_len = make_type(kLiteRtElementTypeInt64,  {1});
+
+    LiteRtHostBuffer in_audio   (env, t_audio,   mel.size() * sizeof(float), mel.data());
+    LiteRtHostBuffer in_length  (env, t_length,  sizeof(int64_t),            &mel_len);
+    LiteRtHostBuffer out_encoded(env, t_encoded, encoded.size() * sizeof(float));
+    LiteRtHostBuffer out_enc_len(env, t_enc_len, sizeof(int64_t));
+
+    LiteRtTensorBuffer enc_ins[2]  = { in_audio.raw(),    in_length.raw()  };
+    LiteRtTensorBuffer enc_outs[2] = { out_encoded.raw(), out_enc_len.raw() };
+    litert_check(LiteRtRunCompiledModel(enc_compiled_, 0, 2, enc_ins, 2, enc_outs),
+                 "Encoder Run");
+
+    out_encoded.read(encoded.data(), encoded.size() * sizeof(float));
+    out_enc_len.read(&enc_len,       sizeof(int64_t));
 
     LOGI("LiteRT STT: frames=%lld enc_len=%lld hidden=%lld audio=%zu",
          (long long)num_frames, (long long)enc_len, (long long)hidden, length);
 
     auto result = tdt_decode(encoded.data(), enc_len, hidden);
-
     LOGI("LiteRT STT: text='%.60s' conf=%.4f", result.text.c_str(), result.confidence);
     return result;
 }
@@ -197,8 +197,8 @@ TranscriptionResult LiteRTParakeetStt::transcribe(
 {
     auto r = decode(audio, length);
     TranscriptionResult out;
-    out.text = std::move(r.text);
-    out.language = std::move(r.language);
+    out.text       = std::move(r.text);
+    out.language   = std::move(r.language);
     out.confidence = r.confidence;
     return out;
 }
@@ -213,9 +213,9 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
     std::vector<int> token_ids;
     std::string detected_language;
     float log_prob_sum = 0.0f;
-    int log_prob_count = 0;
+    int   log_prob_count = 0;
 
-    int64_t state_size = cfg_.decoder_layers * 1 * cfg_.decoder_hidden;
+    const int64_t state_size = cfg_.decoder_layers * 1 * cfg_.decoder_hidden;
     std::vector<float> h_state(state_size, 0.0f);
     std::vector<float> c_state(state_size, 0.0f);
 
@@ -223,7 +223,16 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
     int64_t t = 0;
 
     std::vector<float> enc_frame(hidden);
-    std::vector<float> logits(cfg_.total_logits);
+    std::vector<float> logits   (cfg_.total_logits);
+    std::vector<float> h_out    (state_size);
+    std::vector<float> c_out    (state_size);
+
+    // Decoder I/O tensor types are fixed across the loop.
+    auto env      = LiteRTEngine::get().env();
+    auto t_enc    = make_type(kLiteRtElementTypeFloat32, {1, static_cast<int32_t>(hidden)});
+    auto t_target = make_type(kLiteRtElementTypeInt64,   {1});
+    auto t_state  = make_type(kLiteRtElementTypeFloat32, {cfg_.decoder_layers, 1, cfg_.decoder_hidden});
+    auto t_logits = make_type(kLiteRtElementTypeFloat32, {1, cfg_.total_logits});
 
     while (t < enc_len) {
         // Encoder frame at time t: [1, 1, hidden] — note LiteRT decoder takes
@@ -232,36 +241,24 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
             enc_frame[h] = encoded[h * enc_len + t];
         }
 
-        TfLiteTensor* in_enc    = TfLiteInterpreterGetInputTensor(dec_interp_, 0);
-        TfLiteTensor* in_target = TfLiteInterpreterGetInputTensor(dec_interp_, 1);
-        TfLiteTensor* in_h      = TfLiteInterpreterGetInputTensor(dec_interp_, 2);
-        TfLiteTensor* in_c      = TfLiteInterpreterGetInputTensor(dec_interp_, 3);
+        LiteRtHostBuffer in_enc    (env, t_enc,    enc_frame.size() * sizeof(float), enc_frame.data());
+        LiteRtHostBuffer in_target (env, t_target, sizeof(int64_t),                  &prev_token);
+        LiteRtHostBuffer in_h      (env, t_state,  h_state.size() * sizeof(float),   h_state.data());
+        LiteRtHostBuffer in_c      (env, t_state,  c_state.size() * sizeof(float),   c_state.data());
+        LiteRtHostBuffer out_logits(env, t_logits, logits.size() * sizeof(float));
+        LiteRtHostBuffer out_h     (env, t_state,  h_out.size() * sizeof(float));
+        LiteRtHostBuffer out_c     (env, t_state,  c_out.size() * sizeof(float));
 
-        litert_check(TfLiteTensorCopyFromBuffer(in_enc, enc_frame.data(),
-                                                enc_frame.size() * sizeof(float)),
-                     "Decoder CopyFromBuffer(encoder_out)");
-        litert_check(TfLiteTensorCopyFromBuffer(in_target, &prev_token, sizeof(int64_t)),
-                     "Decoder CopyFromBuffer(target)");
-        litert_check(TfLiteTensorCopyFromBuffer(in_h, h_state.data(),
-                                                h_state.size() * sizeof(float)),
-                     "Decoder CopyFromBuffer(h)");
-        litert_check(TfLiteTensorCopyFromBuffer(in_c, c_state.data(),
-                                                c_state.size() * sizeof(float)),
-                     "Decoder CopyFromBuffer(c)");
+        LiteRtTensorBuffer ins[4]  = { in_enc.raw(), in_target.raw(), in_h.raw(), in_c.raw() };
+        LiteRtTensorBuffer outs[3] = { out_logits.raw(), out_h.raw(), out_c.raw() };
+        litert_check(LiteRtRunCompiledModel(dec_compiled_, 0, 4, ins, 3, outs),
+                     "Decoder Run");
+        out_logits.read(logits.data(), logits.size() * sizeof(float));
+        out_h     .read(h_out.data(),  h_out.size()  * sizeof(float));
+        out_c     .read(c_out.data(),  c_out.size()  * sizeof(float));
 
-        litert_check(TfLiteInterpreterInvoke(dec_interp_), "Decoder Invoke");
-
-        const TfLiteTensor* out_logits = TfLiteInterpreterGetOutputTensor(dec_interp_, 0);
-        const TfLiteTensor* out_h      = TfLiteInterpreterGetOutputTensor(dec_interp_, 1);
-        const TfLiteTensor* out_c      = TfLiteInterpreterGetOutputTensor(dec_interp_, 2);
-
-        litert_check(TfLiteTensorCopyToBuffer(out_logits, logits.data(),
-                                              logits.size() * sizeof(float)),
-                     "Decoder CopyToBuffer(logits)");
-
-        int token_end = cfg_.vocab_size + 1;
-
-        int best_token = 0;
+        const int token_end = cfg_.vocab_size + 1;
+        int   best_token = 0;
         float best_score = logits[0];
         for (int i = 1; i < token_end; i++) {
             if (logits[i] > best_score) {
@@ -276,9 +273,7 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
             if (best_token >= cfg_.first_text_token && best_token < cfg_.vocab_size) {
                 auto lang_it = lang_tokens_.find(best_token);
                 if (lang_it != lang_tokens_.end()) {
-                    if (detected_language.empty()) {
-                        detected_language = lang_it->second;
-                    }
+                    if (detected_language.empty()) detected_language = lang_it->second;
                 } else {
                     token_ids.push_back(best_token);
                     log_prob_sum += best_score;
@@ -287,45 +282,37 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
             }
 
             const float* dur_logits = logits.data() + token_end;
-            int dur_idx = 0;
+            int   dur_idx = 0;
             float best_dur = dur_logits[0];
             for (int d = 1; d < cfg_.num_dur_bins; d++) {
                 if (dur_logits[d] > best_dur) {
                     best_dur = dur_logits[d];
-                    dur_idx = d;
+                    dur_idx  = d;
                 }
             }
             t += std::max(cfg_.duration_bins[dur_idx], 1);
 
             prev_token = best_token;
-
-            litert_check(TfLiteTensorCopyToBuffer(out_h, h_state.data(),
-                                                  h_state.size() * sizeof(float)),
-                         "Decoder CopyToBuffer(h_new)");
-            litert_check(TfLiteTensorCopyToBuffer(out_c, c_state.data(),
-                                                  c_state.size() * sizeof(float)),
-                         "Decoder CopyToBuffer(c_new)");
+            h_state = h_out;
+            c_state = c_out;
         }
     }
 
     DecodeResult result;
-    result.text = decode_tokens(token_ids);
+    result.text     = decode_tokens(token_ids);
     result.language = detected_language;
-
     if (log_prob_count > 0) {
-        float mean_logit = log_prob_sum / static_cast<float>(log_prob_count);
+        float mean_logit  = log_prob_sum / static_cast<float>(log_prob_count);
         result.confidence = 1.0f / (1.0f + std::exp(-mean_logit * 0.1f));
     }
-
     if (!result.language.empty()) {
         LOGI("LiteRT STT: detected language=%s", result.language.c_str());
     }
-
     return result;
 }
 
 // ---------------------------------------------------------------------------
-// Streaming: accumulate audio and re-transcribe (same shape as ORT wrapper)
+// Streaming (same accumulate-and-re-transcribe shape as ORT)
 // ---------------------------------------------------------------------------
 
 void LiteRTParakeetStt::begin_stream(int sample_rate) {
@@ -336,15 +323,12 @@ void LiteRTParakeetStt::begin_stream(int sample_rate) {
 
 PartialResult LiteRTParakeetStt::push_chunk(const float* audio, size_t length) {
     stream_buffer_.insert(stream_buffer_.end(), audio, audio + length);
-
-    if (stream_buffer_.size() < static_cast<size_t>(stream_sample_rate_ / 2)) {
-        return {};
-    }
+    if (stream_buffer_.size() < static_cast<size_t>(stream_sample_rate_ / 2)) return {};
 
     auto r = decode(stream_buffer_.data(), stream_buffer_.size());
     PartialResult out;
-    out.text = std::move(r.text);
-    out.language = std::move(r.language);
+    out.text       = std::move(r.text);
+    out.language   = std::move(r.language);
     out.confidence = r.confidence;
     return out;
 }
@@ -357,8 +341,8 @@ TranscriptionResult LiteRTParakeetStt::end_stream() {
     stream_buffer_.clear();
 
     TranscriptionResult out;
-    out.text = std::move(r.text);
-    out.language = std::move(r.language);
+    out.text       = std::move(r.text);
+    out.language   = std::move(r.language);
     out.confidence = r.confidence;
     return out;
 }
@@ -369,7 +353,7 @@ void LiteRTParakeetStt::cancel_stream() {
 }
 
 void LiteRTParakeetStt::flush_stream() {
-    // No-op — single-utterance sessions only
+    // No-op — single-utterance sessions only.
 }
 
 }  // namespace speech_core

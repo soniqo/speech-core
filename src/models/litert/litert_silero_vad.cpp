@@ -1,42 +1,30 @@
 #include "speech_core/models/litert_silero_vad.h"
 
-#include "speech_core/models/litert_engine.h"
-
 #include <cstring>
 #include <stdexcept>
 
 namespace speech_core {
 
 LiteRTSileroVad::LiteRTSileroVad(const std::string& model_path, bool hw_accel) {
-    interp_ = LiteRTEngine::get().load(model_path, hw_accel, &model_);
+    LiteRTEngine::get().load(model_path, hw_accel, &model_, &compiled_);
 
-    // Sanity: model exports as forward(audio[1,576], state[2,1,128]) → (prob, state_out)
-    const int32_t in_count  = TfLiteInterpreterGetInputTensorCount(interp_);
-    const int32_t out_count = TfLiteInterpreterGetOutputTensorCount(interp_);
-    if (in_count != 2 || out_count != 2) {
-        throw std::runtime_error("LiteRT Silero: expected 2 inputs and 2 outputs, got "
-                                 + std::to_string(in_count) + "/" + std::to_string(out_count));
-    }
-
-    // Resolve output indices by byte size — the TFLite converter does not
-    // preserve the original output order, and the two outputs are unambiguously
-    // distinguishable: prob is exactly one float, state_out is 256 floats.
-    for (int i = 0; i < out_count; ++i) {
-        const TfLiteTensor* t = TfLiteInterpreterGetOutputTensor(interp_, i);
-        const size_t bytes = TfLiteTensorByteSize(t);
-        if      (bytes == sizeof(float))               prob_idx_  = i;
-        else if (bytes == kStateSize * sizeof(float))  state_idx_ = i;
-    }
-    if (prob_idx_ < 0 || state_idx_ < 0) {
-        throw std::runtime_error("LiteRT Silero: could not identify prob/state_out outputs by size");
+    // Resolve the prob vs state_out output index by element count.
+    LiteRtLayout outs[2]{};
+    litert_check(LiteRtGetCompiledModelOutputTensorLayouts(
+                     compiled_, 0, 2, outs, /*update_allocation=*/false),
+                 "GetOutputTensorLayouts");
+    if      (layout_element_count(outs[0]) == 1) { prob_idx_ = 0; state_idx_ = 1; }
+    else if (layout_element_count(outs[1]) == 1) { prob_idx_ = 1; state_idx_ = 0; }
+    else {
+        throw std::runtime_error("LiteRT Silero: neither output is the scalar prob tensor");
     }
 
     reset();
 }
 
 LiteRTSileroVad::~LiteRTSileroVad() {
-    if (interp_) TfLiteInterpreterDelete(interp_);
-    if (model_)  TfLiteModelDelete(model_);
+    if (compiled_) LiteRtDestroyCompiledModel(compiled_);
+    if (model_)    LiteRtDestroyModel(model_);
 }
 
 void LiteRTSileroVad::reset() {
@@ -54,33 +42,30 @@ float LiteRTSileroVad::process_chunk(const float* samples, size_t length) {
     std::memcpy(input_buffer_.data(),                   context_.data(), kContextSamples * sizeof(float));
     std::memcpy(input_buffer_.data() + kContextSamples, samples,         kChunkSamples   * sizeof(float));
 
-    TfLiteTensor* in_audio = TfLiteInterpreterGetInputTensor(interp_, 0);
-    TfLiteTensor* in_state = TfLiteInterpreterGetInputTensor(interp_, 1);
+    auto env     = LiteRTEngine::get().env();
+    auto t_audio = make_type(kLiteRtElementTypeFloat32, {1, static_cast<int32_t>(kTotalSamples)});
+    auto t_state = make_type(kLiteRtElementTypeFloat32, {2, 1, 128});
+    auto t_prob  = make_type(kLiteRtElementTypeFloat32, {1, 1});
 
-    litert_check(TfLiteTensorCopyFromBuffer(in_audio, input_buffer_.data(),
-                                            kTotalSamples * sizeof(float)),
-                 "CopyFromBuffer(audio)");
-    litert_check(TfLiteTensorCopyFromBuffer(in_state, state_.data(),
-                                            kStateSize * sizeof(float)),
-                 "CopyFromBuffer(state)");
+    LiteRtHostBuffer in_audio (env, t_audio, kTotalSamples * sizeof(float), input_buffer_.data());
+    LiteRtHostBuffer in_state (env, t_state, kStateSize    * sizeof(float), state_.data());
+    LiteRtHostBuffer out_prob (env, t_prob,  sizeof(float));
+    LiteRtHostBuffer out_state(env, t_state, kStateSize    * sizeof(float));
 
-    litert_check(TfLiteInterpreterInvoke(interp_), "Invoke");
-
-    const TfLiteTensor* out_prob  = TfLiteInterpreterGetOutputTensor(interp_, prob_idx_);
-    const TfLiteTensor* out_state = TfLiteInterpreterGetOutputTensor(interp_, state_idx_);
+    LiteRtTensorBuffer ins[2]  = { in_audio.raw(), in_state.raw() };
+    LiteRtTensorBuffer outs[2];
+    outs[prob_idx_]  = out_prob.raw();
+    outs[state_idx_] = out_state.raw();
+    litert_check(LiteRtRunCompiledModel(compiled_, 0, 2, ins, 2, outs), "Run");
 
     float prob = 0.0f;
-    litert_check(TfLiteTensorCopyToBuffer(out_prob, &prob, sizeof(float)),
-                 "CopyToBuffer(prob)");
-    litert_check(TfLiteTensorCopyToBuffer(out_state, state_.data(),
-                                          kStateSize * sizeof(float)),
-                 "CopyToBuffer(state_out)");
+    out_prob .read(&prob,         sizeof(float));
+    out_state.read(state_.data(), kStateSize * sizeof(float));
 
     // Keep the last 64 samples of the chunk as next call's left context.
     std::memcpy(context_.data(),
                 samples + (kChunkSamples - kContextSamples),
                 kContextSamples * sizeof(float));
-
     return prob;
 }
 

@@ -46,27 +46,26 @@ Hardware-accelerated execution providers are picked automatically: NNAPI on Andr
 
 ## Building with LiteRT support
 
+The LiteRT backend uses Google's `ai-edge-litert` runtime (the modern LiteRT successor to the legacy TFLite C API — handles >2 GB models, ships prebuilt for all our target platforms).
+
+Headers are vendored in `third_party/litert/` (no setup needed). The shared library `libLiteRt.{so,dylib,dll}` is extracted from the `ai-edge-litert` PyPI wheel:
+
 ```bash
+scripts/fetch_litert.sh build/litert       # PYTHON=python3.11 if 'python3' is older
 cmake -S . -B build \
     -DSPEECH_CORE_WITH_LITERT=ON \
-    -DLITERT_DIR=/path/to/litert
+    -DLITERT_DIR=$PWD/build/litert
 cmake --build build
 ```
 
-`LITERT_DIR` must contain the TFLite C API headers and a platform-appropriate shared library:
+`LITERT_DIR` points at a directory containing the runtime library:
 
-| Platform | Header | Library |
-|---|---|---|
-| macOS | `include/tensorflow/lite/c/c_api.h` | `lib/libtensorflowlite_c.dylib` |
-| Linux | `include/tensorflow/lite/c/c_api.h` | `lib/libtensorflowlite_c.so` |
-| Android | `include/tensorflow/lite/c/c_api.h` | `lib/${ANDROID_ABI}/libtensorflowlite_c.so` |
-
-If you don't have a TFLite C library handy, build one from TensorFlow source:
-
-```bash
-scripts/setup_litert.sh build/litert v2.18.0
-# → build/litert/{include,lib} ready for use as LITERT_DIR
-```
+| Platform | File |
+|---|---|
+| macOS | `libLiteRt.dylib` |
+| Linux | `libLiteRt.so` |
+| Windows | `LiteRt.dll` + `LiteRt.lib` |
+| Android | `${ANDROID_ABI}/libLiteRt.so` |
 
 `SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent — enable either, both, or neither. Both flags produce separate static libraries (`speech_core_models`, `speech_core_models_litert`); consumers link only what they use.
 

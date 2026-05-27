@@ -57,7 +57,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build
 ```
 
-`LITERT_DIR` must contain `include/tensorflow/lite/c/c_api.h` and a platform shared library (`lib/libtensorflowlite_c.{so,dylib}`). Use `scripts/setup_litert.sh` to build one from TF source. Both `SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent and can be enabled together.
+`LITERT_DIR` must contain `libLiteRt.{so,dylib,dll}` (extracted from Google's `ai-edge-litert` PyPI wheel by `scripts/fetch_litert.sh`). Headers are vendored in `third_party/litert/`; no separate include path needed. Both `SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent and can be enabled together.
 
 ## CMake targets
 

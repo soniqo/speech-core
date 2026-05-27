@@ -1,42 +1,41 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
-
-#include <tensorflow/lite/c/c_api.h>
+#include "speech_core/models/litert_engine.h"
 
 #include <array>
 #include <string>
 
 namespace speech_core {
 
-/// Silero VAD v5 — voice activity detection via LiteRT (TFLite).
+/// Silero VAD v5 — voice activity detection via LiteRT.
 /// VADInterface::process_chunk consumes 512 samples per call; the LiteRT model
-/// itself takes [1, 576] (64 left-context + 512 chunk). The wrapper keeps the
-/// 64-sample tail of the previous chunk and prepends it transparently, so the
-/// public API matches the ORT variant.
+/// takes [1, 576] (64 left-context + 512 chunk). The wrapper keeps the 64-sample
+/// tail of the previous chunk and prepends it transparently, so callers see the
+/// same VADInterface as the ORT variant.
 class LiteRTSileroVad : public VADInterface {
 public:
     explicit LiteRTSileroVad(const std::string& model_path, bool hw_accel = false);
     ~LiteRTSileroVad() override;
 
     float process_chunk(const float* samples, size_t length) override;
-    void reset() override;
+    void  reset() override;
 
-    int input_sample_rate() const override { return 16000; }
+    int    input_sample_rate() const override { return 16000; }
     size_t chunk_size() const override { return 512; }
 
 private:
-    TfLiteModel*       model_   = nullptr;
-    TfLiteInterpreter* interp_  = nullptr;
+    LiteRtModel         model_    = nullptr;
+    LiteRtCompiledModel compiled_ = nullptr;
 
     static constexpr size_t kContextSamples = 64;
     static constexpr size_t kChunkSamples   = 512;
     static constexpr size_t kTotalSamples   = kContextSamples + kChunkSamples;  // 576
     static constexpr size_t kStateSize      = 2 * 1 * 128;
 
-    // Output indices vary between TFLite converter runs (it doesn't preserve
-    // the source model's output order). Resolved at construction by tensor
-    // byte size — prob = 1 float, state_out = 256 floats.
+    // Resolved at construction by output element count — TFLite converter
+    // doesn't preserve the source model's output order, and the two outputs
+    // are unambiguously distinguishable (prob = 1 float vs state = 256 floats).
     int prob_idx_  = -1;
     int state_idx_ = -1;
 

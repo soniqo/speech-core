@@ -1,8 +1,7 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
-
-#include <tensorflow/lite/c/c_api.h>
+#include "speech_core/models/litert_engine.h"
 
 #include <string>
 #include <unordered_map>
@@ -10,7 +9,7 @@
 
 namespace speech_core {
 
-/// Parakeet TDT v3 (0.6B) — speech recognition via LiteRT (TFLite).
+/// Parakeet TDT v3 (0.6B) — speech recognition via LiteRT.
 /// FastConformer encoder + fused LSTM decoder/joint network.
 /// Two .tflite files: parakeet-encoder.tflite + parakeet-decoder-joint.tflite.
 /// Input: PCM Float32 audio at 16 kHz. Output: transcribed text + language.
@@ -65,18 +64,18 @@ private:
     DecodeResult tdt_decode(const float* encoded, int64_t enc_len, int64_t hidden);
     std::string decode_tokens(const std::vector<int>& token_ids);
 
-    TfLiteModel*       enc_model_   = nullptr;
-    TfLiteInterpreter* enc_interp_  = nullptr;
-    TfLiteModel*       dec_model_   = nullptr;
-    TfLiteInterpreter* dec_interp_  = nullptr;
+    LiteRtModel         enc_model_    = nullptr;
+    LiteRtCompiledModel enc_compiled_ = nullptr;
+    LiteRtModel         dec_model_    = nullptr;
+    LiteRtCompiledModel dec_compiled_ = nullptr;
     Config cfg_;
 
     std::unordered_map<int, std::string> vocab_;
     std::unordered_map<int, std::string> lang_tokens_;
 
     std::vector<float> stream_buffer_;
-    int stream_sample_rate_ = 16000;
-    bool streaming_ = false;
+    int  stream_sample_rate_ = 16000;
+    bool streaming_          = false;
 };
 
 }  // namespace speech_core
