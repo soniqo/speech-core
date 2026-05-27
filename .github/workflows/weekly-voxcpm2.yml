@@ -113,15 +113,23 @@ jobs:
       # --- Semantic round-trip: feed the WAV through our own Parakeet ORT
       # CLI and assert the input phrase shows up in the transcript. This is
       # the strong assertion — garbled babble would not match.
+      #
+      # speech_transcribe uses the VAD-driven streaming pipeline: it splits
+      # the WAV into speech segments and prints each as a separate '[speech]
+      # STT: text=...' line on stderr. We grep across all segments (stdout
+      # holds only the final one). Set +e because the binary may exit
+      # non-zero on teardown after the synthesised utterance.
       - name: ASR round-trip (Parakeet ORT)
         run: |
           export LD_LIBRARY_PATH="$PWD/ort-linux/lib:${LD_LIBRARY_PATH:-}"
-          transcript="$(./build/examples/linux/speech_transcribe scripts/models voxcpm2-synth.wav)"
-          echo "TRANSCRIPT: $transcript"
+          set +e
+          output="$(./build/examples/linux/speech_transcribe scripts/models voxcpm2-synth.wav 2>&1)"
+          set -e
+          echo "$output"
           # Test phrase is "The quick brown fox jumps over the lazy dog".
-          # Require at least the first 6 content words (Parakeet may transcribe
-          # tail differently from input; this is intentional slop).
-          lower="$(echo "$transcript" | tr '[:upper:]' '[:lower:]')"
+          # Require at least 6 content words — Silero may split the
+          # utterance differently from speech to speech.
+          lower="$(echo "$output" | tr '[:upper:]' '[:lower:]')"
           missing=""
           for w in quick brown fox jumps lazy dog; do
               if ! echo "$lower" | grep -q "$w"; then
@@ -132,4 +140,4 @@ jobs:
               echo "FAIL: transcript missing words:$missing" >&2
               exit 1
           fi
-          echo "OK: all required words present"
+          echo "OK: all required words present in transcript"
