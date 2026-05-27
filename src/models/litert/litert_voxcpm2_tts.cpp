@@ -183,13 +183,30 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
 
     auto flush_decoder = [&](size_t valid_steps, bool is_final) {
         std::fill(decoder_input.begin(), decoder_input.end(), 0.0f);
-        // feature_buffer is [N, 4, 64] in flattened pred_feat order. The
-        // decoder wants [1, 64, 256] = [1, frame, q*64+f]. Each pred_feat's
-        // 256 floats slot directly into one decoder frame — plain memcpy.
-        const size_t copy_floats = std::min<size_t>(
-            valid_steps * kPredFeatFloats, kDecoderInputFloats);
-        std::memcpy(decoder_input.data(), feature_buffer.data(),
-                    copy_floats * sizeof(float));
+        // feature_buffer is N consecutive pred_feat tensors, each
+        // [patch_size=4, feat_dim=64] in row-major order (= pred_feat[p][c]
+        // at offset p*64+c).
+        //
+        // Decoder input is [1, feat_dim=64, frames=256] in row-major =
+        // latent[c][t] at offset c*256+t. Each AR step occupies 4 frames
+        // (patch_size); the model reconstructs audio by spreading the patch
+        // values across consecutive output frames.
+        //
+        // Mapping: latent[c, step*4 + p] = pred_feat[step][p][c]
+        const size_t cap_steps = std::min<size_t>(
+            valid_steps,
+            static_cast<size_t>(kFramesPerChunk));  // 64 AR steps fills the window
+        for (size_t step_idx = 0; step_idx < cap_steps; ++step_idx) {
+            const float* pred = feature_buffer.data() + step_idx * kPredFeatFloats;
+            for (int p = 0; p < kPatchSize; ++p) {
+                const int t = static_cast<int>(step_idx) * kPatchSize + p;
+                if (t >= kDecoderInputFloats / kFeatDim) break;
+                for (int c = 0; c < kFeatDim; ++c) {
+                    decoder_input[c * (kDecoderInputFloats / kFeatDim) + t]
+                        = pred[p * kFeatDim + c];
+                }
+            }
+        }
 
         LiteRtHostBuffer in_latent(env, t_dec_in,
                                    decoder_input.size() * sizeof(float),
