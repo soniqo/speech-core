@@ -81,6 +81,36 @@ jobs:
       - name: Test (full LiteRT model suite, including VoxCPM2 synth)
         env:
           SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-voxcpm2
+          VOXCPM2_SYNTH_WAV:       ${{ github.workspace }}/voxcpm2-synth.wav
         run: |
           export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build --output-on-failure -R test_litert_models
+
+      # Semantic round-trip: pipe the C++ wrapper's WAV through Whisper and
+      # check the input phrase shows up in the transcript. This is the strong
+      # assertion that the four graphs are wired correctly end-to-end — the
+      # length/RMS/finite checks in test_litert_voxcpm2_synthesize can't tell
+      # garbled babble apart from real speech.
+      - name: Install Whisper (ASR for round-trip check)
+        run: |
+          python3 -m pip install --quiet --user openai-whisper
+
+      - name: ASR round-trip — transcript must contain input phrase
+        run: |
+          test -f voxcpm2-synth.wav
+          python3 - <<'PY'
+          import re, sys, whisper
+          model = whisper.load_model('base')
+          result = model.transcribe('voxcpm2-synth.wav', language='en', fp16=False)
+          text = result['text'].lower()
+          print('TRANSCRIPT:', repr(text))
+          # The synthesise test uses "The quick brown fox jumps over the lazy dog".
+          # Require at least the first 6 content words (allows some slop at the
+          # tail of the AR generation).
+          required = ['quick', 'brown', 'fox', 'jumps', 'lazy', 'dog']
+          missing  = [w for w in required if w not in text]
+          if missing:
+              print(f'FAIL: transcript missing words: {missing}', file=sys.stderr)
+              sys.exit(1)
+          print('OK: all required words present')
+          PY

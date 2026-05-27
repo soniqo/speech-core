@@ -448,19 +448,25 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
     std::printf("  test_litert_voxcpm2_synthesize ... ");
 
     speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
-    tts.set_max_steps(16);
-    tts.set_min_steps_before_stop(1000);  // disable stop signal — force exactly 16 steps
+    // Long enough that the model can actually utter "the quick brown fox jumps
+    // over the lazy dog" before stop-signal kicks in (~25-30 AR steps in
+    // upstream Python runs).
+    tts.set_max_steps(64);
+    tts.set_min_steps_before_stop(8);
 
     std::vector<float> audio;
     bool got_final = false;
-    tts.synthesize("Hello world", "en",
+    tts.synthesize("The quick brown fox jumps over the lazy dog", "en",
         [&](const float* samples, size_t length, bool is_final) {
             if (samples && length) audio.insert(audio.end(), samples, samples + length);
             if (is_final) got_final = true;
         });
     REQUIRE(got_final);
-    // 16 steps × 7680 samples/step = 122880 samples (= 2.56 s @ 48 kHz)
-    REQUIRE(audio.size() == 16 * 7680);
+    REQUIRE(!audio.empty());
+    // Each step contributes 7680 samples (160 ms @ 48 kHz). The model usually
+    // stops between 20-40 steps for this prompt — bound the assertion loosely.
+    const size_t steps = audio.size() / 7680;
+    REQUIRE(steps >= 8);
 
     double sum_sq = 0.0;
     float  peak   = 0.0f;
@@ -470,9 +476,48 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
         peak    = std::max(peak, std::abs(s));
     }
     const double rms = std::sqrt(sum_sq / audio.size());
-    std::printf("samples=%zu rms=%.4f peak=%.4f ", audio.size(), rms, peak);
+    std::printf("steps=%zu samples=%zu rms=%.4f peak=%.4f ",
+                steps, audio.size(), rms, peak);
     REQUIRE(rms > 1e-5);     // not silent
     REQUIRE(peak < 1.5f);    // no extreme blow-up (clip detector)
+
+    // Dump the WAV so the CI step can pipe it through ASR for a semantic
+    // round-trip assertion against the input text.
+    const char* wav_out = std::getenv("VOXCPM2_SYNTH_WAV");
+    if (wav_out) {
+        std::ofstream w(wav_out, std::ios::binary);
+        if (w) {
+            // Minimal RIFF/PCM-16 header — 48 kHz mono int16.
+            const uint32_t sample_rate = 48000;
+            const uint32_t n_samples   = static_cast<uint32_t>(audio.size());
+            const uint32_t data_bytes  = n_samples * 2;
+            const uint32_t fmt_chunk_size = 16;
+            const uint32_t riff_size = 4 + 8 + fmt_chunk_size + 8 + data_bytes;
+            const uint16_t one = 1;
+            const uint16_t two = 2;
+            const uint16_t sixteen = 16;
+            const uint32_t byte_rate = sample_rate * 2;
+            w.write("RIFF", 4);
+            w.write(reinterpret_cast<const char*>(&riff_size), 4);
+            w.write("WAVE", 4);
+            w.write("fmt ", 4);
+            w.write(reinterpret_cast<const char*>(&fmt_chunk_size), 4);
+            w.write(reinterpret_cast<const char*>(&one), 2);          // PCM
+            w.write(reinterpret_cast<const char*>(&one), 2);          // mono
+            w.write(reinterpret_cast<const char*>(&sample_rate), 4);
+            w.write(reinterpret_cast<const char*>(&byte_rate), 4);
+            w.write(reinterpret_cast<const char*>(&two), 2);          // block align
+            w.write(reinterpret_cast<const char*>(&sixteen), 2);      // bits per sample
+            w.write("data", 4);
+            w.write(reinterpret_cast<const char*>(&data_bytes), 4);
+            for (float s : audio) {
+                int32_t v = static_cast<int32_t>(std::lround(std::clamp(s, -1.0f, 1.0f) * 32767.0f));
+                int16_t v16 = static_cast<int16_t>(v);
+                w.write(reinterpret_cast<const char*>(&v16), 2);
+            }
+            std::printf("wav=%s ", wav_out);
+        }
+    }
 
     std::printf("ok\n");
 }
