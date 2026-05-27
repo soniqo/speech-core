@@ -1,0 +1,139 @@
+name: Weekly VoxCPM2 integration
+
+# End-to-end VoxCPM2 synthesis test with a semantic round-trip:
+#   text → VoxCPM2 (LiteRT) → WAV → Parakeet STT (ONNX) → string match
+#
+# Separate from .github/workflows/nightly.yml because the VoxCPM2 bundle is
+# ~4.6 GB and AR inference is slow; weekly catches regressions without
+# adding daily cache pressure. Uses our own Parakeet ORT wrapper for the
+# ASR side — no external dependency (no Whisper, no Python ASR install).
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # 06:00 UTC every Monday
+  workflow_dispatch:
+
+jobs:
+  voxcpm2-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      LITERT_TAG:   litert-prebuilt-v2.18.0
+      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake libasound2-dev curl ca-certificates
+
+      # --- Caches ---
+      # LiteRT prebuild (stable, keyed on tag).
+      - name: Cache LiteRT prebuild
+        uses: actions/cache@v4
+        with:
+          path: litert
+          key: litert-${{ env.LITERT_TAG }}
+
+      # ONNX Runtime + Parakeet ORT models (cache from the nightly pattern).
+      - name: Cache ONNX Runtime + Parakeet models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ort-linux
+            scripts/models
+          key: ort-models-${{ hashFiles('examples/linux/setup_linux.sh', 'scripts/download_models.sh') }}
+
+      # VoxCPM2 bundle (~4.6 GB) — kept on its own key so changes to other
+      # download scripts don't blow it away.
+      - name: Cache VoxCPM2 bundle
+        uses: actions/cache@v4
+        with:
+          path: scripts/models-voxcpm2
+          key: voxcpm2-bundle-${{ hashFiles('scripts/download_voxcpm2_litert.sh') }}
+
+      # --- Downloads (idempotent — skip when cache hit) ---
+      - name: Download LiteRT prebuild
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f litert/lib/libtensorflowlite_c.so ]; then
+              mkdir -p litert
+              gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
+              tar -xzf "$LITERT_ASSET" -C litert
+          fi
+          test -f litert/lib/libtensorflowlite_c.so
+
+      - name: Download ONNX Runtime + Parakeet models
+        run: |
+          if [ ! -f ort-linux/lib/libonnxruntime.so ]; then
+              ./examples/linux/setup_linux.sh
+          fi
+          if [ ! -f scripts/models/parakeet-encoder-int8.onnx ]; then
+              ./scripts/download_models.sh
+          fi
+          test -f ort-linux/lib/libonnxruntime.so
+          test -f scripts/models/parakeet-encoder-int8.onnx
+          test -f scripts/models/parakeet-decoder-joint-int8.onnx
+
+      - name: Download VoxCPM2 bundle
+        run: |
+          if [ ! -f scripts/models-voxcpm2/voxcpm2-token-step.tflite ]; then
+              ./scripts/download_voxcpm2_litert.sh
+          fi
+          test -f scripts/models-voxcpm2/voxcpm2-text-prefill.tflite
+          test -f scripts/models-voxcpm2/voxcpm2-token-step.tflite
+          test -f scripts/models-voxcpm2/tokenizer.json
+
+      # --- Build with BOTH backends so speech_transcribe (ORT) is available
+      # alongside the LiteRT model suite. ---
+      - name: Configure
+        run: |
+          cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_LITERT=ON \
+              -DLITERT_DIR=$PWD/litert \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DORT_DIR=ort-linux \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # --- Synthesise via the LiteRT VoxCPM2 wrapper, dump WAV. ---
+      - name: Synthesise WAV (VoxCPM2 via LiteRT)
+        env:
+          SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-voxcpm2
+          VOXCPM2_SYNTH_WAV:       ${{ github.workspace }}/voxcpm2-synth.wav
+        run: |
+          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          ctest --test-dir build --output-on-failure -R test_litert_models
+          test -f voxcpm2-synth.wav
+          ls -la voxcpm2-synth.wav
+
+      # --- Semantic round-trip: feed the WAV through our own Parakeet ORT
+      # CLI and assert the input phrase shows up in the transcript. This is
+      # the strong assertion — garbled babble would not match.
+      - name: ASR round-trip (Parakeet ORT)
+        run: |
+          export LD_LIBRARY_PATH="$PWD/ort-linux/lib:${LD_LIBRARY_PATH:-}"
+          transcript="$(./build/examples/linux/speech_transcribe scripts/models voxcpm2-synth.wav)"
+          echo "TRANSCRIPT: $transcript"
+          # Test phrase is "The quick brown fox jumps over the lazy dog".
+          # Require at least the first 6 content words (Parakeet may transcribe
+          # tail differently from input; this is intentional slop).
+          lower="$(echo "$transcript" | tr '[:upper:]' '[:lower:]')"
+          missing=""
+          for w in quick brown fox jumps lazy dog; do
+              if ! echo "$lower" | grep -q "$w"; then
+                  missing="$missing $w"
+              fi
+          done
+          if [ -n "$missing" ]; then
+              echo "FAIL: transcript missing words:$missing" >&2
+              exit 1
+          fi
+          echo "OK: all required words present"

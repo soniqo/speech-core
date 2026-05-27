@@ -43,6 +43,10 @@ public:
     int eos_id() const { return eos_id_; }
     int unk_id() const { return unk_id_; }
 
+    /// Look up the ID for a specific token (e.g. "<|audio_start|>"). Returns -1
+    /// if the token isn't in the vocabulary.
+    int token_id(const std::string& token) const;
+
     size_t vocab_size() const { return id_to_token_.size(); }
 
 private:

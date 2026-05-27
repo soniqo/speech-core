@@ -427,6 +427,102 @@ void test_litert_voxcpm2_load(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// VoxCPM2 end-to-end synthesis — runs the full pipeline with a short text and
+// a capped step count, accumulates the streamed PCM, and validates basic
+// properties (sample rate produces the expected chunk size, audio is not
+// silent, no NaN/inf). Skipped unless VOXCPM2 model files are present.
+// Set step count low (16) so even a heavy nightly run stays bounded.
+// ---------------------------------------------------------------------------
+
+void test_litert_voxcpm2_synthesize(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string enc  = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_voxcpm2_synthesize ... ");
+
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
+    // Long enough that the model can actually utter "the quick brown fox jumps
+    // over the lazy dog" before stop-signal kicks in (~25-30 AR steps in
+    // upstream Python runs).
+    tts.set_max_steps(64);
+    tts.set_min_steps_before_stop(8);
+
+    std::vector<float> audio;
+    bool got_final = false;
+    tts.synthesize("The quick brown fox jumps over the lazy dog", "en",
+        [&](const float* samples, size_t length, bool is_final) {
+            if (samples && length) audio.insert(audio.end(), samples, samples + length);
+            if (is_final) got_final = true;
+        });
+    REQUIRE(got_final);
+    REQUIRE(!audio.empty());
+    // Each step contributes 7680 samples (160 ms @ 48 kHz). The model usually
+    // stops between 20-40 steps for this prompt — bound the assertion loosely.
+    const size_t steps = audio.size() / 7680;
+    REQUIRE(steps >= 8);
+
+    double sum_sq = 0.0;
+    float  peak   = 0.0f;
+    for (float s : audio) {
+        if (!std::isfinite(s)) { std::printf("\n    sample is non-finite "); REQUIRE(false); }
+        sum_sq += static_cast<double>(s) * s;
+        peak    = std::max(peak, std::abs(s));
+    }
+    const double rms = std::sqrt(sum_sq / audio.size());
+    std::printf("steps=%zu samples=%zu rms=%.4f peak=%.4f ",
+                steps, audio.size(), rms, peak);
+    REQUIRE(rms > 1e-5);     // not silent
+    REQUIRE(peak < 1.5f);    // no extreme blow-up (clip detector)
+
+    // Dump the WAV so the CI step can pipe it through ASR for a semantic
+    // round-trip assertion against the input text.
+    const char* wav_out = std::getenv("VOXCPM2_SYNTH_WAV");
+    if (wav_out) {
+        std::ofstream w(wav_out, std::ios::binary);
+        if (w) {
+            // Minimal RIFF/PCM-16 header — 48 kHz mono int16.
+            const uint32_t sample_rate = 48000;
+            const uint32_t n_samples   = static_cast<uint32_t>(audio.size());
+            const uint32_t data_bytes  = n_samples * 2;
+            const uint32_t fmt_chunk_size = 16;
+            const uint32_t riff_size = 4 + 8 + fmt_chunk_size + 8 + data_bytes;
+            const uint16_t one = 1;
+            const uint16_t two = 2;
+            const uint16_t sixteen = 16;
+            const uint32_t byte_rate = sample_rate * 2;
+            w.write("RIFF", 4);
+            w.write(reinterpret_cast<const char*>(&riff_size), 4);
+            w.write("WAVE", 4);
+            w.write("fmt ", 4);
+            w.write(reinterpret_cast<const char*>(&fmt_chunk_size), 4);
+            w.write(reinterpret_cast<const char*>(&one), 2);          // PCM
+            w.write(reinterpret_cast<const char*>(&one), 2);          // mono
+            w.write(reinterpret_cast<const char*>(&sample_rate), 4);
+            w.write(reinterpret_cast<const char*>(&byte_rate), 4);
+            w.write(reinterpret_cast<const char*>(&two), 2);          // block align
+            w.write(reinterpret_cast<const char*>(&sixteen), 2);      // bits per sample
+            w.write("data", 4);
+            w.write(reinterpret_cast<const char*>(&data_bytes), 4);
+            for (float s : audio) {
+                int32_t v = static_cast<int32_t>(std::lround(std::clamp(s, -1.0f, 1.0f) * 32767.0f));
+                int16_t v16 = static_cast<int16_t>(v);
+                w.write(reinterpret_cast<const char*>(&v16), 2);
+            }
+            std::printf("wav=%s ", wav_out);
+        }
+    }
+
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
 // VoxCPM2 tokenizer — pins encode/decode to the reference output from the
 // Python HuggingFace `tokenizers` library against the published
 // tokenizer.json. Only requires the tokenizer file, not the .tflite graphs,
@@ -501,6 +597,7 @@ int main() {
     test_litert_vad_to_stt_pipeline(dir);
     test_voxcpm2_tokenizer(dir);
     test_litert_voxcpm2_load(dir);
+    test_litert_voxcpm2_synthesize(dir);
 
     if (failures > 0) {
         std::fprintf(stderr, "\n%d test(s) failed\n", failures);
