@@ -129,27 +129,27 @@ endif()
 
 if(SPEECH_CORE_WITH_LITERT)
     if(NOT DEFINED LITERT_DIR)
-        message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT=ON requires LITERT_DIR (path to a directory with include/tensorflow/lite/c/c_api.h and lib/libtensorflowlite_c.{so,dylib} — or lib/tensorflowlite_c.{dll,lib} on Windows)")
+        message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT=ON requires LITERT_DIR — a directory containing libLiteRt.{so,dylib,dll} (extract from the ai-edge-litert PyPI wheel via scripts/fetch_litert.sh, or use the path printed by the script). Headers come from third_party/litert/ in the repo, not from LITERT_DIR.")
     endif()
     get_filename_component(LITERT_DIR "${LITERT_DIR}" ABSOLUTE)
 
-    # LiteRT (TFLite C API) — imported shared library.
+    # libLiteRt from Google's ai-edge-litert package — imported shared library.
     # Windows needs both .dll (runtime) and .lib (link-time import library);
     # other platforms only need the shared object itself.
     add_library(litert SHARED IMPORTED)
     if(WIN32)
-        set(_LITERT_LIB    "${LITERT_DIR}/lib/tensorflowlite_c.dll")
-        set(_LITERT_IMPLIB "${LITERT_DIR}/lib/tensorflowlite_c.lib")
+        set(_LITERT_LIB    "${LITERT_DIR}/LiteRt.dll")
+        set(_LITERT_IMPLIB "${LITERT_DIR}/LiteRt.lib")
     elseif(APPLE)
-        set(_LITERT_LIB "${LITERT_DIR}/lib/libtensorflowlite_c.dylib")
+        set(_LITERT_LIB "${LITERT_DIR}/libLiteRt.dylib")
     elseif(ANDROID)
-        set(_LITERT_LIB "${LITERT_DIR}/lib/${ANDROID_ABI}/libtensorflowlite_c.so")
+        set(_LITERT_LIB "${LITERT_DIR}/${ANDROID_ABI}/libLiteRt.so")
     else()
-        set(_LITERT_LIB "${LITERT_DIR}/lib/libtensorflowlite_c.so")
+        set(_LITERT_LIB "${LITERT_DIR}/libLiteRt.so")
     endif()
     set_target_properties(litert PROPERTIES
         IMPORTED_LOCATION "${_LITERT_LIB}"
-        INTERFACE_INCLUDE_DIRECTORIES "${LITERT_DIR}/include"
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/litert"
     )
     if(WIN32)
         set_target_properties(litert PROPERTIES IMPORTED_IMPLIB "${_LITERT_IMPLIB}")

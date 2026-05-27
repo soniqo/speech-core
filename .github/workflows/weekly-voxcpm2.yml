@@ -17,26 +17,26 @@ jobs:
   voxcpm2-roundtrip:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      LITERT_TAG:   litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential cmake libasound2-dev curl ca-certificates
+              build-essential cmake libasound2-dev curl ca-certificates unzip
 
       # --- Caches ---
-      # LiteRT prebuild (stable, keyed on tag).
-      - name: Cache LiteRT prebuild
+      - name: Cache LiteRT runtime
         uses: actions/cache@v4
         with:
           path: litert
-          key: litert-${{ env.LITERT_TAG }}
+          key: litert-aiedge2.1.5-${{ hashFiles('scripts/fetch_litert.sh') }}
 
       # ONNX Runtime + Parakeet ORT models (cache from the nightly pattern).
       - name: Cache ONNX Runtime + Parakeet models
@@ -56,16 +56,12 @@ jobs:
           key: voxcpm2-bundle-${{ hashFiles('scripts/download_voxcpm2_litert.sh') }}
 
       # --- Downloads (idempotent — skip when cache hit) ---
-      - name: Download LiteRT prebuild
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch libLiteRt from ai-edge-litert wheel
         run: |
-          if [ ! -f litert/lib/libtensorflowlite_c.so ]; then
-              mkdir -p litert
-              gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
-              tar -xzf "$LITERT_ASSET" -C litert
+          if [ ! -f litert/libLiteRt.so ]; then
+              ./scripts/fetch_litert.sh "$PWD/litert"
           fi
-          test -f litert/lib/libtensorflowlite_c.so
+          test -f litert/libLiteRt.so
 
       - name: Download ONNX Runtime + Parakeet models
         run: |
@@ -109,7 +105,7 @@ jobs:
           SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-voxcpm2
           VOXCPM2_SYNTH_WAV:       ${{ github.workspace }}/voxcpm2-synth.wav
         run: |
-          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build --output-on-failure -R test_litert_models
           test -f voxcpm2-synth.wav
           ls -la voxcpm2-synth.wav

@@ -73,39 +73,36 @@ jobs:
   litert-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential cmake curl ca-certificates
+              build-essential cmake curl ca-certificates unzip
 
-      - name: Cache LiteRT prebuild + models
+      - name: Cache LiteRT runtime + models
         uses: actions/cache@v4
         with:
           path: |
             litert
             scripts/models-litert
-          # LITERT_TAG in the key means a tag bump triggers a clean re-fetch.
-          key: litert-models-${{ env.LITERT_TAG }}-${{ hashFiles('scripts/download_models_litert.sh') }}
+          # ai-edge-litert wheel version + model download script — bump either
+          # one to invalidate.
+          key: litert-models-aiedge2.1.5-${{ hashFiles('scripts/download_models_litert.sh', 'scripts/fetch_litert.sh') }}
 
-      - name: Download LiteRT prebuild (if not cached)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch libLiteRt from ai-edge-litert wheel (if not cached)
         run: |
-          if [ ! -f litert/lib/libtensorflowlite_c.so ]; then
-              mkdir -p litert
-              gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
-              tar -xzf "$LITERT_ASSET" -C litert
+          if [ ! -f litert/libLiteRt.so ]; then
+              ./scripts/fetch_litert.sh "$PWD/litert"
           fi
-          test -f litert/include/tensorflow/lite/c/c_api.h
-          test -f litert/lib/libtensorflowlite_c.so
+          test -f litert/libLiteRt.so
 
       - name: Download LiteRT models (if not cached)
         run: |
@@ -129,5 +126,5 @@ jobs:
         env:
           SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-litert
         run: |
-          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build --output-on-failure

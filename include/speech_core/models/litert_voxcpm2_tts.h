@@ -1,9 +1,8 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
+#include "speech_core/models/litert_engine.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
-
-#include <tensorflow/lite/c/c_api.h>
 
 #include <atomic>
 #include <memory>
@@ -12,8 +11,9 @@
 
 namespace speech_core {
 
-/// VoxCPM2 — 2B-parameter multilingual TTS via LiteRT (TFLite).
-/// 48 kHz studio-quality output.
+/// VoxCPM2 — 2B-parameter multilingual TTS via LiteRT.
+/// 48 kHz output. Voice cloning + voice design (cloning surface deferred —
+/// `synthesize()` always feeds zero audio_feats today).
 /// Model: https://huggingface.co/aufklarer/VoxCPM2-LiteRT
 ///
 /// Pipeline (four LiteRT graphs orchestrated here):
@@ -23,18 +23,14 @@ namespace speech_core {
 ///                     residual_cache, position_id, noise)
 ///                    → (pred_feat, stop_logits, next_lm_hidden, next_residual_hidden,
 ///                       base_cache, residual_cache)
-///   audio_decoder  : (latent [1, 64, 256]) → PCM [1, 491520] (= 10.24 s @ 48 kHz)
+///   audio_decoder  : (latent [1, 64, 256]) → PCM [1, 491520] (10.24 s @ 48 kHz)
 ///
-/// Caches are owned by this wrapper and grow from text_prefill's 512-slot view
-/// to the 2560-slot view that token_step expects (zero-padded along axis 4).
-/// Every 64 token_step calls produce one decoder chunk that streams via the
-/// TTSChunkCallback; cancel() short-circuits the AR loop between steps.
-///
-/// Voice cloning via the audio_encoder is supported by the graph but not yet
-/// surfaced through TTSInterface — synthesize() always feeds zero audio_feats.
+/// Caches grow from text_prefill's 512-slot output to the 2560-slot view that
+/// token_step expects (zero-padded along axis 4). Every 64 token_step calls
+/// produce one decoder chunk that streams via the TTSChunkCallback. cancel()
+/// short-circuits the AR loop between steps.
 class LiteRTVoxCPM2Tts : public TTSInterface {
 public:
-    /// Construct from the four LiteRT graph files + a HuggingFace `tokenizer.json`.
     LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
                      const std::string& token_step_path,
                      const std::string& audio_encoder_path,
@@ -64,14 +60,14 @@ public:
     void set_min_steps_before_stop(int min_steps) { min_stop_steps_ = min_steps; }
 
 private:
-    TfLiteModel*       text_prefill_model_   = nullptr;
-    TfLiteInterpreter* text_prefill_         = nullptr;
-    TfLiteModel*       token_step_model_     = nullptr;
-    TfLiteInterpreter* token_step_           = nullptr;
-    TfLiteModel*       audio_encoder_model_  = nullptr;
-    TfLiteInterpreter* audio_encoder_        = nullptr;
-    TfLiteModel*       audio_decoder_model_  = nullptr;
-    TfLiteInterpreter* audio_decoder_        = nullptr;
+    LiteRtModel         text_prefill_model_    = nullptr;
+    LiteRtCompiledModel text_prefill_compiled_ = nullptr;
+    LiteRtModel         token_step_model_      = nullptr;
+    LiteRtCompiledModel token_step_compiled_   = nullptr;
+    LiteRtModel         audio_encoder_model_   = nullptr;
+    LiteRtCompiledModel audio_encoder_compiled_= nullptr;
+    LiteRtModel         audio_decoder_model_   = nullptr;
+    LiteRtCompiledModel audio_decoder_compiled_= nullptr;
 
     std::unique_ptr<VoxCPM2Tokenizer> tokenizer_;
     int audio_start_token_ = -1;
@@ -79,21 +75,20 @@ private:
     // Shape constants pulled from config.json (max_text_tokens = 512,
     // max_generated_tokens = 2048, hidden = 2048, etc.). Kept here so the
     // implementation file is just allocations and tensor-copy plumbing.
-    static constexpr int  kMaxText            = 512;
-    static constexpr int  kMaxGenerated       = 2048;
-    static constexpr int  kHidden             = 2048;
-    static constexpr int  kFeatDim            = 64;
-    static constexpr int  kPatchSize          = 4;
-    static constexpr int  kPredFeatFloats     = kPatchSize * kFeatDim;       // 256
-    static constexpr int  kFramesPerChunk     = 64;
-    static constexpr int  kDecoderInputFloats = kFramesPerChunk * kPredFeatFloats;  // 16384
-    static constexpr int  kDecoderOutputFloats = 491520;  // 10.24 s @ 48 kHz
-    static constexpr int  kSecondsPerStep_ms  = 160;      // 0.16 s — matches the upstream trim
-    static constexpr int  kSamplesPerStep     = 48000 * kSecondsPerStep_ms / 1000;  // 7680
-    static constexpr long kBaseCacheFloats    = 2L * 28 * 1 * 2 * 2560 * 128;   // ~36.7M
-    static constexpr long kResidualCacheFloats = 2L * 8  * 1 * 2 * 2560 * 128;  // ~10.5M
-    static constexpr long kBasePrefillFloats  = 2L * 28 * 1 * 2 * 512  * 128;   // ~7.3M
-    static constexpr long kResidualPrefillFloats = 2L * 8 * 1 * 2 * 512  * 128; //  2.1M
+    static constexpr int  kMaxText             = 512;
+    static constexpr int  kMaxGenerated        = 2048;
+    static constexpr int  kHidden              = 2048;
+    static constexpr int  kFeatDim             = 64;
+    static constexpr int  kPatchSize           = 4;
+    static constexpr int  kPredFeatFloats      = kPatchSize * kFeatDim;            // 256
+    static constexpr int  kFramesPerChunk      = 64;
+    static constexpr int  kDecoderInputFloats  = kFramesPerChunk * kPredFeatFloats; // 16384
+    static constexpr int  kDecoderOutputFloats = 491520;     // 10.24 s @ 48 kHz
+    static constexpr int  kSamplesPerStep      = 7680;       // 160 ms @ 48 kHz
+    static constexpr long kBaseCacheFloats     = 2L * 28 * 1 * 2 * 2560 * 128;     // ~36.7 M
+    static constexpr long kResidualCacheFloats = 2L *  8 * 1 * 2 * 2560 * 128;     // ~10.5 M
+    static constexpr long kBasePrefillFloats   = 2L * 28 * 1 * 2 * 512  * 128;     // ~7.3 M
+    static constexpr long kResidualPrefillFloats = 2L * 8 * 1 * 2 * 512  * 128;    //  2.1 M
 
     std::string       instruction_;
     int               max_steps_       = kMaxGenerated;
