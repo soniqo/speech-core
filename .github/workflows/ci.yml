@@ -94,8 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: unit-tests
     env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
+      LITERT_TAG: litert-prebuilt-v2.19.0
+      LITERT_ASSET: libtensorflowlite_c-v2.19.0-linux-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -138,8 +138,8 @@ jobs:
     runs-on: windows-latest
     needs: unit-tests
     env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-windows-x86_64.zip
+      LITERT_TAG: litert-prebuilt-v2.19.0
+      LITERT_ASSET: libtensorflowlite_c-v2.19.0-windows-x86_64.zip
 
     steps:
       - uses: actions/checkout@v4

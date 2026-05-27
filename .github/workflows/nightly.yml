@@ -74,8 +74,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      LITERT_TAG: litert-prebuilt-v2.18.0
-      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
+      LITERT_TAG: litert-prebuilt-v2.19.0
+      LITERT_ASSET: libtensorflowlite_c-v2.19.0-linux-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v4

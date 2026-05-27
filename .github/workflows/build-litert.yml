@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       tf_version:
-        description: 'TensorFlow tag to build (e.g. v2.18.0)'
+        description: 'TensorFlow tag to build (e.g. v2.19.0)'
         required: true
-        default: 'v2.18.0'
+        default: 'v2.19.0'
       create_release:
         description: 'Publish a GitHub release with the artifacts'
         required: false
