@@ -39,8 +39,11 @@ UNZ="$TMP/unzip"
 mkdir -p "$UNZ"
 unzip -q "$WHEEL" -d "$UNZ"
 
-# Find the runtime library in the wheel (path is ai_edge_litert/libLiteRt.*).
-LIB="$(find "$UNZ" -maxdepth 3 -name 'libLiteRt.so' -o -name 'libLiteRt.dylib' -o -name 'LiteRt.dll' | head -n1)"
+# Find the runtime library — Linux/macOS use the lib prefix, Windows ships
+# libLiteRt.dll too (Google's wheel keeps the prefix on all platforms).
+LIB="$(find "$UNZ" -maxdepth 3 \
+    \( -name 'libLiteRt.so' -o -name 'libLiteRt.dylib' -o -name 'libLiteRt.dll' \) \
+    | head -n1)"
 if [[ -z "$LIB" ]]; then
     echo "[fetch_litert] could not find libLiteRt in the wheel" >&2
     ls -la "$UNZ" >&2
@@ -48,10 +51,28 @@ if [[ -z "$LIB" ]]; then
 fi
 cp "$LIB" "$OUT/"
 
-# Windows wheels also ship an import library; copy it if present so MSVC links cleanly.
-IMPLIB="$(find "$UNZ" -maxdepth 3 -name 'LiteRt.lib' | head -n1 || true)"
-if [[ -n "$IMPLIB" ]]; then
-    cp "$IMPLIB" "$OUT/"
+# Windows: the wheel doesn't ship an import library. Generate one from the
+# DLL's export table using MSVC's dumpbin + lib (must be in PATH — use the
+# ilammy/msvc-dev-cmd action in CI, or run from a Developer Command Prompt
+# locally). Skipped silently on non-Windows.
+if [[ "$LIB" == *libLiteRt.dll ]]; then
+    if command -v dumpbin >/dev/null 2>&1 && command -v lib >/dev/null 2>&1; then
+        echo "[fetch_litert] Generating libLiteRt.lib import library"
+        (cd "$OUT" && \
+         dumpbin /EXPORTS libLiteRt.dll \
+            | awk 'BEGIN{p=0} /ordinal +hint +RVA +name/{p=1;next} p && NF>=4 && $4!=""{print $4}' \
+            > LiteRt.exports
+         {
+             echo "LIBRARY libLiteRt"
+             echo "EXPORTS"
+             sed 's/^/    /' LiteRt.exports
+         } > libLiteRt.def
+         lib /MACHINE:X64 /DEF:libLiteRt.def /OUT:libLiteRt.lib >/dev/null
+         rm -f LiteRt.exports libLiteRt.def libLiteRt.exp)
+    else
+        echo "[fetch_litert] WARNING: dumpbin/lib not in PATH; skipping .lib generation."
+        echo "                  (Run from an MSVC Developer Command Prompt to get one.)"
+    fi
 fi
 
 echo ""

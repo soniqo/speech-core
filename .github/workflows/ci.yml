@@ -141,12 +141,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Puts MSVC dumpbin + lib in PATH so fetch_litert.sh can generate the
+      # import library from the runtime DLL (Google's wheel doesn't ship one).
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - name: Fetch libLiteRt from ai-edge-litert wheel
         shell: bash
         run: |
           ./scripts/fetch_litert.sh "$PWD/litert"
-          test -f litert/LiteRt.dll
-          test -f litert/LiteRt.lib
+          test -f litert/libLiteRt.dll
+          test -f litert/libLiteRt.lib
 
       - name: Configure
         shell: bash
@@ -162,7 +166,7 @@ jobs:
 
       - name: Test
         # Windows uses PATH for DLL resolution; prepend the litert dir so
-        # LiteRt.dll resolves when ctest launches the test exe.
+        # libLiteRt.dll resolves when ctest launches the test exe.
         shell: bash
         run: |
           export PATH="$PWD/litert:$PATH"

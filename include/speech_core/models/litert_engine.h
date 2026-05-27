@@ -11,6 +11,7 @@
 #include "litert/c/litert_tensor_buffer_types.h"
 
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
