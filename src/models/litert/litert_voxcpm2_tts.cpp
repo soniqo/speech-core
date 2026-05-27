@@ -47,10 +47,14 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
                                     bool hw_accel)
 {
     auto& engine = LiteRTEngine::get();
-    text_prefill_  = engine.load(text_prefill_path,  hw_accel, &text_prefill_model_);
-    token_step_    = engine.load(token_step_path,    hw_accel, &token_step_model_);
-    audio_encoder_ = engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_);
+    // EXPERIMENT: load in REVERSE order. The Python reference frees each
+    // interpreter before constructing the next; we hold all 4 alive at once.
+    // If TFLite's op resolver / delegate state has any inter-interpreter
+    // contamination, the LAST one loaded should be the only "clean" one.
     audio_decoder_ = engine.load(audio_decoder_path, hw_accel, &audio_decoder_model_);
+    audio_encoder_ = engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_);
+    token_step_    = engine.load(token_step_path,    hw_accel, &token_step_model_);
+    text_prefill_  = engine.load(text_prefill_path,  hw_accel, &text_prefill_model_);
 
     // Diagnostic — log input/output counts and per-input byte sizes for
     // text_prefill so we can compare against the Python reference (which
