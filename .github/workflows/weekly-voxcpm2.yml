@@ -1,0 +1,86 @@
+name: Weekly VoxCPM2 integration
+
+# End-to-end VoxCPM2 synthesis test. Separate from .github/workflows/nightly.yml
+# because the bundle is ~4.6 GB and AR inference is slow (the smoke path of
+# 16 steps + decode takes ~30–60 s wall-clock on a standard runner). Running
+# this nightly would eat actions/cache budget and slow PR ETAs; weekly catches
+# regressions early enough.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # 06:00 UTC every Monday
+  workflow_dispatch:
+
+jobs:
+  litert-voxcpm2-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      LITERT_TAG: litert-prebuilt-v2.18.0
+      LITERT_ASSET: libtensorflowlite_c-v2.18.0-linux-x86_64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake curl ca-certificates
+
+      # Cache the LiteRT prebuild and the VoxCPM2 model bundle separately
+      # because the model bundle (~4.6 GB) lives close to the actions/cache
+      # 10 GB-per-repo limit and we want bundle re-downloads to be rare.
+      - name: Cache LiteRT prebuild
+        uses: actions/cache@v4
+        with:
+          path: litert
+          key: litert-${{ env.LITERT_TAG }}
+
+      - name: Cache VoxCPM2 bundle
+        uses: actions/cache@v4
+        with:
+          path: scripts/models-voxcpm2
+          # Invalidate when the download script changes (new model file added,
+          # URL bumped, etc.). The bundle itself doesn't change for a given URL.
+          key: voxcpm2-bundle-${{ hashFiles('scripts/download_voxcpm2_litert.sh') }}
+
+      - name: Download LiteRT prebuild (if not cached)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f litert/lib/libtensorflowlite_c.so ]; then
+              mkdir -p litert
+              gh release download "$LITERT_TAG" -p "$LITERT_ASSET"
+              tar -xzf "$LITERT_ASSET" -C litert
+          fi
+          test -f litert/include/tensorflow/lite/c/c_api.h
+          test -f litert/lib/libtensorflowlite_c.so
+
+      - name: Download VoxCPM2 bundle (if not cached)
+        run: |
+          if [ ! -f scripts/models-voxcpm2/voxcpm2-token-step.tflite ]; then
+              ./scripts/download_voxcpm2_litert.sh
+          fi
+          test -f scripts/models-voxcpm2/voxcpm2-text-prefill.tflite
+          test -f scripts/models-voxcpm2/voxcpm2-token-step.tflite
+          test -f scripts/models-voxcpm2/voxcpm2-audio-encoder.tflite
+          test -f scripts/models-voxcpm2/voxcpm2-audio-decoder.tflite
+          test -f scripts/models-voxcpm2/tokenizer.json
+
+      - name: Configure
+        run: |
+          cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_LITERT=ON \
+              -DLITERT_DIR=$PWD/litert
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (full LiteRT model suite, including VoxCPM2 synth)
+        env:
+          SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-voxcpm2
+        run: |
+          export LD_LIBRARY_PATH="$PWD/litert/lib:${LD_LIBRARY_PATH:-}"
+          ctest --test-dir build --output-on-failure -R test_litert_models

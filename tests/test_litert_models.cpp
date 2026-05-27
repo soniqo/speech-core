@@ -427,6 +427,57 @@ void test_litert_voxcpm2_load(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// VoxCPM2 end-to-end synthesis — runs the full pipeline with a short text and
+// a capped step count, accumulates the streamed PCM, and validates basic
+// properties (sample rate produces the expected chunk size, audio is not
+// silent, no NaN/inf). Skipped unless VOXCPM2 model files are present.
+// Set step count low (16) so even a heavy nightly run stays bounded.
+// ---------------------------------------------------------------------------
+
+void test_litert_voxcpm2_synthesize(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string enc  = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_voxcpm2_synthesize ... ");
+
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
+    tts.set_max_steps(16);
+    tts.set_min_steps_before_stop(1000);  // disable stop signal — force exactly 16 steps
+
+    std::vector<float> audio;
+    bool got_final = false;
+    tts.synthesize("Hello world", "en",
+        [&](const float* samples, size_t length, bool is_final) {
+            if (samples && length) audio.insert(audio.end(), samples, samples + length);
+            if (is_final) got_final = true;
+        });
+    REQUIRE(got_final);
+    // 16 steps × 7680 samples/step = 122880 samples (= 2.56 s @ 48 kHz)
+    REQUIRE(audio.size() == 16 * 7680);
+
+    double sum_sq = 0.0;
+    float  peak   = 0.0f;
+    for (float s : audio) {
+        if (!std::isfinite(s)) { std::printf("\n    sample is non-finite "); REQUIRE(false); }
+        sum_sq += static_cast<double>(s) * s;
+        peak    = std::max(peak, std::abs(s));
+    }
+    const double rms = std::sqrt(sum_sq / audio.size());
+    std::printf("samples=%zu rms=%.4f peak=%.4f ", audio.size(), rms, peak);
+    REQUIRE(rms > 1e-5);     // not silent
+    REQUIRE(peak < 1.5f);    // no extreme blow-up (clip detector)
+
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
 // VoxCPM2 tokenizer — pins encode/decode to the reference output from the
 // Python HuggingFace `tokenizers` library against the published
 // tokenizer.json. Only requires the tokenizer file, not the .tflite graphs,
@@ -501,6 +552,7 @@ int main() {
     test_litert_vad_to_stt_pipeline(dir);
     test_voxcpm2_tokenizer(dir);
     test_litert_voxcpm2_load(dir);
+    test_litert_voxcpm2_synthesize(dir);
 
     if (failures > 0) {
         std::fprintf(stderr, "\n%d test(s) failed\n", failures);
