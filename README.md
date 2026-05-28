@@ -1,6 +1,6 @@
 # Speech Core
 
-Voice agent pipeline engine in C++17 for **Linux, Windows, and Android** (plus Apple platforms via a prebuilt XCFramework). Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, speech queuing — with **zero ML dependencies in the core**.
+Voice agent pipeline engine in C++17 for **Linux, Windows, and Android** (plus Apple platforms via a prebuilt XCFramework). Provides the orchestration layer for real-time conversational AI — state machine, turn detection, interruption handling, speech queuing.
 
 Model inference is opt-in through two interchangeable, independent backends:
 
