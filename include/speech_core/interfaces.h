@@ -235,4 +235,81 @@ public:
     virtual void reset() = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Diarization — speaker segmentation, embedding, and clustering
+// ---------------------------------------------------------------------------
+// These support multi-speaker meeting transcription (server-side). Unlike the
+// real-time conversational interfaces above, they operate on a whole audio
+// buffer. A Diarizer typically composes a SegmentationInterface (local speaker
+// activity per window) with an EmbeddingInterface (speaker vectors for
+// cross-window clustering).
+
+/// One speaker-labelled time span.
+struct DiarizedSegment {
+    float start   = 0.0f;  // seconds
+    float end     = 0.0f;  // seconds
+    int   speaker = -1;    // local speaker id; -1 = unassigned
+};
+
+/// One segmentation window's raw output.
+struct SegmentationWindow {
+    float start_time = 0.0f;
+    float end_time   = 0.0f;
+    std::vector<float> posteriors;        // [frames × powerset_classes]
+    std::vector<float> speaker_activity;  // [frames × max_local_speakers]
+};
+
+/// Tunables for end-to-end diarization.
+struct DiarizerConfig {
+    float onset                = 0.5f;
+    float offset               = 0.3f;
+    float min_speech_duration  = 0.3f;  // seconds
+    float clustering_threshold = 0.715f;
+    int   min_speakers         = 0;     // 0 = auto
+    int   max_speakers         = 0;     // 0 = auto
+};
+
+/// Local speaker-activity segmentation over fixed windows (e.g. Pyannote).
+class SegmentationInterface {
+public:
+    virtual ~SegmentationInterface() = default;
+
+    /// Run segmentation over the whole buffer, returning per-window posteriors.
+    virtual std::vector<SegmentationWindow> segment(
+        const float* audio, size_t length, int sample_rate) = 0;
+
+    /// Expected input sample rate in Hz.
+    virtual int input_sample_rate() const = 0;
+
+    /// Maximum simultaneous local speakers the model resolves per window.
+    virtual int max_local_speakers() const = 0;
+};
+
+/// Fixed-dimension speaker embedding (e.g. WeSpeaker ResNet34).
+class EmbeddingInterface {
+public:
+    virtual ~EmbeddingInterface() = default;
+
+    /// Embed an audio span into a speaker vector.
+    virtual std::vector<float> embed(
+        const float* audio, size_t length, int sample_rate) = 0;
+
+    /// Output embedding dimensionality.
+    virtual int embedding_dim() const = 0;
+
+    /// Expected input sample rate in Hz.
+    virtual int input_sample_rate() const = 0;
+};
+
+/// End-to-end diarization: audio in, speaker-labelled segments out.
+/// Typically composes a SegmentationInterface + an EmbeddingInterface.
+class DiarizerInterface {
+public:
+    virtual ~DiarizerInterface() = default;
+
+    virtual std::vector<DiarizedSegment> diarize(
+        const float* audio, size_t length, int sample_rate,
+        const DiarizerConfig& config) = 0;
+};
+
 }  // namespace speech_core

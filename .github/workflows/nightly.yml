@@ -105,12 +105,19 @@ jobs:
           test -f litert/libLiteRt.so
 
       - name: Download LiteRT models (if not cached)
+        # HF_TOKEN lets the (possibly private) soniqo/* repos resolve —
+        # including the diarization + omnilingual models for the upstreamed
+        # wrappers. Core models (silero/parakeet) are asserted below; the
+        # extra models are best-effort and their tests skip if absent.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ ! -f scripts/models-litert/parakeet-encoder.tflite ]; then
               ./scripts/download_models_litert.sh
           fi
           test -f scripts/models-litert/silero-vad.tflite
           test -f scripts/models-litert/parakeet-encoder.tflite
+          echo "models present:" && ls -1 scripts/models-litert/
 
       - name: Configure
         run: |

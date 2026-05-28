@@ -13,9 +13,13 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/interfaces.h"
+#include "speech_core/diarization/diarization_pipeline.h"
+#include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
+#include "speech_core/models/litert_pyannote_segmentation.h"
 #include "speech_core/models/litert_silero_vad.h"
 #include "speech_core/models/litert_voxcpm2_tts.h"
+#include "speech_core/models/litert_wespeaker_embedding.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 #include "speech_core/vad/streaming_vad.h"
 #include "speech_core/voxcpm2_c.h"
@@ -28,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -706,6 +711,166 @@ void test_voxcpm2_c_api(const std::string& dir) {
     std::printf("ok\n");
 }
 
+// ---------------------------------------------------------------------------
+// WeSpeaker embedding — embeds a tone, checks dim, L2-norm ≈ 1, finiteness,
+// and that identical input yields a self-similarity ≈ 1 (deterministic).
+// ---------------------------------------------------------------------------
+
+void test_litert_wespeaker_embedding(const std::string& dir) {
+    std::string model = dir + "/wespeaker-resnet34.tflite";
+    if (!file_exists(model)) {
+        std::printf("  [skip] wespeaker-resnet34.tflite not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_wespeaker_embedding ... ");
+
+    speech_core::LiteRTWeSpeakerEmbedding emb(model, /*hw_accel=*/false);
+    REQUIRE(emb.embedding_dim() == 256);
+    REQUIRE(emb.input_sample_rate() == 16000);
+
+    auto tone = generate_tone(16000, 220.0f, 2.0f, 0.4f);
+    auto v = emb.embed(tone.data(), tone.size(), 16000);
+    REQUIRE(static_cast<int>(v.size()) == emb.embedding_dim());
+
+    float norm = 0.0f;
+    for (float x : v) { REQUIRE(std::isfinite(x)); norm += x * x; }
+    norm = std::sqrt(norm);
+    REQUIRE(std::abs(norm - 1.0f) < 1e-2f);  // wrapper L2-normalises
+
+    auto v2 = emb.embed(tone.data(), tone.size(), 16000);
+    float self_sim = 0.0f;
+    for (size_t i = 0; i < v.size(); ++i) self_sim += v[i] * v2[i];
+    REQUIRE(self_sim > 0.99f);  // deterministic on identical input
+
+    std::printf("ok (dim=%zu norm=%.4f self_sim=%.4f)\n", v.size(), norm, self_sim);
+}
+
+// ---------------------------------------------------------------------------
+// Pyannote segmentation — runs ≥1 window over (padded) fixture audio and
+// checks window shape + that speaker_activity is finite and in [0, 1].
+// ---------------------------------------------------------------------------
+
+void test_litert_pyannote_segmentation(const std::string& dir) {
+    std::string model = dir + "/pyannote-segmentation.tflite";
+    if (!file_exists(model)) {
+        std::printf("  [skip] pyannote-segmentation.tflite not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_pyannote_segmentation ... ");
+
+    speech_core::LiteRTPyannoteSegmentation seg(model, /*hw_accel=*/false);
+    REQUIRE(seg.input_sample_rate() == 16000);
+    REQUIRE(seg.max_local_speakers() == 3);
+
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    std::vector<float> audio;
+    if (!wav.samples.empty()) {
+        audio = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+    }
+    if (audio.size() < static_cast<size_t>(16000) * 11) {
+        audio.resize(static_cast<size_t>(16000) * 11, 0.0f);  // guarantee ≥1 window
+    }
+
+    auto windows = seg.segment(audio.data(), audio.size(), 16000);
+    REQUIRE(!windows.empty());
+
+    const auto& w0 = windows.front();
+    REQUIRE(!w0.posteriors.empty());
+    REQUIRE(static_cast<int>(w0.speaker_activity.size()) % seg.max_local_speakers() == 0);
+    for (float a : w0.speaker_activity) {
+        REQUIRE(std::isfinite(a));
+        REQUIRE(a >= -0.01f && a <= 1.01f);
+    }
+
+    std::printf("ok (windows=%zu frames/win=%zu)\n",
+                windows.size(), w0.speaker_activity.size() / seg.max_local_speakers());
+}
+
+// ---------------------------------------------------------------------------
+// Omnilingual CTC STT (optional model) — transcribes the fixture; requires
+// non-empty text on real speech, otherwise just a clean run on silence.
+// ---------------------------------------------------------------------------
+
+void test_litert_omnilingual_stt(const std::string& dir) {
+    std::string model = dir + "/omnilingual-ctc-300m.tflite";
+    std::string tok   = dir + "/tokenizer.model";
+    if (!file_exists(model) || !file_exists(tok)) {
+        std::printf("  [skip] omnilingual files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_omnilingual_stt ... ");
+
+    speech_core::LiteRTOmnilingualStt stt(model, tok, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    bool real_speech = !wav.samples.empty();
+    std::vector<float> audio;
+    if (real_speech) {
+        audio = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+    } else {
+        audio.assign(16000, 0.0f);
+    }
+
+    auto result = stt.transcribe(audio.data(), audio.size(), 16000);
+    std::printf("text=\"%s\" ", result.text.c_str());
+    if (real_speech) REQUIRE(!result.text.empty());
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Diarization e2e — composes Pyannote (segmentation) + WeSpeaker (embedding)
+// through DiarizationPipeline on the fixture and checks the segments are
+// well-formed (speaker ≥ 0, end ≥ start, time-sorted) and non-empty.
+// ---------------------------------------------------------------------------
+
+void test_litert_diarization(const std::string& dir) {
+    std::string seg_model = dir + "/pyannote-segmentation.tflite";
+    std::string emb_model = dir + "/wespeaker-resnet34.tflite";
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (!file_exists(seg_model) || !file_exists(emb_model)) {
+        std::printf("  [skip] diarization needs pyannote + wespeaker in %s\n", dir.c_str());
+        return;
+    }
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_litert_diarization ... ");
+
+    auto audio = wav.sample_rate == 16000
+        ? wav.samples
+        : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                           wav.sample_rate, 16000);
+    if (audio.size() < static_cast<size_t>(16000) * 11) {
+        audio.resize(static_cast<size_t>(16000) * 11, 0.0f);  // ≥1 segmentation window
+    }
+
+    speech_core::LiteRTPyannoteSegmentation seg(seg_model, /*hw_accel=*/false);
+    speech_core::LiteRTWeSpeakerEmbedding    emb(emb_model, /*hw_accel=*/false);
+    speech_core::DiarizationPipeline diar(seg, emb);
+
+    speech_core::DiarizerConfig cfg;  // defaults
+    auto segments = diar.diarize(audio.data(), audio.size(), 16000, cfg);
+    REQUIRE(!segments.empty());
+
+    std::set<int> speakers;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        REQUIRE(segments[i].speaker >= 0);
+        REQUIRE(segments[i].end >= segments[i].start);
+        if (i > 0) REQUIRE(segments[i].start >= segments[i - 1].start);
+        speakers.insert(segments[i].speaker);
+    }
+
+    std::printf("ok (segments=%zu speakers=%zu)\n", segments.size(), speakers.size());
+}
+
 }  // namespace
 
 int main() {
@@ -725,6 +890,10 @@ int main() {
     test_litert_parakeet_real_speech(dir);
     test_litert_parakeet_streaming(dir);
     test_litert_vad_to_stt_pipeline(dir);
+    test_litert_wespeaker_embedding(dir);
+    test_litert_pyannote_segmentation(dir);
+    test_litert_omnilingual_stt(dir);
+    test_litert_diarization(dir);
     test_voxcpm2_tokenizer(dir);
     test_litert_voxcpm2_load(dir);
     test_litert_voxcpm2_synthesize(dir);

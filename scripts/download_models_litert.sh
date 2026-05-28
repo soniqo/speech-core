@@ -12,6 +12,14 @@ BASE_URL="https://huggingface.co/soniqo"
 OUT="${1:-$(dirname "$0")/models-litert}"
 mkdir -p "$OUT"
 
+# Optional HuggingFace auth — soniqo/* repos may be private. When HF_TOKEN is
+# set, send it as a bearer token; when unset, fetch anonymously. Backward
+# compatible with the previous (anonymous) behaviour.
+AUTH=()
+if [[ -n "${HF_TOKEN:-}" ]]; then
+    AUTH=(-H "Authorization: Bearer ${HF_TOKEN}")
+fi
+
 FILES=(
     "Silero-VAD-v5-LiteRT/silero-vad.tflite"
     "Silero-VAD-v5-LiteRT/config.json"
@@ -19,6 +27,13 @@ FILES=(
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/parakeet-decoder-joint.tflite"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/vocab.json"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/config.json"
+    # Diarization + multilingual ASR — fetched for the upstreamed cloud
+    # wrappers (WeSpeaker / Pyannote / Omnilingual). Best-effort: if a repo is
+    # private and HF_TOKEN is unset, the fetch warns and the gated test skips.
+    "Pyannote-Segmentation-LiteRT/pyannote-segmentation.tflite"
+    "WeSpeaker-ResNet34-LM-LiteRT/wespeaker-resnet34.tflite"
+    "Omnilingual-ASR-CTC-300M-LiteRT/omnilingual-ctc-300m.tflite"
+    "Omnilingual-ASR-CTC-300M-LiteRT/tokenizer.model"
 )
 
 for entry in "${FILES[@]}"; do
@@ -47,7 +62,14 @@ for entry in "${FILES[@]}"; do
 
     url="$BASE_URL/$repo/resolve/main/$rel"
     echo "[fetch] $rel"
-    curl -fL --retry 3 -o "$dest" "$url"
+    # Best-effort: a missing/forbidden file (e.g. a private repo with no
+    # HF_TOKEN) warns and continues so the rest still download. Gated tests
+    # skip cleanly when a model is absent. The ${AUTH[@]+...} form is
+    # nounset-safe for the empty-array (no-token) case on old bash.
+    if ! curl -fL --retry 3 ${AUTH[@]+"${AUTH[@]}"} -o "$dest" "$url"; then
+        echo "[warn] could not fetch $rel (set HF_TOKEN if the repo is private) — skipping"
+        rm -f "$dest"
+    fi
 done
 
 echo ""
