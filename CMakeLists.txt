@@ -159,6 +159,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_silero_vad.cpp
         src/models/litert/litert_parakeet_stt.cpp
         src/models/litert/litert_voxcpm2_tts.cpp
+        src/models/litert/voxcpm2_c.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
     )
 
@@ -181,6 +182,16 @@ if(SPEECH_CORE_WITH_LITERT)
     set_target_properties(speech_core_models_litert PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models_litert PUBLIC speech_core litert)
+
+    # VoxCPM2 voice-cloning CLI — desktop only (skipped on Android/embedded
+    # consumers that link the library but don't want an executable target).
+    if(NOT ANDROID)
+        add_executable(speech_voxcpm2_clone examples/litert/voxcpm2_clone.cpp)
+        target_link_libraries(speech_voxcpm2_clone PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
