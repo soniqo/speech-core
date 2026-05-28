@@ -18,6 +18,7 @@
 #include "speech_core/models/litert_voxcpm2_tts.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 #include "speech_core/vad/streaming_vad.h"
+#include "speech_core/voxcpm2_c.h"
 
 #include <algorithm>
 #include <cctype>
@@ -586,6 +587,125 @@ void test_voxcpm2_tokenizer(const std::string& dir) {
     std::printf("ok\n");
 }
 
+// ---------------------------------------------------------------------------
+// VoxCPM2 voice cloning — conditions on the test fixture as a reference clip
+// and synthesizes a known phrase, asserting non-silent finite audio. The
+// fixture's silent lead-in is trimmed inside set_reference(). Dumps a WAV when
+// VOXCPM2_CLONE_WAV is set so CI can ASR round-trip it.
+// ---------------------------------------------------------------------------
+
+void dump_wav48k_mono(const char* path, const std::vector<float>& audio) {
+    std::ofstream w(path, std::ios::binary);
+    if (!w) return;
+    const uint32_t rate = 48000, n = static_cast<uint32_t>(audio.size());
+    const uint32_t data = n * 2, riff = 36 + data;
+    auto u32 = [&](uint32_t v) { w.write(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [&](uint16_t v) { w.write(reinterpret_cast<const char*>(&v), 2); };
+    w.write("RIFF", 4); u32(riff); w.write("WAVE", 4);
+    w.write("fmt ", 4); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+    w.write("data", 4); u32(data);
+    for (float s : audio) {
+        if (s < -1.0f) s = -1.0f; if (s > 1.0f) s = 1.0f;
+        u16(static_cast<uint16_t>(static_cast<int16_t>(s * 32767.0f)));
+    }
+}
+
+void check_voice_audio(const std::vector<float>& audio, const char* tag) {
+    REQUIRE(!audio.empty());
+    const size_t steps = audio.size() / 7680;
+    REQUIRE(steps >= 8);
+    double sum_sq = 0.0; float peak = 0.0f;
+    for (float s : audio) {
+        if (!std::isfinite(s)) { std::printf("\n    %s non-finite ", tag); REQUIRE(false); }
+        sum_sq += static_cast<double>(s) * s; peak = std::max(peak, std::abs(s));
+    }
+    const double rms = std::sqrt(sum_sq / audio.size());
+    std::printf("%s steps=%zu rms=%.4f peak=%.4f ", tag, steps, rms, peak);
+    REQUIRE(rms > 1e-3);     // cloned output must not be silent
+    REQUIRE(peak < 1.5f);
+}
+
+void test_litert_voxcpm2_clone(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string enc  = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
+        return;
+    }
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_litert_voxcpm2_clone ... ");
+
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
+    tts.set_instruction("clear, natural delivery");
+    tts.set_max_steps(128);
+    tts.set_min_steps_before_stop(32);
+    tts.set_reference(wav.samples.data(), wav.samples.size(), wav.sample_rate);
+    REQUIRE(tts.has_reference());
+
+    std::vector<float> audio;
+    bool got_final = false;
+    tts.synthesize("The quick brown fox jumps over the lazy dog", "en",
+        [&](const float* s, size_t len, bool is_final) {
+            if (s && len) audio.insert(audio.end(), s, s + len);
+            if (is_final) got_final = true;
+        });
+    REQUIRE(got_final);
+    check_voice_audio(audio, "clone");
+
+    const char* wav_out = std::getenv("VOXCPM2_CLONE_WAV");
+    if (wav_out) { dump_wav48k_mono(wav_out, audio); std::printf("wav=%s ", wav_out); }
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// VoxCPM2 C ABI (sc_voxcpm2_*) — the surface speech-studio links via FFI. Drives
+// a clone through the C entry points and asserts non-silent audio.
+// ---------------------------------------------------------------------------
+
+void test_voxcpm2_c_api(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (!file_exists(pref) || !file_exists(tok) || wav.samples.empty()) {
+        std::printf("  [skip] voxcpm2 files/fixture not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_voxcpm2_c_api ... ");
+
+    sc_voxcpm2_t v = sc_voxcpm2_create(dir.c_str());
+    REQUIRE(v != nullptr);
+    REQUIRE(sc_voxcpm2_output_sample_rate(v) == 48000);
+    sc_voxcpm2_set_instruction(v, "clear, natural delivery");
+    sc_voxcpm2_set_max_steps(v, 128);
+    sc_voxcpm2_set_min_steps_before_stop(v, 32);
+
+    int rc = sc_voxcpm2_set_reference(v, wav.samples.data(), wav.samples.size(),
+                                      wav.sample_rate);
+    if (rc != 0) std::printf("\n    set_reference: %s ", sc_voxcpm2_last_error(v));
+    REQUIRE(rc == 0);
+
+    std::vector<float> audio;
+    rc = sc_voxcpm2_synthesize(v, "The quick brown fox jumps over the lazy dog",
+        [](const float* s, size_t len, bool, void* ctx) {
+            auto* out = static_cast<std::vector<float>*>(ctx);
+            if (s && len) out->insert(out->end(), s, s + len);
+        }, &audio);
+    if (rc != 0) std::printf("\n    synthesize: %s ", sc_voxcpm2_last_error(v));
+    REQUIRE(rc == 0);
+    check_voice_audio(audio, "c_api");
+
+    sc_voxcpm2_destroy(v);
+    std::printf("ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -608,6 +728,8 @@ int main() {
     test_voxcpm2_tokenizer(dir);
     test_litert_voxcpm2_load(dir);
     test_litert_voxcpm2_synthesize(dir);
+    test_litert_voxcpm2_clone(dir);
+    test_voxcpm2_c_api(dir);
 
     if (failures > 0) {
         std::fprintf(stderr, "\n%d test(s) failed\n", failures);

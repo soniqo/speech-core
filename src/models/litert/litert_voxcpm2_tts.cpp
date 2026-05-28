@@ -1,12 +1,46 @@
 #include "speech_core/models/litert_voxcpm2_tts.h"
 
+#include "speech_core/audio/resampler.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 namespace speech_core {
+
+namespace {
+
+// Read the prefill context window (max_text_tokens) from the loaded graph: its
+// audio_feats input is the only rank-4 tensor, shaped [1, max_text, patch,
+// feat]. Lets a 256- or 512-token export both work. Falls back to 512 (the
+// deployed bundle) if introspection isn't available.
+int query_prefill_context(LiteRtModel model) {
+    constexpr int kDefault = 512;
+    if (!model) return kDefault;
+    LiteRtParamIndex main_idx = 0;
+    if (LiteRtGetMainModelSubgraphIndex(model, &main_idx) != kLiteRtStatusOk) return kDefault;
+    LiteRtSubgraph sg = nullptr;
+    if (LiteRtGetModelSubgraph(model, main_idx, &sg) != kLiteRtStatusOk) return kDefault;
+    LiteRtParamIndex n = 0;
+    if (LiteRtGetNumSubgraphInputs(sg, &n) != kLiteRtStatusOk) return kDefault;
+    for (LiteRtParamIndex i = 0; i < n; ++i) {
+        LiteRtTensor t = nullptr;
+        if (LiteRtGetSubgraphInput(sg, i, &t) != kLiteRtStatusOk) continue;
+        LiteRtRankedTensorType rt{};
+        if (LiteRtGetRankedTensorType(t, &rt) != kLiteRtStatusOk) continue;
+        if (rt.layout.rank == 4) {  // audio_feats: [1, max_text, patch, feat]
+            const int dim = static_cast<int>(rt.layout.dimensions[1]);
+            if (dim > 0) return dim;
+        }
+    }
+    return kDefault;
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Constructor / destructor
@@ -25,12 +59,24 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
     engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_, &audio_encoder_compiled_);
     engine.load(audio_decoder_path, hw_accel, &audio_decoder_model_, &audio_decoder_compiled_);
 
+    // Derive the context geometry from the prefill graph, then the cache sizes.
+    max_text_                = query_prefill_context(text_prefill_model_);
+    full_seq_                = max_text_ + kMaxGenerated;
+    base_cache_floats_       = 2L * kBaseLayers     * kKvHeads * full_seq_ * kHeadDim;
+    residual_cache_floats_   = 2L * kResidualLayers * kKvHeads * full_seq_ * kHeadDim;
+    base_prefill_floats_     = 2L * kBaseLayers     * kKvHeads * max_text_ * kHeadDim;
+    residual_prefill_floats_ = 2L * kResidualLayers * kKvHeads * max_text_ * kHeadDim;
+
     tokenizer_         = std::make_unique<VoxCPM2Tokenizer>(tokenizer_path);
     audio_start_token_ = tokenizer_->token_id("<|audio_start|>");
     if (audio_start_token_ < 0) {
         throw std::runtime_error(
             "LiteRT VoxCPM2: tokenizer is missing <|audio_start|> — bundle is malformed");
     }
+    // Reference boundary tokens are only needed for cloning; absence is not
+    // fatal here (set_reference() throws if they're missing when used).
+    ref_audio_start_token_ = tokenizer_->token_id("<|ref_audio_start|>");
+    ref_audio_end_token_   = tokenizer_->token_id("<|ref_audio_end|>");
 }
 
 LiteRTVoxCPM2Tts::~LiteRTVoxCPM2Tts() {
@@ -49,6 +95,98 @@ void LiteRTVoxCPM2Tts::cancel() {
 }
 
 // ---------------------------------------------------------------------------
+// Reference conditioning — run audio_encoder on a speaker clip and cache the
+// encoded latents for subsequent synthesize() calls.
+// ---------------------------------------------------------------------------
+
+void LiteRTVoxCPM2Tts::clear_reference() {
+    ref_feats_.clear();
+    ref_feats_.shrink_to_fit();
+    ref_frames_ = 0;
+}
+
+void LiteRTVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample_rate) {
+    clear_reference();
+    if (!pcm || length == 0) return;
+    if (ref_audio_start_token_ < 0 || ref_audio_end_token_ < 0) {
+        throw std::runtime_error(
+            "LiteRT VoxCPM2: tokenizer lacks <|ref_audio_start|>/<|ref_audio_end|> — "
+            "this bundle does not support voice cloning");
+    }
+
+    // Resample the reference to the encoder's conditioning rate (16 kHz).
+    std::vector<float> mono;
+    if (sample_rate != kCondSampleRate) {
+        mono = Resampler::resample(pcm, length, sample_rate, kCondSampleRate);
+    } else {
+        mono.assign(pcm, pcm + length);
+    }
+    if (mono.empty()) return;
+
+    // Trim leading silence. The encoder window is a fixed 6.4 s taken from the
+    // front, so a quiet lead-in (common in user clips) would otherwise fill it
+    // with silence and clone a silent speaker. Gate on a fraction of the clip's
+    // peak so quiet-but-real speech isn't trimmed; keep a 100 ms pre-roll. If
+    // the clip is entirely below the gate, leave it as-is.
+    {
+        float peak = 0.0f;
+        for (float v : mono) peak = std::max(peak, std::abs(v));
+        const float gate = std::max(0.01f, 0.1f * peak);
+        constexpr int kWin = 320;  // 20 ms @ 16 kHz
+        size_t start = 0;
+        for (; start + kWin <= mono.size(); start += kWin) {
+            double ss = 0.0;
+            for (int i = 0; i < kWin; ++i) ss += double(mono[start + i]) * mono[start + i];
+            if (std::sqrt(ss / kWin) > gate) break;
+        }
+        if (start + kWin <= mono.size() && start > 0) {
+            const size_t preroll = std::min<size_t>(start, kCondSampleRate / 10);
+            mono.erase(mono.begin(), mono.begin() + (start - preroll));
+        }
+    }
+
+    // Frames backed by *real* (pre-pad) audio. The encoder always emits
+    // kMaxRefFrames, but trailing frames over zero-padding carry silence — we
+    // condition only on the real ones (matches the MLX dynamic-length path).
+    const size_t real_samples = std::min<size_t>(mono.size(), kRefAudioSamples);
+    int real_frames = static_cast<int>((real_samples + kRefFrameStride - 1) / kRefFrameStride);
+    real_frames = std::clamp(real_frames, 1, kMaxRefFrames);
+
+    // The audio_encoder graph has a fixed-length input — pad/truncate to it.
+    mono.resize(kRefAudioSamples, 0.0f);
+
+    auto env = LiteRTEngine::get().env();
+    auto t_in  = make_type(kLiteRtElementTypeFloat32, {1, kRefAudioSamples});
+    auto t_out = make_type(kLiteRtElementTypeFloat32,
+                           {1, kMaxRefFrames, kPatchSize, kFeatDim});
+
+    LiteRtHostBuffer in_audio(env, t_in, mono.size() * sizeof(float), mono.data());
+    std::vector<float> enc_out(static_cast<size_t>(kMaxRefFrames) * kPredFeatFloats);
+    LiteRtHostBuffer out_feats(env, t_out, enc_out.size() * sizeof(float));
+
+    LiteRtTensorBuffer ins[1]  = { in_audio.raw() };
+    LiteRtTensorBuffer outs[1] = { out_feats.raw() };
+    litert_check(LiteRtRunCompiledModel(audio_encoder_compiled_, 0, 1, ins, 1, outs),
+                 "audio_encoder Run");
+    out_feats.read(enc_out.data(), enc_out.size() * sizeof(float));
+
+    // Keep the first real_frames frames; each is one audio_feats slot.
+    ref_feats_.assign(enc_out.begin(),
+                      enc_out.begin() + static_cast<size_t>(real_frames) * kPredFeatFloats);
+    ref_frames_ = real_frames;
+
+    if (std::getenv("VOXCPM2_DEBUG")) {
+        double ss = 0.0;
+        for (float v : ref_feats_) ss += static_cast<double>(v) * v;
+        const double rms = ref_feats_.empty() ? 0.0 : std::sqrt(ss / ref_feats_.size());
+        LOGI("VoxCPM2 reference: %d frames (%zu real samples), feats rms=%.4f "
+             "[tokens: audio_start=%d ref_start=%d ref_end=%d]",
+             ref_frames_, real_samples, rms,
+             audio_start_token_, ref_audio_start_token_, ref_audio_end_token_);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // synthesize() — mirrors speech-models/.../smoke_litert_roundtrip.py
 // ---------------------------------------------------------------------------
 
@@ -59,46 +197,93 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     if (!on_chunk) return;
     cancelled_.store(false, std::memory_order_relaxed);
 
-    // --- 1. Tokenize: VoxCPM2 was trained on "({instruction}){text}" prompts.
-    // <|audio_start|> signals the model to begin generating audio.
+    // --- 1. Build the prefill sequence. The target text is
+    // "({instruction}){text}" followed by <|audio_start|> (the cue to begin
+    // generating audio). When a reference clip is set, a
+    // [<|ref_audio_start|>, latents…, <|ref_audio_end|>] block is prepended and
+    // its latents fill audio_feats (audio_mask=1), conditioning the output on
+    // the reference speaker. Mirrors the MLX ICL clone path in speech-swift.
     std::string prompt = "(" + instruction_ + ")" + text;
-    std::vector<int> ids = tokenizer_->encode(prompt);
-    ids.push_back(audio_start_token_);
-    if (ids.size() > static_cast<size_t>(kMaxText)) ids.resize(kMaxText);
-    const int context_length = static_cast<int>(ids.size());
+    std::vector<int> target_ids = tokenizer_->encode(prompt);
+    target_ids.push_back(audio_start_token_);
 
-    std::vector<int64_t> text_tokens(kMaxText, 0);
-    std::vector<float>   text_mask  (kMaxText, 0.0f);
-    for (int i = 0; i < context_length; ++i) {
-        text_tokens[i] = ids[i];
-        text_mask[i]   = 1.0f;
+    // With a reference block, the target text must not carry the leading BOS
+    // that encode() prepends: the model was trained on
+    // [ref_block, text, <|audio_start|>] with no sentence-start marker after
+    // the reference. A stray <s> there makes it stop early and emit silence.
+    // (The MLX clone path tokenizes without a BOS for the same reason.)
+    if (ref_frames_ > 0 && !target_ids.empty()
+        && target_ids.front() == tokenizer_->bos_id()) {
+        target_ids.erase(target_ids.begin());
     }
-    // No reference audio — feed zero audio_feats/audio_mask. Voice cloning
-    // would replace these with the audio_encoder output padded to [1,512,4,64].
-    std::vector<float> audio_feats(kMaxText * kPredFeatFloats, 0.0f);
-    std::vector<float> audio_mask (kMaxText, 0.0f);
+
+    std::vector<int64_t> text_tokens(max_text_, 0);
+    std::vector<float>   text_mask  (max_text_, 0.0f);
+    std::vector<float>   audio_feats(static_cast<size_t>(max_text_) * kPredFeatFloats, 0.0f);
+    std::vector<float>   audio_mask (max_text_, 0.0f);
+
+    int pos = 0;
+    if (ref_frames_ > 0) {
+        // Reserve room for the ref block plus at least one target token.
+        if (2 + ref_frames_ + 1 > max_text_) {
+            throw std::runtime_error(
+                "LiteRT VoxCPM2: reference block does not fit the context window");
+        }
+        text_tokens[pos] = ref_audio_start_token_;
+        text_mask[pos]   = 1.0f;
+        ++pos;
+        for (int f = 0; f < ref_frames_; ++f) {
+            audio_mask[pos] = 1.0f;
+            std::memcpy(audio_feats.data() + static_cast<size_t>(pos) * kPredFeatFloats,
+                        ref_feats_.data()  + static_cast<size_t>(f)   * kPredFeatFloats,
+                        kPredFeatFloats * sizeof(float));
+            ++pos;
+        }
+        text_tokens[pos] = ref_audio_end_token_;
+        text_mask[pos]   = 1.0f;
+        ++pos;
+    }
+
+    // Target text fills the rest of the window. If it would overflow, drop from
+    // the front but always keep the trailing <|audio_start|> cue.
+    const int avail = max_text_ - pos;
+    if (static_cast<int>(target_ids.size()) > avail) {
+        std::vector<int> trimmed;
+        trimmed.reserve(static_cast<size_t>(avail));
+        for (int i = 0; i < avail - 1; ++i) trimmed.push_back(target_ids[i]);
+        trimmed.push_back(audio_start_token_);
+        target_ids.swap(trimmed);
+    }
+    for (int id : target_ids) {
+        text_tokens[pos] = id;
+        text_mask[pos]   = 1.0f;
+        ++pos;
+    }
+    const int     context_length        = pos;
     const int64_t context_length_scalar = context_length;
 
     // --- 2. text_prefill → initial hiddens + caches.
     std::vector<float> lm_hidden       (kHidden);
     std::vector<float> residual_hidden (kHidden);
     std::vector<float> prefix_feat_cond(kPredFeatFloats);
-    std::vector<float> base_prefill    (kBasePrefillFloats);
-    std::vector<float> residual_prefill(kResidualPrefillFloats);
+    std::vector<float> base_prefill    (base_prefill_floats_);
+    std::vector<float> residual_prefill(residual_prefill_floats_);
     auto env = LiteRTEngine::get().env();
     {
-        auto t_text_tokens = make_type(kLiteRtElementTypeInt64,   {1, kMaxText});
-        auto t_text_mask   = make_type(kLiteRtElementTypeFloat32, {1, kMaxText});
+        auto t_text_tokens = make_type(kLiteRtElementTypeInt64,   {1, max_text_});
+        auto t_text_mask   = make_type(kLiteRtElementTypeFloat32, {1, max_text_});
         auto t_audio_feats = make_type(kLiteRtElementTypeFloat32,
-                                        {1, kMaxText, kPatchSize, kFeatDim});
-        auto t_audio_mask  = make_type(kLiteRtElementTypeFloat32, {1, kMaxText});
+                                        {1, max_text_, kPatchSize, kFeatDim});
+        auto t_audio_mask  = make_type(kLiteRtElementTypeFloat32, {1, max_text_});
         auto t_ctxlen      = make_type(kLiteRtElementTypeInt64,   {});
 
         auto t_lm    = make_type(kLiteRtElementTypeFloat32, {1, kHidden});
         auto t_resid = make_type(kLiteRtElementTypeFloat32, {1, kHidden});
         auto t_pfc   = make_type(kLiteRtElementTypeFloat32, {1, kPatchSize, kFeatDim});
-        auto t_bcache = make_type(kLiteRtElementTypeFloat32, {2, 28, 1, 2, 512, 128});
-        auto t_rcache = make_type(kLiteRtElementTypeFloat32, {2,  8, 1, 2, 512, 128});
+        auto t_bcache = make_type(kLiteRtElementTypeFloat32,
+                                  {2, kBaseLayers,     1, kKvHeads, max_text_, kHeadDim});
+        auto t_rcache = make_type(kLiteRtElementTypeFloat32,
+                                  {2, kResidualLayers, 1, kKvHeads, max_text_, kHeadDim});
 
         LiteRtHostBuffer in_tokens (env, t_text_tokens, text_tokens.size() * sizeof(int64_t), text_tokens.data());
         LiteRtHostBuffer in_tmask  (env, t_text_mask,   text_mask.size()   * sizeof(float),   text_mask.data());
@@ -128,17 +313,27 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
         out_rcache.read(residual_prefill.data(), residual_prefill.size() * sizeof(float));
     }
 
-    // --- 3. Grow caches 512 → 2560 by zero-padding axis 4. Layout is
-    // [2 (K/V), layers, 1 (batch), kv_heads, seq, head_dim]; we copy the first
-    // 512 seq slots and leave the remaining 2048 zeroed.
-    auto pad_cache = [](const std::vector<float>& src, std::vector<float>& dst,
-                        int layers, int kv_heads, int head_dim) {
-        constexpr int kPrefSeq = 512;
-        constexpr int kFullSeq = 2560;
+    if (std::getenv("VOXCPM2_DEBUG")) {
+        auto rms = [](const std::vector<float>& v) {
+            double s = 0.0; for (float x : v) s += double(x) * x;
+            return v.empty() ? 0.0 : std::sqrt(s / v.size());
+        };
+        LOGI("VoxCPM2 prefill: ctx_len=%d ref_frames=%d lm_rms=%.4f resid_rms=%.4f pfc_rms=%.4f",
+             context_length, ref_frames_, rms(lm_hidden), rms(residual_hidden),
+             rms(prefix_feat_cond));
+    }
+
+    // --- 3. Grow caches from the prefill window (max_text_) to the token_step
+    // window (full_seq_ = max_text_ + max_generated) by zero-padding axis 4.
+    // Layout is [2 (K/V), layers, 1 (batch), kv_heads, seq, head_dim]; copy the
+    // first max_text_ seq slots and leave the remaining slots zeroed.
+    auto pad_cache = [pref_seq = max_text_, full_seq = full_seq_](
+                         const std::vector<float>& src, std::vector<float>& dst,
+                         int layers, int kv_heads, int head_dim) {
         std::fill(dst.begin(), dst.end(), 0.0f);
         const size_t per_kv  = static_cast<size_t>(layers) * kv_heads;
-        const size_t src_row = static_cast<size_t>(kPrefSeq) * head_dim;
-        const size_t dst_row = static_cast<size_t>(kFullSeq) * head_dim;
+        const size_t src_row = static_cast<size_t>(pref_seq) * head_dim;
+        const size_t dst_row = static_cast<size_t>(full_seq) * head_dim;
         for (int kv = 0; kv < 2; ++kv) {
             for (size_t i = 0; i < per_kv; ++i) {
                 const float* src_ptr = src.data() + (kv * per_kv + i) * src_row;
@@ -147,10 +342,10 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
             }
         }
     };
-    std::vector<float> base_cache    (kBaseCacheFloats);
-    std::vector<float> residual_cache(kResidualCacheFloats);
-    pad_cache(base_prefill,     base_cache,     28, 2, 128);
-    pad_cache(residual_prefill, residual_cache,  8, 2, 128);
+    std::vector<float> base_cache    (base_cache_floats_);
+    std::vector<float> residual_cache(residual_cache_floats_);
+    pad_cache(base_prefill,     base_cache,     kBaseLayers,     kKvHeads, kHeadDim);
+    pad_cache(residual_prefill, residual_cache, kResidualLayers, kKvHeads, kHeadDim);
     base_prefill    .clear(); base_prefill    .shrink_to_fit();
     residual_prefill.clear(); residual_prefill.shrink_to_fit();
 
@@ -172,8 +367,10 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     auto t_lm     = make_type(kLiteRtElementTypeFloat32, {1, kHidden});
     auto t_resid  = make_type(kLiteRtElementTypeFloat32, {1, kHidden});
     auto t_pfc    = make_type(kLiteRtElementTypeFloat32, {1, kPatchSize, kFeatDim});
-    auto t_bcache = make_type(kLiteRtElementTypeFloat32, {2, 28, 1, 2, 2560, 128});
-    auto t_rcache = make_type(kLiteRtElementTypeFloat32, {2,  8, 1, 2, 2560, 128});
+    auto t_bcache = make_type(kLiteRtElementTypeFloat32,
+                              {2, kBaseLayers,     1, kKvHeads, full_seq_, kHeadDim});
+    auto t_rcache = make_type(kLiteRtElementTypeFloat32,
+                              {2, kResidualLayers, 1, kKvHeads, full_seq_, kHeadDim});
     auto t_pos    = make_type(kLiteRtElementTypeInt64,   {});
     auto t_noise  = make_type(kLiteRtElementTypeFloat32, {1, kFeatDim, kPatchSize});
     auto t_pred   = make_type(kLiteRtElementTypeFloat32, {1, kPatchSize, kFeatDim});
@@ -230,6 +427,7 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     int  steps_done       = 0;
     int  steps_in_chunk   = 0;
     bool stopped_by_model = false;
+    const bool debug_steps = std::getenv("VOXCPM2_DEBUG") != nullptr;
 
     for (int step = 0; step < max_steps_; ++step) {
         if (cancelled_.load(std::memory_order_relaxed)) break;
@@ -284,6 +482,16 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
         const bool stop_signal = stop_logits[1] > stop_logits[0]
                               && steps_done > min_stop_steps_;
         if (stop_signal) stopped_by_model = true;
+
+        if (debug_steps && (step < 6 || stop_signal)) {
+            float pmax = 0.0f; double sum = 0.0, sq = 0.0;
+            for (float v : pred_feat) { pmax = std::max(pmax, std::abs(v)); sum += v; sq += double(v) * v; }
+            const double mean = sum / pred_feat.size();
+            const double sd = std::sqrt(std::max(0.0, sq / pred_feat.size() - mean * mean));
+            LOGI("VoxCPM2 step %d: pred|max|=%.4f mean=%.4f std=%.4f stop=[%.2f,%.2f]%s",
+                 step, pmax, mean, sd, stop_logits[0], stop_logits[1],
+                 stop_signal ? " STOP" : "");
+        }
 
         if (steps_in_chunk == kFramesPerChunk) {
             flush_decoder(kFramesPerChunk, /*is_final=*/false);

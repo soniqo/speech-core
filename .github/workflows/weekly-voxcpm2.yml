@@ -104,11 +104,13 @@ jobs:
         env:
           SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-voxcpm2
           VOXCPM2_SYNTH_WAV:       ${{ github.workspace }}/voxcpm2-synth.wav
+          VOXCPM2_CLONE_WAV:       ${{ github.workspace }}/voxcpm2-clone.wav
         run: |
           export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build --output-on-failure -R test_litert_models
           test -f voxcpm2-synth.wav
-          ls -la voxcpm2-synth.wav
+          test -f voxcpm2-clone.wav
+          ls -la voxcpm2-synth.wav voxcpm2-clone.wav
 
       # --- Semantic round-trip: feed the WAV through our own Parakeet ORT
       # CLI and assert the input phrase shows up in the transcript. This is
@@ -141,3 +143,27 @@ jobs:
               exit 1
           fi
           echo "OK: all required words present in transcript"
+
+      # --- Same round-trip for the voice-cloned output (test_litert_models'
+      # clone test conditions on the fixture clip, then synthesises the phrase
+      # in that voice). Proves the audio_encoder → prefill conditioning path
+      # produces intelligible cloned speech, not just non-silent audio.
+      - name: ASR round-trip — cloned voice (Parakeet ORT)
+        run: |
+          export LD_LIBRARY_PATH="$PWD/ort-linux/lib:${LD_LIBRARY_PATH:-}"
+          set +e
+          output="$(./build/examples/linux/speech_transcribe scripts/models voxcpm2-clone.wav 2>&1)"
+          set -e
+          echo "$output"
+          lower="$(echo "$output" | tr '[:upper:]' '[:lower:]')"
+          missing=""
+          for w in quick brown fox jumps lazy dog; do
+              if ! echo "$lower" | grep -q "$w"; then
+                  missing="$missing $w"
+              fi
+          done
+          if [ -n "$missing" ]; then
+              echo "FAIL: cloned transcript missing words:$missing" >&2
+              exit 1
+          fi
+          echo "OK: cloned voice transcript intelligible"
