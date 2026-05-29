@@ -14,6 +14,7 @@
 #include "speech_core/audio/resampler.h"
 #include "speech_core/interfaces.h"
 #include "speech_core/diarization/diarization_pipeline.h"
+#include "speech_core/models/litert_nemotron_streaming_stt.h"
 #include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_pyannote_segmentation.h"
@@ -871,6 +872,54 @@ void test_litert_diarization(const std::string& dir) {
     std::printf("ok (segments=%zu speakers=%zu)\n", segments.size(), speakers.size());
 }
 
+// ---------------------------------------------------------------------------
+// Nemotron Speech Streaming — feeds the fixture in ~100 ms chunks through the
+// cache-aware streaming RNN-T (encoder+cache → decoder LSTM → joint) and runs
+// the full begin/push/end path. This exercises the per-stream cache rolling +
+// decoder-state advance + joint greedy loop end-to-end; reaching the end
+// without throwing means the encoder/decoder/joint tensor wiring is correct.
+// (Transcript content parity is a nightly concern against known audio.)
+// ---------------------------------------------------------------------------
+
+void test_litert_nemotron_streaming_stt(const std::string& dir) {
+    std::string enc = dir + "/nemotron-streaming-encoder.tflite";
+    std::string dec = dir + "/nemotron-streaming-decoder.tflite";
+    std::string jnt = dir + "/nemotron-streaming-joint.tflite";
+    std::string voc = dir + "/nemotron-vocab.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt) || !file_exists(voc)) {
+        std::printf("  [skip] nemotron-streaming files not in %s\n", dir.c_str());
+        return;
+    }
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_litert_nemotron_streaming_stt ... ");
+
+    speech_core::LiteRTNemotronStreamingStt stt(enc, dec, jnt, voc, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+    REQUIRE(stt.supports_streaming());
+
+    auto audio = wav.sample_rate == 16000
+        ? wav.samples
+        : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                           wav.sample_rate, 16000);
+    REQUIRE(!audio.empty());
+
+    stt.begin_stream(16000);
+    size_t partials = 0;
+    constexpr size_t kFeed = 1600;  // 100 ms @ 16 kHz
+    for (size_t off = 0; off < audio.size(); off += kFeed) {
+        size_t len = std::min(kFeed, audio.size() - off);
+        auto p = stt.push_chunk(audio.data() + off, len);
+        if (!p.text.empty()) ++partials;
+    }
+    auto result = stt.end_stream();
+
+    std::printf("partials=%zu final=\"%.50s\" ok\n", partials, result.text.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -894,6 +943,7 @@ int main() {
     test_litert_pyannote_segmentation(dir);
     test_litert_omnilingual_stt(dir);
     test_litert_diarization(dir);
+    test_litert_nemotron_streaming_stt(dir);
     test_voxcpm2_tokenizer(dir);
     test_litert_voxcpm2_load(dir);
     test_litert_voxcpm2_synthesize(dir);

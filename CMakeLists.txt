@@ -165,6 +165,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_wespeaker_embedding.cpp
         src/models/litert/litert_pyannote_segmentation.cpp
         src/models/litert/litert_omnilingual_stt.cpp
+        src/models/litert/litert_nemotron_streaming_stt.cpp
     )
 
     target_include_directories(speech_core_models_litert

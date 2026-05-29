@@ -34,6 +34,12 @@ FILES=(
     "WeSpeaker-ResNet34-LM-LiteRT/wespeaker-resnet34.tflite"
     "Omnilingual-ASR-CTC-300M-LiteRT/omnilingual-ctc-300m.tflite"
     "Omnilingual-ASR-CTC-300M-LiteRT/tokenizer.model"
+    # Nemotron Speech Streaming — cache-aware streaming RNN-T (3 graphs).
+    "Nemotron-Speech-Streaming-LiteRT/nemotron-streaming-encoder.tflite"
+    "Nemotron-Speech-Streaming-LiteRT/nemotron-streaming-decoder.tflite"
+    "Nemotron-Speech-Streaming-LiteRT/nemotron-streaming-joint.tflite"
+    "Nemotron-Speech-Streaming-LiteRT/vocab.json"
+    "Nemotron-Speech-Streaming-LiteRT/config.json"
 )
 
 for entry in "${FILES[@]}"; do
@@ -49,6 +55,12 @@ for entry in "${FILES[@]}"; do
         Parakeet-TDT-0.6B-v3-LiteRT-INT8)
             dest="$OUT/parakeet-${rel}"
             [[ "$rel" == parakeet-* ]] && dest="$OUT/${rel}"
+            ;;
+        Nemotron-Speech-Streaming-LiteRT)
+            # .tflite are already nemotron-prefixed; vocab/config would collide
+            # with Parakeet's in the shared dir, so prefix those.
+            dest="$OUT/${rel}"
+            [[ "$rel" == "vocab.json" || "$rel" == "config.json" ]] && dest="$OUT/nemotron-${rel}"
             ;;
         *)
             dest="$OUT/${rel}"
