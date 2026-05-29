@@ -18,6 +18,12 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
 | `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
 | `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | full (text-only) |
+| `LiteRTWeSpeakerEmbedding` | `EmbeddingInterface` | `speech_core/models/litert_wespeaker_embedding.h` | full |
+| `LiteRTPyannoteSegmentation` | `SegmentationInterface` | `speech_core/models/litert_pyannote_segmentation.h` | full |
+| `LiteRTOmnilingualStt` | `STTInterface` | `speech_core/models/litert_omnilingual_stt.h` | full |
+| `LiteRTNemotronStreamingStt` | `STTInterface` | `speech_core/models/litert_nemotron_streaming_stt.h` | full (streaming) |
+
+`DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`, implements `DiarizerInterface`) composes a segmenter + embedder + constrained clustering. It is pure C++ and ships in the **core** library (built always, no LiteRT dependency); pair it with the LiteRT segmenter + embedder above.
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
 
@@ -163,6 +169,78 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
 - Bundle is large (~4.6 GB total). Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [aufklarer/VoxCPM2-LiteRT](https://huggingface.co/aufklarer/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 
+## LiteRTWeSpeakerEmbedding
+
+```cpp
+#include <speech_core/models/litert_wespeaker_embedding.h>
+
+speech_core::LiteRTWeSpeakerEmbedding emb("/models/wespeaker-resnet34.tflite");
+auto vec = emb.embed(audio, length, 16000);   // 256-float L2-normalised
+```
+
+- WeSpeaker ResNet34-LM. Computes a kaldi-style 80-bin log-mel fbank (25 ms / 10 ms, Hamming, per-frame DC removal) from raw 16 kHz audio internally; pads/tiles to the fixed 298-frame (~3 s) input.
+- Model files: [soniqo/WeSpeaker-ResNet34-LM-LiteRT](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) — `wespeaker-resnet34.tflite`
+
+## LiteRTPyannoteSegmentation
+
+```cpp
+#include <speech_core/models/litert_pyannote_segmentation.h>
+
+speech_core::LiteRTPyannoteSegmentation seg("/models/pyannote-segmentation.tflite");
+auto windows = seg.segment(audio, length, 16000);   // per-10 s window posteriors + speaker_activity
+```
+
+- Pyannote Segmentation 3.0, streaming mode: 1-s chunks with LSTM state carried across a 10-s window (reset per window, slide by 5 s). Powerset-decodes 7 classes → per-speaker activity for up to 3 local speakers.
+- Model files: [soniqo/Pyannote-Segmentation-LiteRT](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) — `pyannote-segmentation.tflite`
+
+## LiteRTOmnilingualStt
+
+```cpp
+#include <speech_core/models/litert_omnilingual_stt.h>
+
+speech_core::LiteRTOmnilingualStt stt("/models/omnilingual-ctc-300m.tflite",
+                                      "/models/tokenizer.model");
+auto result = stt.transcribe(audio, length, 16000);
+```
+
+- Meta Omnilingual ASR CTC-300M. Single-model CTC: z-score-normalised waveform → logits @ 50 Hz; greedy CTC decode (collapse repeats + blanks) with a minimal SentencePiece `.model` tokenizer. Fixed chunk length + vocab size are read from the model output layout at load.
+- Model files: [soniqo/Omnilingual-ASR-CTC-300M-LiteRT](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) — `omnilingual-ctc-300m.tflite`, `tokenizer.model`
+
+## LiteRTNemotronStreamingStt
+
+```cpp
+#include <speech_core/models/litert_nemotron_streaming_stt.h>
+
+speech_core::LiteRTNemotronStreamingStt stt(
+    "/models/nemotron-streaming-encoder.tflite",
+    "/models/nemotron-streaming-decoder.tflite",
+    "/models/nemotron-streaming-joint.tflite",
+    "/models/vocab.json");
+
+stt.begin_stream(16000);
+auto partial = stt.push_chunk(audio_chunk, chunk_len);   // partial.text grows as windows fill
+auto final   = stt.end_stream();
+```
+
+- Nemotron Speech Streaming 0.6B — **true** cache-aware streaming RNN-T (three graphs: encoder-with-cache, decoder LSTM, joint). `push_chunk` drains fixed ~80 ms windows, advancing the encoder cache + decoder state across calls and greedily decoding the first encoder frame. One instance == one stream.
+- Config defaults match the export; vocab size auto-derives from `vocab.json`.
+- Model files: [soniqo/Nemotron-Speech-Streaming-LiteRT](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) — `nemotron-streaming-{encoder,decoder,joint}.tflite`, `vocab.json`, `config.json`
+
+## DiarizationPipeline
+
+```cpp
+#include <speech_core/diarization/diarization_pipeline.h>
+
+speech_core::LiteRTPyannoteSegmentation seg("/models/pyannote-segmentation.tflite");
+speech_core::LiteRTWeSpeakerEmbedding   emb("/models/wespeaker-resnet34.tflite");
+speech_core::DiarizationPipeline        diar(seg, emb);
+
+speech_core::DiarizerConfig cfg;   // onset/offset/min_speech/clustering_threshold/min,max_speakers
+auto segments = diar.diarize(audio, length, 16000, cfg);  // [{start,end,speaker}, …]
+```
+
+- Pure-C++ orchestration (no LiteRT dependency): segmentation → per-speaker embedding → constrained agglomerative clustering (cosine distance, window-uniqueness constraint) → merged speaker-labelled segments. Lives in the **core** library; inject any `SegmentationInterface` + `EmbeddingInterface`.
+
 ## KokoroTts
 
 ```cpp
@@ -248,7 +326,7 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
 `test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
 
-A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the three LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS) + the VoxCPM2 tokenizer against `.tflite` artifacts:
+A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT) + the `DiarizationPipeline` + the VoxCPM2 tokenizer against `.tflite` artifacts:
 
 ```bash
 scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel
