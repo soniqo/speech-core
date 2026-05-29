@@ -238,6 +238,14 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_litert_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_litert_models COMMAND test_litert_models)
+
+        # CPU STT micro-benchmark (not registered as a ctest — perf tool only).
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_litert_stt.cpp)
+            add_executable(bench_litert_stt tests/bench_litert_stt.cpp)
+            target_link_libraries(bench_litert_stt PRIVATE speech_core_models_litert)
+            target_compile_definitions(bench_litert_stt PRIVATE
+                SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        endif()
     endif()
 endif()
 
