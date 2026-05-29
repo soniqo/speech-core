@@ -51,6 +51,18 @@ void sc_voxcpm2_set_min_steps_before_stop(sc_voxcpm2_t s, int min_steps) {
     if (s && s->tts) s->tts->set_min_steps_before_stop(min_steps);
 }
 
+void sc_voxcpm2_set_stop_on_stop_token(sc_voxcpm2_t s, bool stop_on_stop_token) {
+    if (s && s->tts) s->tts->set_stop_on_stop_token(stop_on_stop_token);
+}
+
+void sc_voxcpm2_set_seed(sc_voxcpm2_t s, uint32_t seed) {
+    if (s && s->tts) s->tts->set_seed(seed);
+}
+
+int sc_voxcpm2_max_text_tokens(sc_voxcpm2_t s) {
+    return (s && s->tts) ? s->tts->max_text_tokens() : 0;
+}
+
 int sc_voxcpm2_set_reference(sc_voxcpm2_t s, const float* pcm,
                              size_t length, int sample_rate) {
     if (!s || !s->tts) return -1;
@@ -94,6 +106,18 @@ int sc_voxcpm2_synthesize(sc_voxcpm2_t s, const char* text,
 
 void sc_voxcpm2_cancel(sc_voxcpm2_t s) {
     if (s && s->tts) s->tts->cancel();
+}
+
+int sc_voxcpm2_tokens_generated(sc_voxcpm2_t s) {
+    return (s && s->tts) ? s->tts->tokens_generated() : 0;
+}
+
+bool sc_voxcpm2_stopped_on_stop_token(sc_voxcpm2_t s) {
+    return (s && s->tts) ? s->tts->stopped_on_stop_token() : false;
+}
+
+uint32_t sc_voxcpm2_seed_used(sc_voxcpm2_t s) {
+    return (s && s->tts) ? s->tts->seed_used() : 0u;
 }
 
 const char* sc_voxcpm2_last_error(sc_voxcpm2_t s) {
