@@ -22,6 +22,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,19 @@ void sc_voxcpm2_set_max_steps(sc_voxcpm2_t synth, int max_steps);
 /// Ignore the model's stop signal for this many initial steps (default 8).
 void sc_voxcpm2_set_min_steps_before_stop(sc_voxcpm2_t synth, int min_steps);
 
+/// Honour the model's stop signal at all (default true). When false,
+/// synthesize() always runs the full max_steps budget and never stops early.
+void sc_voxcpm2_set_stop_on_stop_token(sc_voxcpm2_t synth, bool stop_on_stop_token);
+
+/// Seed the per-step noise RNG that drives the diffusion-style AR sampler. A
+/// fixed non-zero seed makes synthesis reproducible; 0 (default) draws a fresh
+/// random seed at the next synthesize(), reported by sc_voxcpm2_seed_used().
+void sc_voxcpm2_set_seed(sc_voxcpm2_t synth, uint32_t seed);
+
+/// Maximum text tokens the model accepts (context window; 512 on the deployed
+/// bundle). Prompts longer than this are trimmed from the front.
+int sc_voxcpm2_max_text_tokens(sc_voxcpm2_t synth);
+
 /// Condition subsequent synthesize() calls on a reference speaker clip.
 /// `pcm` is mono float in [-1, 1] at `sample_rate` (resampled to 16 kHz and
 /// trimmed/padded to the encoder's 6.4 s window internally). Returns 0 on
@@ -75,6 +89,18 @@ int sc_voxcpm2_synthesize(sc_voxcpm2_t synth, const char* text,
 
 /// Cancel an in-progress synthesize() (thread-safe; checked between AR steps).
 void sc_voxcpm2_cancel(sc_voxcpm2_t synth);
+
+/// Number of acoustic tokens (AR steps) emitted by the most recent
+/// synthesize() on this handle. 0 before the first call.
+int sc_voxcpm2_tokens_generated(sc_voxcpm2_t synth);
+
+/// Whether the most recent synthesize() stopped on the model's stop signal
+/// (true) versus the max-steps budget or a cancel() (false).
+bool sc_voxcpm2_stopped_on_stop_token(sc_voxcpm2_t synth);
+
+/// The seed actually used by the most recent synthesize() (the random draw when
+/// set_seed(0) was in effect, else the seed passed in). 0 before the first call.
+uint32_t sc_voxcpm2_seed_used(sc_voxcpm2_t synth);
 
 /// Last error message for the most recent failed call on this handle. Returns a
 /// pointer valid until the next call on the same handle; never NULL ("" = none).

@@ -197,6 +197,11 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     if (!on_chunk) return;
     cancelled_.store(false, std::memory_order_relaxed);
 
+    // Reset per-call metadata; populated as the AR loop runs / completes.
+    tokens_generated_      = 0;
+    stopped_on_stop_token_ = false;
+    seed_used_             = 0;
+
     // --- 1. Build the prefill sequence. The target text is
     // "({instruction}){text}" followed by <|audio_start|> (the cue to begin
     // generating audio). When a reference clip is set, a
@@ -361,7 +366,17 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     std::vector<float> decoder_input(kDecoderInputFloats, 0.0f);
     std::vector<float> pcm         (kDecoderOutputFloats);
 
-    std::mt19937 rng(1234);
+    // The token_step graph is a diffusion-style sampler: it consumes a fresh
+    // Gaussian noise tensor each step, so the seed below genuinely controls the
+    // output. seed_ == 0 means "pick a non-deterministic seed"; either way the
+    // resolved value is recorded for seed_used().
+    uint32_t rng_seed = seed_;
+    if (rng_seed == 0) {
+        std::random_device rd;
+        rng_seed = rd();
+    }
+    seed_used_ = rng_seed;
+    std::mt19937 rng(rng_seed);
     std::normal_distribution<float> normal(0.0f, 1.0f);
 
     auto t_lm     = make_type(kLiteRtElementTypeFloat32, {1, kHidden});
@@ -479,7 +494,8 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
         ++steps_done;
         ++steps_in_chunk;
 
-        const bool stop_signal = stop_logits[1] > stop_logits[0]
+        const bool stop_signal = stop_on_stop_token_
+                              && stop_logits[1] > stop_logits[0]
                               && steps_done > min_stop_steps_;
         if (stop_signal) stopped_by_model = true;
 
@@ -505,7 +521,13 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     } else {
         on_chunk(nullptr, 0, /*is_final=*/true);
     }
-    (void)stopped_by_model;  // informational only
+
+    // Publish synthesis metadata for the getters (the streaming API can't
+    // return it inline). tokens_generated == AR steps actually emitted;
+    // stopped_on_stop_token distinguishes a model-driven stop from hitting the
+    // max_steps budget or a cancel().
+    tokens_generated_      = steps_done;
+    stopped_on_stop_token_ = stopped_by_model;
 }
 
 }  // namespace speech_core

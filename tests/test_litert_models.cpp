@@ -470,6 +470,13 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
     tts.set_instruction("clear, natural delivery");
     tts.set_max_steps(128);
     tts.set_min_steps_before_stop(32);
+    // Pin the noise seed so this run is reproducible and seed_used() is
+    // predictable (the AR step samples Gaussian noise, so the seed matters).
+    tts.set_seed(4242);
+
+    // max_text_tokens() is the prefill context window — 512 on the deployed
+    // bundle, 256 on the small export; either way comfortably > our prompt.
+    REQUIRE(tts.max_text_tokens() >= 256);
 
     std::vector<float> audio;
     bool got_final = false;
@@ -484,6 +491,16 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
     // stops between 20-40 steps for this prompt — bound the assertion loosely.
     const size_t steps = audio.size() / 7680;
     REQUIRE(steps >= 8);
+
+    // Synthesis metadata getters (restored from the cloud fork). seed_used()
+    // echoes the pinned seed; tokens_generated() equals the streamed step
+    // count; with max_steps=128 a 9-word phrase stops on the model's signal
+    // well before the budget.
+    REQUIRE(tts.seed_used() == 4242u);
+    REQUIRE(tts.tokens_generated() == static_cast<int>(steps));
+    REQUIRE(tts.tokens_generated() <= 128);
+    std::printf("tokens=%d stopped_on_stop=%d ",
+                tts.tokens_generated(), tts.stopped_on_stop_token() ? 1 : 0);
 
     double sum_sq = 0.0;
     float  peak   = 0.0f;

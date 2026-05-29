@@ -5,6 +5,7 @@
 #include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,6 +67,38 @@ public:
     /// Below this floor the stop flag is ignored — the model can flicker on
     /// the very first few steps. Default 8 mirrors the upstream smoke test.
     void set_min_steps_before_stop(int min_steps) { min_stop_steps_ = min_steps; }
+
+    /// Honour the model's stop signal at all. When false, synthesize() always
+    /// runs the full max_steps() budget and never short-circuits on the stop
+    /// logits — useful for fixed-length renders. Default true.
+    void set_stop_on_stop_token(bool stop_on_stop_token) { stop_on_stop_token_ = stop_on_stop_token; }
+
+    /// Seed the noise RNG that drives the diffusion-style AR step. The
+    /// token_step graph consumes a per-step Gaussian noise tensor, so a fixed
+    /// seed makes synthesis bit-reproducible and different seeds give different
+    /// renders of the same text. Pass 0 to draw a fresh non-deterministic seed
+    /// at the next synthesize() (its value is then reported by seed_used()).
+    /// Default is 0 → a fresh random seed per call.
+    void set_seed(uint32_t seed) { seed_ = seed; }
+
+    /// The seed actually used by the most recent synthesize() call. When
+    /// set_seed(0) was in effect this is the randomly drawn value; otherwise it
+    /// echoes the seed passed in. 0 before the first synthesize().
+    uint32_t seed_used() const { return seed_used_; }
+
+    /// Number of AR steps (acoustic tokens) emitted by the most recent
+    /// synthesize() call. 0 before the first call.
+    int tokens_generated() const { return tokens_generated_; }
+
+    /// Whether the most recent synthesize() stopped because the model raised
+    /// its stop signal (true) versus hitting the max-steps budget or being
+    /// cancelled (false). Meaningless before the first call.
+    bool stopped_on_stop_token() const { return stopped_on_stop_token_; }
+
+    /// Maximum number of text tokens the prefill graph accepts (the context
+    /// window). Prompts longer than this are trimmed from the front. Queried
+    /// from the loaded graph; 512 on the deployed bundle.
+    int max_text_tokens() const { return max_text_; }
 
     /// Condition subsequent synthesize() calls on a reference speaker clip.
     /// `pcm` is mono float samples in [-1, 1] at `sample_rate`; it's resampled
@@ -137,9 +170,16 @@ private:
     long residual_prefill_floats_= 0;
 
     std::string       instruction_;
-    int               max_steps_       = kMaxGenerated;
-    int               min_stop_steps_  = 8;
+    int               max_steps_          = kMaxGenerated;
+    int               min_stop_steps_     = 8;
+    bool              stop_on_stop_token_ = true;
+    uint32_t          seed_               = 0;   // 0 ⇒ draw a fresh seed per call
     std::atomic<bool> cancelled_{false};
+
+    // Per-call synthesis metadata, populated at the end of synthesize().
+    uint32_t          seed_used_             = 0;
+    int               tokens_generated_      = 0;
+    bool              stopped_on_stop_token_ = false;
 };
 
 }  // namespace speech_core
