@@ -16,7 +16,7 @@ namespace speech_core {
 /// 48 kHz output. Plain TTS by default; voice cloning when a reference clip is
 /// set via set_reference() — that runs the audio_encoder graph and conditions
 /// the prefill on the encoded reference latents.
-/// Model: https://huggingface.co/aufklarer/VoxCPM2-LiteRT
+/// Model: https://huggingface.co/soniqo/VoxCPM2-LiteRT
 ///
 /// Pipeline (four LiteRT graphs orchestrated here):
 ///   audio_encoder  : (audio [1, 102400] = 6.4 s @ 16 kHz)

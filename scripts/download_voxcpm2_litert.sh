@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-BASE_URL="https://huggingface.co/aufklarer/VoxCPM2-LiteRT/resolve/main"
+BASE_URL="https://huggingface.co/soniqo/VoxCPM2-LiteRT/resolve/main"
 OUT="${1:-$(dirname "$0")/models-voxcpm2}"
 mkdir -p "$OUT"
 

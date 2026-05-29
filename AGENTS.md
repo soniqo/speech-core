@@ -22,7 +22,7 @@ Sibling repos under `~/repos/`:
 
 - **speech-android** — Android SDK + JNI bridge to speech-core
 - **speech-swift** — Swift Package consuming speech-core as a prebuilt xcframework binary target; CoreML/MLX models implement the same conceptual interfaces (see speech-swift's `docs/shared-protocols.md`)
-- **speech-models** — ONNX/CoreML model artifacts hosted under `aufklarer/` on HuggingFace
+- **speech-models** — model artifacts on HuggingFace: ONNX + LiteRT under `soniqo/`, CoreML/MLX (Apple) under `aufklarer/`
 - **speech-cloud** — server-side counterpart
 
 ## Build
