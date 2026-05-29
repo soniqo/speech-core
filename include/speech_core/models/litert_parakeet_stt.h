@@ -22,6 +22,7 @@ public:
         int hop_length      = 160;
         int win_length      = 400;
         float pre_emphasis  = 0.97f;
+        int enc_mel_frames  = 500;  // fixed encoder time dim — soniqo export is [1,128,500]
         int encoder_hidden  = 1024;
         int decoder_hidden  = 640;
         int decoder_layers  = 2;

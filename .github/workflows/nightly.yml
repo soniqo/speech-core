@@ -105,12 +105,21 @@ jobs:
           test -f litert/libLiteRt.so
 
       - name: Download LiteRT models (if not cached)
+        # soniqo/* model repos are public — no token required; the diarization +
+        # omnilingual + nemotron models fetch anonymously alongside the core
+        # ones. HF_TOKEN is passed through if the secret happens to exist
+        # (harmless no-op otherwise, supports a future private mirror). Core
+        # models are asserted below; the extras are best-effort and their tests
+        # skip if absent.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ ! -f scripts/models-litert/parakeet-encoder.tflite ]; then
               ./scripts/download_models_litert.sh
           fi
           test -f scripts/models-litert/silero-vad.tflite
           test -f scripts/models-litert/parakeet-encoder.tflite
+          echo "models present:" && ls -1 scripts/models-litert/
 
       - name: Configure
         run: |

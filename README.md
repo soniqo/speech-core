@@ -18,8 +18,12 @@ Consumers can enable either, both, or neither — and can always bring their own
 | Kokoro 82M | TTS | ✓ | — |
 | DeepFilterNet3 | Enhancer | ✓ | — |
 | VoxCPM2 (2B) | TTS | — | ✓ |
+| WeSpeaker ResNet34-LM | Speaker embedding | — | ✓ |
+| Pyannote Segmentation 3.0 | Diarization | — | ✓ |
+| Omnilingual ASR CTC-300M | STT | — | ✓ |
+| Nemotron Speech Streaming 0.6B | Streaming STT | — | ✓ |
 
-(Kokoro / DeepFilterNet3 don't have LiteRT exports yet, and VoxCPM2 has no ONNX export — wrappers land as `speech-models` ships the artifacts.)
+(Kokoro / DeepFilterNet3 don't have LiteRT exports yet; VoxCPM2 and the diarization / streaming models have no ONNX export — wrappers land as `speech-models` ships the artifacts.)
 
 ## Backends & platforms
 
@@ -57,6 +61,13 @@ Both backends run CPU inference today; GPU / NNAPI / QNN delegate selection is a
 ```
 
 See [`docs/interfaces.md`](docs/interfaces.md) and [`docs/models.md`](docs/models.md) for details.
+
+The LiteRT backend additionally ships server-side meeting models —
+`LiteRTWeSpeakerEmbedding`, `LiteRTPyannoteSegmentation`, `LiteRTOmnilingualStt`,
+and the streaming `LiteRTNemotronStreamingStt` — plus a pure-C++
+`DiarizationPipeline` (in the always-built core) that composes a segmenter +
+embedder into speaker-labelled segments. These implement the batch diarization
+interfaces (`SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface`).
 
 ## Pipeline Modes
 
@@ -117,8 +128,14 @@ LiteRT wrappers (`SPEECH_CORE_WITH_LITERT`):
 | `litert_silero_vad.h` | `VADInterface` | Silero VAD v5 |
 | `litert_parakeet_stt.h` | `STTInterface` | Parakeet TDT v3, INT8 encoder |
 | `litert_voxcpm2_tts.h` | `TTSInterface` | VoxCPM2 (2B), 48 kHz, 4-graph pipeline |
+| `litert_wespeaker_embedding.h` | `EmbeddingInterface` | WeSpeaker ResNet34-LM, 256-dim, kaldi fbank |
+| `litert_pyannote_segmentation.h` | `SegmentationInterface` | Pyannote Segmentation 3.0, streaming 1-s chunks |
+| `litert_omnilingual_stt.h` | `STTInterface` | Omnilingual ASR CTC-300M + SentencePiece decode |
+| `litert_nemotron_streaming_stt.h` | `STTInterface` | Nemotron Speech Streaming 0.6B, true streaming RNN-T |
 | `voxcpm2_tokenizer.h` | (internal) | Hand-rolled BPE tokenizer, pure C++17 |
 | `litert_engine.h` | (internal) | LiteRT environment + CompiledModel + TensorBuffer RAII |
+
+Diarization (`include/speech_core/diarization/`, no ML-runtime dep): `diarization_pipeline.h` — `DiarizationPipeline` (`DiarizerInterface`) composes a `SegmentationInterface` + `EmbeddingInterface` with constrained clustering. Built into the core library.
 
 See [`docs/models.md`](docs/models.md) for usage.
 
@@ -130,7 +147,7 @@ See [`docs/models.md`](docs/models.md) for usage.
 
 ### Interfaces (`include/speech_core/interfaces.h`)
 
-Abstract classes any backend implements: `STTInterface`, `TTSInterface`, `LLMInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`. See the header for signatures.
+Abstract classes any backend implements: `STTInterface`, `TTSInterface`, `LLMInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface`. See the header for signatures.
 
 ### Tools (`include/speech_core/tools/`)
 

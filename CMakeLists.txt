@@ -30,6 +30,7 @@ add_library(speech_core
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
+    src/diarization/diarization_pipeline.cpp
     src/speech_core_c.cpp
 )
 
@@ -161,6 +162,10 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_voxcpm2_tts.cpp
         src/models/litert/voxcpm2_c.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
+        src/models/litert/litert_wespeaker_embedding.cpp
+        src/models/litert/litert_pyannote_segmentation.cpp
+        src/models/litert/litert_omnilingual_stt.cpp
+        src/models/litert/litert_nemotron_streaming_stt.cpp
     )
 
     target_include_directories(speech_core_models_litert

@@ -155,6 +155,59 @@ public:
 
 Only needed for the `VoicePipeline` mode (full agent loop). Not needed for `Echo` or `TranscribeOnly` modes.
 
+## Diarization interfaces (batch, server-side)
+
+Three additional interfaces support multi-speaker meeting diarization. Unlike
+the real-time pipeline interfaces above they operate on a whole audio buffer and
+are **not** consumed by `VoicePipeline`; a `DiarizationPipeline` (in
+`speech_core/diarization/`) composes a segmenter + embedder + clustering. The
+shared types `SegmentationWindow`, `DiarizedSegment{start,end,speaker}`, and
+`DiarizerConfig` live in `interfaces.h` alongside them.
+
+### SegmentationInterface — local speaker activity per window
+
+```cpp
+class SegmentationInterface {
+public:
+    virtual ~SegmentationInterface() = default;
+    virtual std::vector<SegmentationWindow> segment(
+        const float* audio, size_t length, int sample_rate) = 0;
+    virtual int input_sample_rate() const = 0;
+    virtual int max_local_speakers() const = 0;
+};
+```
+
+**Reference implementation:** `LiteRTPyannoteSegmentation` (Pyannote Segmentation 3.0 via LiteRT, streaming 1-s chunks, powerset-decoded per-speaker activity).
+
+### EmbeddingInterface — speaker embedding
+
+```cpp
+class EmbeddingInterface {
+public:
+    virtual ~EmbeddingInterface() = default;
+    virtual std::vector<float> embed(
+        const float* audio, size_t length, int sample_rate) = 0;
+    virtual int embedding_dim() const = 0;
+    virtual int input_sample_rate() const = 0;
+};
+```
+
+**Reference implementation:** `LiteRTWeSpeakerEmbedding` (WeSpeaker ResNet34-LM via LiteRT, 256-dim L2-normalised vector).
+
+### DiarizerInterface — end-to-end diarization
+
+```cpp
+class DiarizerInterface {
+public:
+    virtual ~DiarizerInterface() = default;
+    virtual std::vector<DiarizedSegment> diarize(
+        const float* audio, size_t length, int sample_rate,
+        const DiarizerConfig& config) = 0;
+};
+```
+
+**Reference implementation:** `DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`) — composes a `SegmentationInterface` + `EmbeddingInterface` with constrained agglomerative clustering. Pure C++, ships in the core library (no ML-runtime dependency).
+
 ## Design choices
 
 1. **Direct inheritance.** Models inherit interfaces directly (`class SileroVad : public VADInterface`) rather than going through adapter classes. speech-swift uses extension files to keep the same separation (Swift only — C++ has no equivalent). With only one consumer (speech-core itself), the indirection isn't worth its cost; revisit if a new caller wants the models without the orchestration.
