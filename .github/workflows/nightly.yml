@@ -105,10 +105,12 @@ jobs:
           test -f litert/libLiteRt.so
 
       - name: Download LiteRT models (if not cached)
-        # HF_TOKEN lets the (possibly private) soniqo/* repos resolve —
-        # including the diarization + omnilingual models for the upstreamed
-        # wrappers. Core models (silero/parakeet) are asserted below; the
-        # extra models are best-effort and their tests skip if absent.
+        # soniqo/* model repos are public — no token required; the diarization +
+        # omnilingual + nemotron models fetch anonymously alongside the core
+        # ones. HF_TOKEN is passed through if the secret happens to exist
+        # (harmless no-op otherwise, supports a future private mirror). Core
+        # models are asserted below; the extras are best-effort and their tests
+        # skip if absent.
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |

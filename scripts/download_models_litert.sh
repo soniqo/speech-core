@@ -12,9 +12,9 @@ BASE_URL="https://huggingface.co/soniqo"
 OUT="${1:-$(dirname "$0")/models-litert}"
 mkdir -p "$OUT"
 
-# Optional HuggingFace auth — soniqo/* repos may be private. When HF_TOKEN is
-# set, send it as a bearer token; when unset, fetch anonymously. Backward
-# compatible with the previous (anonymous) behaviour.
+# The soniqo/* model repos are public — anonymous fetch works out of the box,
+# no token needed. HF_TOKEN is honoured if set (e.g. for a private mirror) but
+# is NOT required.
 AUTH=()
 if [[ -n "${HF_TOKEN:-}" ]]; then
     AUTH=(-H "Authorization: Bearer ${HF_TOKEN}")
