@@ -87,7 +87,7 @@ float prob = vad.process_chunk(samples_512, 512);  // → [0, 1]
 - 512 samples per chunk (32 ms @ 16 kHz)
 - LSTM state carried across chunks; `reset()` clears it between sessions
 - Returns speech probability; feed to `StreamingVAD` for start/end events
-- Model files: [aufklarer/Silero-VAD-v5-ONNX](https://huggingface.co/aufklarer/Silero-VAD-v5-ONNX) — `silero-vad.onnx` (~2 MB)
+- Model files: [soniqo/Silero-VAD-v5-ONNX](https://huggingface.co/soniqo/Silero-VAD-v5-ONNX) — `silero-vad.onnx` (~2 MB)
 
 ## ParakeetStt
 
@@ -108,7 +108,7 @@ auto result = stt.transcribe(audio, length, 16000);
 - Greedy TDT decoding with per-frame duration prediction
 - Language detection via `<|xx|>` BPE tokens
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
-- Model files: [aufklarer/Parakeet-TDT-v3-ONNX](https://huggingface.co/aufklarer/Parakeet-TDT-v3-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`
+- Model files: [soniqo/Parakeet-TDT-v3-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-v3-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`
 
 ## LiteRTSileroVad
 
@@ -167,7 +167,7 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
   - `audio-decoder`: latent → 48 kHz PCM output
 - **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists. **`synthesize()` throws** — the orchestration loop and the HF-tokenizer integration are deferred.
 - Bundle is large (~4.6 GB total). Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
-- Model files: [aufklarer/VoxCPM2-LiteRT](https://huggingface.co/aufklarer/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
+- Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 
 ## LiteRTWeSpeakerEmbedding
 
@@ -263,7 +263,7 @@ tts.synthesize("Hello world", "en",
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
 - Output post-processing: peak-clip detection (drops numerically unstable short prompts), trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
-- Model files: [aufklarer/Kokoro-82M-ONNX](https://huggingface.co/aufklarer/Kokoro-82M-ONNX) — `kokoro-e2e.onnx` + `kokoro-e2e.onnx.data` (~90 MB total), `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, `voices/*.bin`
+- Model files: [soniqo/Kokoro-82M-ONNX](https://huggingface.co/soniqo/Kokoro-82M-ONNX) — `kokoro-e2e.onnx` + `kokoro-e2e.onnx.data` (~90 MB total), `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, `voices/*.bin`
 
 ### Voice files
 
@@ -306,7 +306,7 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 - 48 kHz input (caller must resample if needed)
 - STFT (960/480) → ERB filterbank → neural mask + deep filter coefficients → inverse STFT
 - Auxiliary binary file holds precomputed ERB filterbanks and Vorbis window: `erb_fb [481*32] | erb_inv_fb [32*481] | window [960]` (float32)
-- Model files: [aufklarer/DeepFilterNet3-ONNX](https://huggingface.co/aufklarer/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
+- Model files: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
 
 ## Testing
 

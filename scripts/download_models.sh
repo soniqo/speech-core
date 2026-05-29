@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-BASE_URL="https://huggingface.co/aufklarer"
+BASE_URL="https://huggingface.co/soniqo"
 OUT="${1:-$(dirname "$0")/models}"
 mkdir -p "$OUT/voices"
 

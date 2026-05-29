@@ -158,7 +158,7 @@ interfaces, so no C-vtable adapters are needed. The wrapper exists only to
 expose a stable C ABI for non-C++ callers (automotive / Yocto integrators).
 
 All inference runs on-device. No network required after the initial model
-download. Models are hosted under the [aufklarer/](https://huggingface.co/aufklarer)
+download. Models are hosted under the [soniqo/](https://huggingface.co/soniqo)
 HF org — see the top-level `docs/models.md` for filenames and sizes.
 
 ## Thread Safety
