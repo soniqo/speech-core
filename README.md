@@ -17,15 +17,15 @@ Consumers can enable either, both, or neither — or bring their own implementat
 
 | Model | Task | ONNX | LiteRT |
 |---|---|:---:|:---:|
-| Silero VAD v5 | Voice activity detection | ✓ | ✓ |
-| Parakeet TDT v3 (0.6B) | Speech-to-text | ✓ | ✓ |
-| Nemotron Speech Streaming (0.6B) | Streaming speech-to-text | — | ✓ |
-| Omnilingual ASR CTC (300M) | Speech-to-text (multilingual) | — | ✓ |
-| Pyannote Segmentation 3.0 | Diarization (segmentation) | — | ✓ |
-| WeSpeaker ResNet34-LM | Speaker embedding | — | ✓ |
-| VoxCPM2 (2B) | Text-to-speech (48 kHz, voice cloning) | — | ✓ |
-| Kokoro 82M | Text-to-speech | ✓ | — |
-| DeepFilterNet3 | Speech enhancement | ✓ | — |
+| [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) | Voice activity detection | ✓ | ✓ |
+| [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) | Speech-to-text | ✓ | ✓ |
+| [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | — | ✓ |
+| [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
+| [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
+| [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |
+| [VoxCPM2 (2B)](https://huggingface.co/aufklarer/VoxCPM2-LiteRT) | Text-to-speech (48 kHz, voice cloning) | — | ✓ |
+| [Kokoro 82M](https://huggingface.co/aufklarer/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
+| [DeepFilterNet3](https://huggingface.co/aufklarer/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
 
 Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embedder into speaker-labelled segments — no ML-runtime dependency of its own.
 
