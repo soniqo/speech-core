@@ -256,15 +256,103 @@ void bench_kokoro(const std::string& dir) {
     emit("kokoro-tts", "synth", load_ms, med, audio_s / (med / 1000.0), peak_rss_mb(), ex);
 }
 
+// ---------------------------------------------------------------------------
+// Corpus mode — read a CSV manifest (uid,wav_path,reference) and transcribe
+// each utterance with Parakeet. Per-utterance latency + transcript go to
+// stdout for the Python orchestrator to aggregate (WER computed there).
+// ---------------------------------------------------------------------------
+
+WavData read_wav(const std::string& path) {
+    WavData out;
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return out;
+    char riff[4], wave[4]; uint32_t file_size; (void)file_size;
+    f.read(riff, 4); f.read(reinterpret_cast<char*>(&file_size), 4); f.read(wave, 4);
+    if (std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0) return out;
+    char chunk_id[4]; uint32_t chunk_size;
+    uint16_t audio_format = 0, num_channels = 0, bits = 0; uint32_t rate = 0;
+    bool have_fmt = false;
+    while (f.read(chunk_id, 4)) {
+        f.read(reinterpret_cast<char*>(&chunk_size), 4);
+        if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
+            f.read(reinterpret_cast<char*>(&audio_format), 2);
+            f.read(reinterpret_cast<char*>(&num_channels), 2);
+            f.read(reinterpret_cast<char*>(&rate), 4);
+            f.seekg(6, std::ios::cur);
+            f.read(reinterpret_cast<char*>(&bits), 2);
+            if (chunk_size > 16) f.seekg(chunk_size - 16, std::ios::cur);
+            have_fmt = true;
+        } else if (std::memcmp(chunk_id, "data", 4) == 0) {
+            if (!have_fmt || audio_format != 1 || num_channels != 1 || bits != 16) return out;
+            size_t n = chunk_size / 2;
+            std::vector<int16_t> pcm(n);
+            f.read(reinterpret_cast<char*>(pcm.data()), chunk_size);
+            out.samples.resize(n);
+            for (size_t i = 0; i < n; ++i) out.samples[i] = static_cast<float>(pcm[i]) / 32768.0f;
+            out.sample_rate = static_cast<int>(rate);
+            break;
+        } else {
+            f.seekg(chunk_size, std::ios::cur);
+        }
+    }
+    return out;
+}
+
+int run_corpus(const std::string& dir, const std::string& manifest_path) {
+    std::string e = dir + "/parakeet-encoder-int8.onnx";
+    std::string d = dir + "/parakeet-decoder-joint-int8.onnx";
+    std::string v = dir + "/vocab.json";
+    if (!file_exists(e) || !file_exists(d) || !file_exists(v)) {
+        std::fprintf(stderr, "parakeet files missing in %s\n", dir.c_str());
+        return 1;
+    }
+    speech_core::ParakeetStt stt(e, d, v, /*hw_accel=*/true);
+    std::ifstream m(manifest_path);
+    if (!m) { std::fprintf(stderr, "cannot open manifest %s\n", manifest_path.c_str()); return 1; }
+    std::printf("#uid,provider,audio_s,wall_ms,transcript\n");
+    std::string line;
+    while (std::getline(m, line)) {
+        if (line.empty()) continue;
+        size_t c1 = line.find(','); if (c1 == std::string::npos) continue;
+        size_t c2 = line.find(',', c1 + 1); if (c2 == std::string::npos) continue;
+        std::string uid = line.substr(0, c1);
+        std::string wav_path = line.substr(c1 + 1, c2 - c1 - 1);
+        auto wav = read_wav(wav_path);
+        if (wav.samples.empty()) {
+            std::fprintf(stderr, "skip %s: cannot read %s\n", uid.c_str(), wav_path.c_str());
+            continue;
+        }
+        std::vector<float> audio_16k = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+        auto t = clk::now();
+        auto r = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+        double wall = ms_since(t);
+        double audio_s = static_cast<double>(audio_16k.size()) / 16000.0;
+        std::string text = r.text;
+        for (char& ch : text) if (ch == ',') ch = ' ';
+        std::printf("%s,%s,%.2f,%.1f,%s\n", uid.c_str(), provider_label(),
+                    audio_s, wall, text.c_str());
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::string dir = env_model_dir();
     if (dir.empty()) {
         std::fprintf(stderr, "SPEECH_MODEL_DIR not set\n");
         return 0;
     }
-    // Header (single line, lets us collate across runs cleanly).
+    // Corpus mode if --manifest <path> passed; else default fixture bench.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--manifest") {
+            return run_corpus(dir, argv[i + 1]);
+        }
+    }
     std::printf("#model,provider,metric,load_ms,wall_ms,rtf,rss_mb,extra\n");
     bench_silero(dir);
     bench_parakeet(dir);

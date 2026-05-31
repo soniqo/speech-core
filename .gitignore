@@ -19,6 +19,7 @@ compile_commands.json
 /scripts/models-litert/
 /scripts/models-voxcpm2/
 /scripts/sherpa-models/
+/scripts/librispeech/
 /litert/
 /ort-linux/
 /ort-win-gpu/

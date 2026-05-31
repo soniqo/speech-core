@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -308,6 +309,78 @@ void bench_omnilingual(const std::string& dir, int warmup, int runs) {
                 med, audio_seconds / (med / 1000.0), peak_rss_mb(), text.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// Corpus mode — same shape as bench_ort_models. Selects parakeet or
+// omnilingual via --backend.
+// ---------------------------------------------------------------------------
+
+WavData read_wav(const std::string& path) {
+    return load_wav_mono_pcm16(path);
+}
+
+int run_corpus(const std::string& dir, const std::string& backend,
+               const std::string& manifest_path)
+{
+    std::ifstream m(manifest_path);
+    if (!m) { std::fprintf(stderr, "cannot open manifest %s\n", manifest_path.c_str()); return 1; }
+    std::printf("#uid,provider,audio_s,wall_ms,transcript\n");
+
+    auto transcribe = [&](const std::vector<float>& a16k) -> std::pair<std::string, double> {
+        return {"", 0.0};
+    };
+    // Bind once based on backend, so we don't reload per utterance.
+    std::unique_ptr<speech_core::LiteRTParakeetStt> par;
+    std::unique_ptr<speech_core::LiteRTOmnilingualStt> omn;
+    if (backend == "parakeet") {
+        std::string e = dir + "/parakeet-encoder.tflite";
+        std::string d = dir + "/parakeet-decoder-joint.tflite";
+        std::string v = dir + "/vocab.json";
+        if (!file_exists(e) || !file_exists(d) || !file_exists(v)) {
+            std::fprintf(stderr, "parakeet files missing in %s\n", dir.c_str()); return 1;
+        }
+        par = std::make_unique<speech_core::LiteRTParakeetStt>(e, d, v, /*hw_accel=*/false);
+    } else if (backend == "omnilingual") {
+        std::string mp = dir + "/omnilingual-ctc-300m.tflite";
+        std::string tp = dir + "/tokenizer.model";
+        if (!file_exists(mp) || !file_exists(tp)) {
+            std::fprintf(stderr, "omnilingual files missing in %s\n", dir.c_str()); return 1;
+        }
+        omn = std::make_unique<speech_core::LiteRTOmnilingualStt>(mp, tp, /*hw_accel=*/false);
+    } else {
+        std::fprintf(stderr, "unknown backend %s (need parakeet|omnilingual)\n", backend.c_str());
+        return 1;
+    }
+
+    std::string line;
+    while (std::getline(m, line)) {
+        if (line.empty()) continue;
+        size_t c1 = line.find(','); if (c1 == std::string::npos) continue;
+        size_t c2 = line.find(',', c1 + 1); if (c2 == std::string::npos) continue;
+        std::string uid = line.substr(0, c1);
+        std::string wav_path = line.substr(c1 + 1, c2 - c1 - 1);
+        auto wav = read_wav(wav_path);
+        if (wav.samples.empty()) { std::fprintf(stderr, "skip %s\n", uid.c_str()); continue; }
+        auto a16k = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+        auto t = clk::now();
+        std::string text;
+        if (par) {
+            text = par->transcribe(a16k.data(), a16k.size(), 16000).text;
+        } else if (omn) {
+            text = omn->transcribe(a16k.data(), a16k.size(), 16000).text;
+        }
+        double wall = ms_since(t);
+        double audio_s = static_cast<double>(a16k.size()) / 16000.0;
+        for (char& ch : text) if (ch == ',') ch = ' ';
+        std::printf("%s,litert-%s,%.2f,%.1f,%s\n",
+                    uid.c_str(), backend.c_str(), audio_s, wall, text.c_str());
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -316,6 +389,14 @@ int main(int argc, char** argv) {
         std::printf("SPEECH_LITERT_MODEL_DIR not set — skipping bench\n");
         return 0;
     }
+    // Corpus mode: --manifest <csv> --backend <parakeet|omnilingual>
+    std::string manifest, backend = "parakeet";
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--manifest") manifest = argv[i + 1];
+        else if (std::string(argv[i]) == "--backend") backend = argv[i + 1];
+    }
+    if (!manifest.empty()) return run_corpus(dir, backend, manifest);
+
     int warmup = (argc > 1) ? std::atoi(argv[1]) : 1;
     int runs   = (argc > 2) ? std::atoi(argv[2]) : 3;
     std::printf("bench: warmup=%d runs=%d dir=%s\n", warmup, runs, dir.c_str());
