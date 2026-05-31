@@ -7,6 +7,13 @@ name: Weekly VoxCPM2 integration
 # ~4.6 GB and AR inference is slow; weekly catches regressions without
 # adding daily cache pressure. Uses our own Parakeet ORT wrapper for the
 # ASR side — no external dependency (no Whisper, no Python ASR install).
+#
+# Two complementary round-trip checks run here:
+# 1. The C++ test test_litert_voxcpm2_parakeet_roundtrip in test_litert_models
+#    (LiteRT → LiteRT INT8): cheap, runs in-process, asserts ≥ 4/6 (non-cloned)
+#    or ≥ 2/6 (cloned) content words. Catches LiteRT-side regressions.
+# 2. The "ASR round-trip (Parakeet ORT)" shell step (LiteRT → ORT FP32):
+#    strict 6/6 on cloned and non-cloned voice. The high-bar regression gate.
 
 on:
   schedule:
@@ -83,6 +90,28 @@ jobs:
           test -f scripts/models-voxcpm2/voxcpm2-text-prefill.tflite
           test -f scripts/models-voxcpm2/voxcpm2-token-step.tflite
           test -f scripts/models-voxcpm2/tokenizer.json
+
+      # Fetch the core LiteRT models (Silero VAD + Parakeet STT + vocab) and
+      # drop them alongside the VoxCPM2 graphs in a single directory. The C++
+      # round-trip tests inside test_litert_models look for both bundles in
+      # the same SPEECH_LITERT_MODEL_DIR, so combining them is what makes
+      # test_litert_voxcpm2_parakeet_roundtrip fire here. The cached
+      # scripts/models-litert is reused if a prior run already populated it.
+      - name: Download core LiteRT models (Silero + Parakeet)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ ! -f scripts/models-litert/parakeet-encoder.tflite ]; then
+              ./scripts/download_models_litert.sh
+          fi
+          # Combine into the VoxCPM2 dir (already big — adding ~1.5 GB of
+          # Parakeet+Silero is a small marginal cost vs the 4.6 GB bundle).
+          cp -n scripts/models-litert/silero-vad.tflite scripts/models-voxcpm2/
+          cp -n scripts/models-litert/parakeet-encoder.tflite scripts/models-voxcpm2/
+          cp -n scripts/models-litert/parakeet-decoder-joint.tflite scripts/models-voxcpm2/
+          cp -n scripts/models-litert/vocab.json scripts/models-voxcpm2/
+          test -f scripts/models-voxcpm2/parakeet-encoder.tflite
+          test -f scripts/models-voxcpm2/vocab.json
 
       # --- Build with BOTH backends so speech_transcribe (ORT) is available
       # alongside the LiteRT model suite. ---

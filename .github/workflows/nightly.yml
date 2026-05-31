@@ -70,8 +70,17 @@ jobs:
           SPEECH_MODEL_DIR: ${{ github.workspace }}/scripts/models
         run: ctest --test-dir build --output-on-failure
 
+  # LiteRT lane runs Linux + Windows. Windows catches platform-specific bugs
+  # that the Linux-only lane misses (e.g. the LiteRT v2.1 file-size overflow
+  # on > 2 GiB models, the Omnilingual signature-resize quirk, MSVC build
+  # warnings escalating to errors). The Linux lane stays primary because most
+  # changes land there first; Windows is the regression net.
   litert-integration:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
 
     steps:
@@ -81,11 +90,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install build deps
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               build-essential cmake curl ca-certificates unzip
+
+      # MSVC dumpbin + lib are required for fetch_litert.sh to generate the
+      # libLiteRt.lib import library on Windows from the runtime DLL.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
 
       - name: Cache LiteRT runtime + models
         uses: actions/cache@v4
@@ -93,16 +108,23 @@ jobs:
           path: |
             litert
             scripts/models-litert
-          # ai-edge-litert wheel version + model download script — bump either
-          # one to invalidate.
-          key: litert-models-aiedge2.1.5-${{ hashFiles('scripts/download_models_litert.sh', 'scripts/fetch_litert.sh') }}
+          # ai-edge-litert wheel version + model download script + per-OS:
+          # the libLiteRt binary differs (.so vs .dll/.lib) so we keep a
+          # separate cache slot per OS.
+          key: litert-models-aiedge2.1.5-${{ runner.os }}-${{ hashFiles('scripts/download_models_litert.sh', 'scripts/fetch_litert.sh') }}
 
       - name: Fetch libLiteRt from ai-edge-litert wheel (if not cached)
+        shell: bash
         run: |
-          if [ ! -f litert/libLiteRt.so ]; then
+          if [ "${{ runner.os }}" = "Windows" ]; then
+              libname="libLiteRt.dll"
+          else
+              libname="libLiteRt.so"
+          fi
+          if [ ! -f "litert/$libname" ]; then
               ./scripts/fetch_litert.sh "$PWD/litert"
           fi
-          test -f litert/libLiteRt.so
+          test -f "litert/$libname"
 
       - name: Download LiteRT models (if not cached)
         # soniqo/* model repos are public — no token required; the diarization +
@@ -113,6 +135,7 @@ jobs:
         # skip if absent.
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: bash
         run: |
           if [ ! -f scripts/models-litert/parakeet-encoder.tflite ]; then
               ./scripts/download_models_litert.sh
@@ -122,6 +145,7 @@ jobs:
           echo "models present:" && ls -1 scripts/models-litert/
 
       - name: Configure
+        shell: bash
         run: |
           cmake -B build \
               -DCMAKE_BUILD_TYPE=Release \
@@ -129,11 +153,19 @@ jobs:
               -DLITERT_DIR=$PWD/litert
 
       - name: Build
-        run: cmake --build build --parallel
+        shell: bash
+        run: cmake --build build --parallel --config Release
 
       - name: Test (with models)
         env:
           SPEECH_LITERT_MODEL_DIR: ${{ github.workspace }}/scripts/models-litert
+        shell: bash
         run: |
-          export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
-          ctest --test-dir build --output-on-failure
+          # Linux uses LD_LIBRARY_PATH; Windows uses PATH. Cover both so the
+          # dynamic loader finds libLiteRt at test launch.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+              export PATH="$PWD/litert:$PATH"
+          else
+              export LD_LIBRARY_PATH="$PWD/litert:${LD_LIBRARY_PATH:-}"
+          fi
+          ctest --test-dir build --output-on-failure -C Release

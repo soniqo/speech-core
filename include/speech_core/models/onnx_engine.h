@@ -7,6 +7,11 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #define LOG_TAG "Speech"
@@ -26,6 +31,29 @@ inline void ort_check(const OrtApi* api, OrtStatus* status) {
         throw std::runtime_error("ORT: " + err);
     }
 }
+
+/// ORT's `CreateSession` takes `const ORTCHAR_T*`, which is `wchar_t*` on
+/// Windows and `char*` everywhere else. On Windows we therefore must widen
+/// the UTF-8 path string. This helper is a no-op on POSIX (where ORTCHAR_T
+/// is char) and a UTF-8 → UTF-16 conversion on Windows. Caller passes the
+/// returned object to CreateSession via .c_str().
+#ifdef _WIN32
+using OrtPathStr = std::wstring;
+inline OrtPathStr to_ort_path(const std::string& s) {
+    if (s.empty()) return L"";
+    int wlen = ::MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                                     static_cast<int>(s.size()),
+                                     nullptr, 0);
+    OrtPathStr w(static_cast<size_t>(wlen), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                          static_cast<int>(s.size()),
+                          w.data(), wlen);
+    return w;
+}
+#else
+using OrtPathStr = std::string;
+inline OrtPathStr to_ort_path(const std::string& s) { return s; }
+#endif
 
 /// NVIDIA GPU execution providers, selected on desktop/server (Linux/Windows)
 /// builds. Has no effect on Android (which uses NNAPI/QNN) or on a CPU-only ORT
@@ -76,6 +104,21 @@ public:
         bool gpu_attempted = false;
         if (nnapi && gpu_provider_ != OrtGpuProvider::None) {
             gpu_attempted = try_append_gpu(opts, path);
+            if (!gpu_attempted) {
+                // CUDA was resolved at startup (libs visible, env let it run)
+                // but the per-session append failed — most often a missing
+                // cuDNN side-load. The session will fall through to whatever
+                // QNN/NNAPI/CPU path follows; mark this as a fallback so
+                // callers can detect "expected GPU, got CPU" without parsing
+                // logs. CreateSession's own failure path (below) sets the
+                // same flag with the OrtStatus error message.
+                gpu_fallback_ = true;
+                if (gpu_fallback_reason_.empty()) {
+                    gpu_fallback_reason_ =
+                        "GPU EP append failed at session creation "
+                        "(commonly: cuDNN runtime not on PATH); see [speech] log";
+                }
+            }
         }
 
         if (nnapi && !gpu_attempted) {
@@ -99,7 +142,8 @@ public:
         }
 
         OrtSession* session = nullptr;
-        OrtStatus* create_status = api_->CreateSession(env_, path.c_str(), opts, &session);
+        OrtPathStr ort_path = to_ort_path(path);
+        OrtStatus* create_status = api_->CreateSession(env_, ort_path.c_str(), opts, &session);
 
         // If session creation fails with a hardware EP (NNAPI/QNN/GPU), retry CPU-only.
         if (create_status != nullptr && nnapi) {
@@ -120,7 +164,7 @@ public:
             api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
             api_->SetIntraOpNumThreads(opts, 4);
 
-            ort_check(api_, api_->CreateSession(env_, path.c_str(), opts, &session));
+            ort_check(api_, api_->CreateSession(env_, ort_path.c_str(), opts, &session));
         } else if (create_status != nullptr) {
             // CPU-only also failed — propagate the error
             const char* msg = api_->GetErrorMessage(create_status);
