@@ -276,13 +276,13 @@ jobs:
       - name: Build
         run: cmake --build build-cuda --parallel
 
-      - name: Verify CUDA symbols compiled in
+      - name: Verify CUDA code path compiled in
         run: |
-          # SPEECH_CORE_WITH_CUDA gets baked into speech_core_models via the
-          # CMake target_compile_definitions. We can't easily probe the
-          # macro itself in a static lib, but we can confirm the GPU EP
-          # provider-options symbols got referenced — they only appear if
-          # try_append_gpu() was compiled in. nm will show "U" (undefined)
-          # references that the loader resolves to libonnxruntime at runtime.
-          nm -u build-cuda/libspeech_core_models.a | grep -q "CreateCUDAProviderOptions" \
-              && echo "OK: CUDA EP symbols referenced"
+          # try_append_gpu() embeds a literal log string ("Appended CUDA EP:
+          # %s") that only ends up in the .o files when SPEECH_CORE_WITH_CUDA
+          # is defined — the macro guards the whole function body. ORT API
+          # calls go through a vtable, not named symbols, so nm wouldn't find
+          # CreateCUDAProviderOptions; the string literal is the reliable
+          # tell that the CUDA path was actually compiled.
+          strings build-cuda/libspeech_core_models.a | grep -q "Appended CUDA EP" \
+              && echo "OK: CUDA EP code path compiled in"
