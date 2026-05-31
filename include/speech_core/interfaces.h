@@ -53,6 +53,27 @@ public:
     virtual TranscriptionResult transcribe(
         const float* audio, size_t length, int sample_rate) = 0;
 
+    /// Transcribe N audio buffers as one batch. Default implementation loops
+    /// over transcribe() — backends that can share an encoder pass across
+    /// inputs (e.g. ParakeetStt under CUDA) override this for throughput.
+    ///
+    /// @param audios     Pointers to N PCM Float32 buffers
+    /// @param lengths    Length of each buffer in samples
+    /// @param n          Number of items in the batch
+    /// @param sample_rate Sample rate in Hz (uniform across the batch)
+    /// @return N TranscriptionResults in input order
+    virtual std::vector<TranscriptionResult> transcribe_batch(
+        const float* const* audios, const size_t* lengths,
+        size_t n, int sample_rate)
+    {
+        std::vector<TranscriptionResult> out;
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            out.push_back(transcribe(audios[i], lengths[i], sample_rate));
+        }
+        return out;
+    }
+
     /// Expected input sample rate in Hz.
     virtual int input_sample_rate() const = 0;
 

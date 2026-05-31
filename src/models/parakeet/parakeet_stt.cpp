@@ -36,6 +36,31 @@ ParakeetStt::ParakeetStt(
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
     encoder_       = engine.load(encoder_path, hw_accel);
+
+    // Query the encoder's audio_signal input shape — if axis 0 is dynamic
+    // (symbolic dim) we can drive transcribe_batch() with a real batched
+    // Run; otherwise we must sequentialize to honour the static B=1.
+    {
+        OrtTypeInfo* type_info = nullptr;
+        if (api_->SessionGetInputTypeInfo(encoder_, 0, &type_info) == nullptr) {
+            const OrtTensorTypeAndShapeInfo* shape = nullptr;
+            if (api_->CastTypeInfoToTensorInfo(type_info, &shape) == nullptr && shape) {
+                size_t dims = 0;
+                api_->GetDimensionsCount(shape, &dims);
+                if (dims >= 1) {
+                    std::vector<int64_t> shape_dims(dims);
+                    api_->GetDimensions(shape, shape_dims.data(), dims);
+                    // Static encoder exports come back as 1; dynamic exports
+                    // report -1 here. The newer convert_onnx.py marks axis 0
+                    // as 'B' via dynamic_axes — bump the published bundle and
+                    // re-publish to flip this on without code changes.
+                    encoder_batch_dynamic_ = shape_dims[0] != 1;
+                }
+            }
+            api_->ReleaseTypeInfo(type_info);
+        }
+    }
+
     // Decoder-joint stays CPU even when hw_accel=true. The published
     // file is FP32 (the "-int8.onnx" filename is misleading — only the
     // encoder is INT8), so we tried the GPU path: WER stayed at 5.63%
@@ -227,6 +252,135 @@ TranscriptionResult ParakeetStt::transcribe(
     out.language = std::move(r.language);
     out.confidence = r.confidence;
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Batched transcribe — share ONE encoder pass across N utterances. Per the
+// LibriSpeech-100 analysis, the encoder is the only graph the CUDA EP wins
+// on; the decoder-joint stays CPU because its per-call cost is dispatch-
+// dominated. So this batches encoder I/O (pad-to-max, [N, 128, T_max])
+// while keeping the TDT decoder loop per-item.
+// ---------------------------------------------------------------------------
+
+std::vector<TranscriptionResult> ParakeetStt::transcribe_batch(
+    const float* const* audios, const size_t* lengths,
+    size_t n, int /*sample_rate*/)
+{
+    if (n == 0) return {};
+    if (n == 1) {
+        return {transcribe(audios[0], lengths[0], cfg_.sample_rate)};
+    }
+    // If the encoder export pins batch=1 (which the currently published
+    // parakeet-encoder-int8.onnx does), share state but loop sequentially.
+    // The newer convert_onnx.py in speech-models adds dynamic_axes={0:'B'};
+    // once re-published, encoder_batch_dynamic_ flips and we take the
+    // batched fast path below.
+    if (!encoder_batch_dynamic_) {
+        std::vector<TranscriptionResult> out;
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            out.push_back(transcribe(audios[i], lengths[i], cfg_.sample_rate));
+        }
+        return out;
+    }
+
+    auto* mem = OnnxEngine::get().cpu_memory();
+
+    // Phase 1: mel each utterance independently, find T_max.
+    std::vector<std::vector<float>> mels(n);
+    std::vector<int64_t>            mel_frames(n);
+    int64_t T_max = 0;
+    for (size_t i = 0; i < n; ++i) {
+        mels[i] = compute_mel(audios[i], lengths[i]);
+        mel_frames[i] = static_cast<int64_t>(mels[i].size() / cfg_.num_mel_bins);
+        if (mel_frames[i] > T_max) T_max = mel_frames[i];
+    }
+    if (T_max == 0) {
+        std::vector<TranscriptionResult> out(n);
+        return out;
+    }
+
+    // Phase 2: build a padded [N, 128, T_max] mel batch + lengths [N].
+    const int64_t M = cfg_.num_mel_bins;
+    std::vector<float> mel_batch(static_cast<size_t>(n) * M * T_max, 0.0f);
+    for (size_t i = 0; i < n; ++i) {
+        const auto& src = mels[i];
+        const int64_t T = mel_frames[i];
+        for (int64_t m = 0; m < M; ++m) {
+            std::memcpy(
+                &mel_batch[(i * M + m) * T_max],
+                &src[m * T],
+                static_cast<size_t>(T) * sizeof(float));
+        }
+    }
+
+    const int64_t mel_shape[] = {static_cast<int64_t>(n), M, T_max};
+    OrtValue* t_mel = nullptr;
+    ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+        mem, mel_batch.data(), mel_batch.size() * sizeof(float),
+        mel_shape, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_mel));
+
+    const int64_t len_shape[] = {static_cast<int64_t>(n)};
+    OrtValue* t_len = nullptr;
+    ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+        mem, mel_frames.data(), mel_frames.size() * sizeof(int64_t),
+        len_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_len));
+
+    // Phase 3: one encoder Run for the whole batch. Outputs [N, hidden, T'_max]
+    // + encoded_lengths [N].
+    const char* enc_in[]  = {"audio_signal", "length"};
+    const char* enc_out[] = {"outputs", "encoded_lengths"};
+    OrtValue* enc_inputs[]  = {t_mel, t_len};
+    OrtValue* enc_outputs[] = {nullptr, nullptr};
+    ort_check(api_, api_->Run(
+        encoder_, nullptr, enc_in, enc_inputs, 2, enc_out, 2, enc_outputs));
+
+    OrtTensorTypeAndShapeInfo* info = nullptr;
+    ort_check(api_, api_->GetTensorTypeAndShape(enc_outputs[0], &info));
+    size_t dim_count = 0;
+    api_->GetDimensionsCount(info, &dim_count);
+    std::vector<int64_t> enc_shape(dim_count);
+    api_->GetDimensions(info, enc_shape.data(), dim_count);
+    api_->ReleaseTensorTypeAndShapeInfo(info);
+
+    float* encoded_batch = nullptr;
+    ort_check(api_, api_->GetTensorMutableData(enc_outputs[0], (void**)&encoded_batch));
+    int64_t* enc_lens = nullptr;
+    ort_check(api_, api_->GetTensorMutableData(enc_outputs[1], (void**)&enc_lens));
+
+    const int64_t hidden = (dim_count >= 3) ? enc_shape[1] : cfg_.encoder_hidden;
+    const int64_t T_enc_max = (dim_count >= 3) ? enc_shape[2] : 0;
+
+    // Phase 4: per-item TDT decode. The decoder is small and per-call, so we
+    // slice the batch encoder output back to per-item [hidden, enc_len_i]
+    // contiguous buffers and reuse the existing tdt_decode().
+    std::vector<TranscriptionResult> results;
+    results.reserve(n);
+    std::vector<float> per_item;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t L = enc_lens[i];
+        per_item.assign(static_cast<size_t>(hidden) * L, 0.0f);
+        const float* base = encoded_batch + i * hidden * T_enc_max;
+        // ORT layout is [N, hidden, T_max]; keep [hidden, L] channels-first.
+        for (int64_t h = 0; h < hidden; ++h) {
+            std::memcpy(
+                &per_item[static_cast<size_t>(h) * L],
+                base + h * T_enc_max,
+                static_cast<size_t>(L) * sizeof(float));
+        }
+        auto r = tdt_decode(per_item.data(), L, hidden);
+        TranscriptionResult out;
+        out.text = std::move(r.text);
+        out.language = std::move(r.language);
+        out.confidence = r.confidence;
+        results.push_back(std::move(out));
+    }
+
+    api_->ReleaseValue(enc_outputs[1]);
+    api_->ReleaseValue(enc_outputs[0]);
+    api_->ReleaseValue(t_len);
+    api_->ReleaseValue(t_mel);
+    return results;
 }
 
 // ---------------------------------------------------------------------------

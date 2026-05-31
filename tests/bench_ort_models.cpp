@@ -298,7 +298,8 @@ WavData read_wav(const std::string& path) {
     return out;
 }
 
-int run_corpus(const std::string& dir, const std::string& manifest_path) {
+int run_corpus(const std::string& dir, const std::string& manifest_path,
+               int batch_size) {
     std::string e = dir + "/parakeet-encoder-int8.onnx";
     std::string d = dir + "/parakeet-decoder-joint-int8.onnx";
     std::string v = dir + "/vocab.json";
@@ -310,6 +311,41 @@ int run_corpus(const std::string& dir, const std::string& manifest_path) {
     std::ifstream m(manifest_path);
     if (!m) { std::fprintf(stderr, "cannot open manifest %s\n", manifest_path.c_str()); return 1; }
     std::printf("#uid,provider,audio_s,wall_ms,transcript\n");
+
+    struct Item { std::string uid; std::vector<float> audio_16k; };
+    std::vector<Item> queue;
+    queue.reserve(batch_size > 0 ? batch_size : 1);
+
+    auto flush = [&]() {
+        if (queue.empty()) return;
+        std::vector<const float*> ptrs; ptrs.reserve(queue.size());
+        std::vector<size_t>       lens; lens.reserve(queue.size());
+        for (auto& it : queue) {
+            ptrs.push_back(it.audio_16k.data());
+            lens.push_back(it.audio_16k.size());
+        }
+        auto t = clk::now();
+        auto rs = stt.transcribe_batch(ptrs.data(), lens.data(),
+                                       ptrs.size(), 16000);
+        double batch_wall = ms_since(t);
+        // Apportion wall time across utterances by audio duration so the
+        // CSV row remains apples-to-apples vs the single-utterance bench.
+        double total_audio = 0.0;
+        for (auto& it : queue) total_audio += static_cast<double>(it.audio_16k.size());
+        for (size_t i = 0; i < queue.size(); ++i) {
+            double share = static_cast<double>(queue[i].audio_16k.size()) / (std::max)(1.0, total_audio);
+            double per_wall = batch_wall * share;
+            double audio_s = static_cast<double>(queue[i].audio_16k.size()) / 16000.0;
+            std::string text = rs[i].text;
+            for (char& ch : text) if (ch == ',') ch = ' ';
+            std::printf("%s,%s,%.2f,%.1f,%s\n",
+                        queue[i].uid.c_str(), provider_label(),
+                        audio_s, per_wall, text.c_str());
+        }
+        std::fflush(stdout);
+        queue.clear();
+    };
+
     std::string line;
     while (std::getline(m, line)) {
         if (line.empty()) continue;
@@ -326,16 +362,22 @@ int run_corpus(const std::string& dir, const std::string& manifest_path) {
             ? wav.samples
             : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
                                                wav.sample_rate, 16000);
-        auto t = clk::now();
-        auto r = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
-        double wall = ms_since(t);
-        double audio_s = static_cast<double>(audio_16k.size()) / 16000.0;
-        std::string text = r.text;
-        for (char& ch : text) if (ch == ',') ch = ' ';
-        std::printf("%s,%s,%.2f,%.1f,%s\n", uid.c_str(), provider_label(),
-                    audio_s, wall, text.c_str());
-        std::fflush(stdout);
+        if (batch_size <= 1) {
+            auto t = clk::now();
+            auto r = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+            double wall = ms_since(t);
+            double audio_s = static_cast<double>(audio_16k.size()) / 16000.0;
+            std::string text = r.text;
+            for (char& ch : text) if (ch == ',') ch = ' ';
+            std::printf("%s,%s,%.2f,%.1f,%s\n", uid.c_str(), provider_label(),
+                        audio_s, wall, text.c_str());
+            std::fflush(stdout);
+        } else {
+            queue.push_back({uid, std::move(audio_16k)});
+            if (static_cast<int>(queue.size()) >= batch_size) flush();
+        }
     }
+    if (!queue.empty()) flush();
     return 0;
 }
 
@@ -348,11 +390,15 @@ int main(int argc, char** argv) {
         return 0;
     }
     // Corpus mode if --manifest <path> passed; else default fixture bench.
+    // Optional --batch N (default 1) batches encoder calls.
+    std::string manifest;
+    int batch_size = 1;
     for (int i = 1; i + 1 < argc; ++i) {
-        if (std::string(argv[i]) == "--manifest") {
-            return run_corpus(dir, argv[i + 1]);
-        }
+        std::string arg = argv[i];
+        if (arg == "--manifest") manifest = argv[i + 1];
+        else if (arg == "--batch") batch_size = std::atoi(argv[i + 1]);
     }
+    if (!manifest.empty()) return run_corpus(dir, manifest, batch_size);
     std::printf("#model,provider,metric,load_ms,wall_ms,rtf,rss_mb,extra\n");
     bench_silero(dir);
     bench_parakeet(dir);

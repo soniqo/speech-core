@@ -43,6 +43,9 @@ public:
 
     // --- STTInterface (batch) ---
     TranscriptionResult transcribe(const float* audio, size_t length, int sample_rate) override;
+    std::vector<TranscriptionResult> transcribe_batch(
+        const float* const* audios, const size_t* lengths,
+        size_t n, int sample_rate) override;
     int input_sample_rate() const override { return cfg_.sample_rate; }
 
     // --- STTInterface (streaming) ---
@@ -71,6 +74,11 @@ private:
     OrtSession* encoder_       = nullptr;
     OrtSession* decoder_joint_ = nullptr;
     Config cfg_;
+
+    // True if the encoder's batch dim is fixed at 1 (most exports). When
+    // false the audio_signal axis 0 is dynamic and transcribe_batch() can
+    // share a single encoder Run across all utterances.
+    bool encoder_batch_dynamic_ = false;
 
     // SentencePiece vocabulary: token ID → token string
     std::unordered_map<int, std::string> vocab_;
