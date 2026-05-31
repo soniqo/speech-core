@@ -10,3 +10,14 @@ compile_commands.json
 *.dylib
 *.xcframework
 .DS_Store
+
+# Local model bundles + runtime prebuilds (fetched by scripts/download_*.sh
+# and scripts/fetch_litert.sh, plus the examples/linux setup script). Big
+# binaries — never committed; CI re-fetches per run via cache. Anchored to
+# repo root so they don't shadow the in-tree src/models/litert/ source tree.
+/scripts/models/
+/scripts/models-litert/
+/scripts/models-voxcpm2/
+/litert/
+/ort-linux/
+/ort-win-gpu/

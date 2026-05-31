@@ -46,6 +46,12 @@ private:
     Config cfg_;
     int frames_per_chunk_ = 0;  // T from the model output layout
 
+    // Input tensor shape pinned at construction via the non-strict resize API,
+    // so the runtime doesn't reject our buffer for missing dims_signature.
+    static constexpr int kMaxRank = 4;
+    int input_rank_ = 0;
+    int input_dims_[kMaxRank] = {0};
+
     std::vector<std::string> id_to_piece_;
 };
 

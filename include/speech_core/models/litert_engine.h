@@ -12,9 +12,12 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <initializer_list>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -150,11 +153,39 @@ public:
               bool /*hw_accel*/,
               LiteRtModel* out_model,
               LiteRtCompiledModel* out_compiled) {
-        LiteRtModel m = nullptr;
-        litert_check(LiteRtCreateModelFromFile(path.c_str(), &m), "CreateModelFromFile");
-
         LOGI("Loading LiteRT model: %s",
              path.substr(path.find_last_of('/') + 1).c_str());
+
+        LiteRtModel m = nullptr;
+        // LiteRT v2.1.5's LiteRtCreateModelFromFile fails on Windows for files
+        // ≥ 2 GiB ("Failed to get file size" — 32-bit stat overflow). VoxCPM2's
+        // token-step graph is 2.04 GiB, so the file API can't load it. Use
+        // LiteRtCreateModelFromBuffer (size_t buffer_size is 64-bit) for big
+        // files, falling back to the file API otherwise so most loads stay
+        // unchanged. The buffer is zero-copy and must outlive the model, so
+        // we retain it in the engine singleton (lives until process exit).
+        // Threshold is well under 2 GiB so the prefill graph (1.94 GiB) also
+        // routes through the safer path on Windows.
+        constexpr std::uint64_t kBufferThreshold = std::uint64_t{1} << 30;  // 1 GiB
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f) {
+            throw std::runtime_error("LiteRT: cannot open " + path);
+        }
+        const std::uint64_t size = static_cast<std::uint64_t>(f.tellg());
+        if (size > kBufferThreshold) {
+            auto buf = std::make_unique<std::vector<char>>(static_cast<size_t>(size));
+            f.seekg(0);
+            f.read(buf->data(), static_cast<std::streamsize>(size));
+            if (!f) {
+                throw std::runtime_error("LiteRT: read failed for " + path);
+            }
+            litert_check(LiteRtCreateModelFromBuffer(buf->data(), buf->size(), &m),
+                         "CreateModelFromBuffer");
+            retained_buffers_.push_back(std::move(buf));
+        } else {
+            f.close();
+            litert_check(LiteRtCreateModelFromFile(path.c_str(), &m), "CreateModelFromFile");
+        }
 
         // Build compile options with the CPU accelerator. LiteRT rejects a
         // NULL options pointer (kLiteRtStatusErrorInvalidArgument). GPU/NPU
@@ -187,6 +218,11 @@ private:
     LiteRTEngine& operator=(const LiteRTEngine&) = delete;
 
     LiteRtEnvironment env_ = nullptr;
+    // Backing storage for models loaded via LiteRtCreateModelFromBuffer.
+    // LiteRT retains a zero-copy pointer into each buffer for the model's
+    // lifetime, so buffers must outlive any models created from them. The
+    // engine is a singleton, so this naturally lives until process exit.
+    std::vector<std::unique_ptr<std::vector<char>>> retained_buffers_;
 };
 
 }  // namespace speech_core

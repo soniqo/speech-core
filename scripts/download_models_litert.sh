@@ -53,8 +53,15 @@ for entry in "${FILES[@]}"; do
             [[ "$rel" == "silero-vad.tflite" ]] && dest="$OUT/silero-vad.tflite"
             ;;
         Parakeet-TDT-0.6B-v3-LiteRT-INT8)
-            dest="$OUT/parakeet-${rel}"
-            [[ "$rel" == parakeet-* ]] && dest="$OUT/${rel}"
+            # .tflite files are already parakeet-* in the repo. vocab.json must
+            # land bare (the C++ tests load it as `<dir>/vocab.json`); only
+            # config.json needs a prefix to dodge Silero's same-named file.
+            # Nemotron's vocab.json lands as nemotron-vocab.json (handled
+            # below) and its test loads that name, so no Nemotron collision.
+            case "$rel" in
+                config.json) dest="$OUT/parakeet-${rel}" ;;
+                *)           dest="$OUT/${rel}" ;;
+            esac
             ;;
         Nemotron-Speech-Streaming-LiteRT)
             # .tflite are already nemotron-prefixed; vocab/config would collide

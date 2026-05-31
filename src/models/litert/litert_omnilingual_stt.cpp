@@ -141,8 +141,62 @@ LiteRTOmnilingualStt::LiteRTOmnilingualStt(const std::string& model_path,
         frames_per_chunk_ = cfg_.max_audio_samples / down;
     }
 
-    LOGI("Omnilingual: input=[1,%d] output=[1,%d,%d] (%.1fs chunks)",
-         cfg_.max_audio_samples, frames_per_chunk_, cfg_.vocab_size,
+    // Query the input layout the model actually expects (rank, dims) so the
+    // tensor buffer we hand to Run matches it exactly. Without this we picked
+    // {1, chunk_samples} on faith — and LiteRT v2.1's CompiledModel rejected
+    // it on Windows ("Cannot auto-resize tensor args_0: no dims_signature
+    // exists"). The Pyannote/Parakeet wrappers get away with hardcoded shapes
+    // because their TFLite exports happen to ship a matching signature; this
+    // export doesn't.
+    LiteRtLayout in_layout{};
+    litert_check(LiteRtGetCompiledModelInputTensorLayout(
+                     compiled_, /*signature_index=*/0, /*input_index=*/0,
+                     &in_layout),
+                 "Omnilingual GetInputTensorLayout");
+    input_rank_ = static_cast<int>(in_layout.rank);
+    int model_chunk_samples = 0;
+    for (unsigned int i = 0; i < in_layout.rank && i < kMaxRank; ++i) {
+        input_dims_[i] = in_layout.dimensions[i];
+    }
+    // The last dim is the time axis (samples) on all known exports of this
+    // model — find it. Negative or zero means the graph left it dynamic.
+    if (input_rank_ >= 1) {
+        model_chunk_samples = input_dims_[input_rank_ - 1];
+    }
+
+    // Strategy: prefer the model's own static input shape over the heuristic
+    // {1, max_audio_samples} we derived from the output layout. If the model
+    // bakes in [1, 79680] we use that; if it left the time axis dynamic
+    // (≤ 0), we pin it via the non-strict resize API. We do NOT resize the
+    // input from one static shape to another, because XNNPack — the default
+    // CPU delegate on desktop builds — refuses to reshape an already-prepared
+    // runtime ("XNNPack delegate failed to reshape runtime") and the model
+    // fails to invoke.
+    if (model_chunk_samples > 0) {
+        cfg_.max_audio_samples = model_chunk_samples;
+        frames_per_chunk_      = model_chunk_samples / down;
+    } else {
+        const int chunk = cfg_.max_audio_samples;
+        if (input_rank_ <= 1) {
+            const int dims[1] = {chunk};
+            litert_check(LiteRtCompiledModelResizeInputTensorNonStrict(
+                             compiled_, 0, 0, dims, 1),
+                         "Omnilingual ResizeInputTensor");
+            input_rank_    = 1;
+            input_dims_[0] = chunk;
+        } else {
+            const int dims[2] = {1, chunk};
+            litert_check(LiteRtCompiledModelResizeInputTensorNonStrict(
+                             compiled_, 0, 0, dims, 2),
+                         "Omnilingual ResizeInputTensor");
+            input_rank_    = 2;
+            input_dims_[0] = 1;
+            input_dims_[1] = chunk;
+        }
+    }
+
+    LOGI("Omnilingual: input_rank=%d input_last_dim=%d output=[1,%d,%d] (%.1fs chunks)",
+         input_rank_, cfg_.max_audio_samples, frames_per_chunk_, cfg_.vocab_size,
          static_cast<float>(cfg_.max_audio_samples) / cfg_.sample_rate);
 }
 
@@ -167,7 +221,16 @@ TranscriptionResult LiteRTOmnilingualStt::transcribe(
     const int down          = cfg_.sample_rate / cfg_.frame_rate;  // 320
 
     auto env      = LiteRTEngine::get().env();
-    auto t_audio  = make_type(kLiteRtElementTypeFloat32, {1, chunk_samples});
+    // Build the input tensor type from the rank/dims pinned in the constructor
+    // (queried from the compiled model), so the buffer we hand Run matches the
+    // model's signature exactly.
+    LiteRtRankedTensorType t_audio{};
+    t_audio.element_type        = kLiteRtElementTypeFloat32;
+    t_audio.layout.rank         = static_cast<unsigned int>(input_rank_);
+    t_audio.layout.has_strides  = false;
+    for (int i = 0; i < input_rank_; ++i) {
+        t_audio.layout.dimensions[i] = input_dims_[i];
+    }
     auto t_logits = make_type(kLiteRtElementTypeFloat32, {1, frames_per_chunk_, cfg_.vocab_size});
 
     std::vector<float> logits(static_cast<size_t>(frames_per_chunk_) * cfg_.vocab_size);
