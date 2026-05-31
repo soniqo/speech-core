@@ -18,6 +18,11 @@ compile_commands.json
 /scripts/models/
 /scripts/models-litert/
 /scripts/models-voxcpm2/
+/scripts/sherpa-models/
 /litert/
 /ort-linux/
 /ort-win-gpu/
+
+# Per-developer agent state + transient bench output.
+/.claude/
+/bench-external.json
