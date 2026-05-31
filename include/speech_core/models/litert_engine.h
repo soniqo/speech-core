@@ -17,6 +17,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -163,9 +164,13 @@ public:
         // LiteRtCreateModelFromBuffer (size_t buffer_size is 64-bit) for big
         // files, falling back to the file API otherwise so most loads stay
         // unchanged. The buffer is zero-copy and must outlive the model, so
-        // we retain it in the engine singleton (lives until process exit).
-        // Threshold is well under 2 GiB so the prefill graph (1.94 GiB) also
-        // routes through the safer path on Windows.
+        // we retain it in the engine singleton. We also cache the buffer by
+        // path: a test suite that reloads the same VoxCPM2 graphs across six
+        // wrapper instances would otherwise sink 6 × ~4.5 GiB ≈ 27 GiB of
+        // RAM (CI Linux runners have ~7 GiB and SIGKILL'd at 9 min). Caching
+        // caps it at one copy per path. Threshold is well under 2 GiB so the
+        // prefill graph (1.94 GiB) also routes through the safer path on
+        // Windows.
         constexpr std::uint64_t kBufferThreshold = std::uint64_t{1} << 30;  // 1 GiB
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) {
@@ -173,15 +178,22 @@ public:
         }
         const std::uint64_t size = static_cast<std::uint64_t>(f.tellg());
         if (size > kBufferThreshold) {
-            auto buf = std::make_unique<std::vector<char>>(static_cast<size_t>(size));
-            f.seekg(0);
-            f.read(buf->data(), static_cast<std::streamsize>(size));
-            if (!f) {
-                throw std::runtime_error("LiteRT: read failed for " + path);
+            auto it = retained_buffers_.find(path);
+            const std::vector<char>* buf_ptr = nullptr;
+            if (it != retained_buffers_.end()) {
+                buf_ptr = it->second.get();
+            } else {
+                auto buf = std::make_unique<std::vector<char>>(static_cast<size_t>(size));
+                f.seekg(0);
+                f.read(buf->data(), static_cast<std::streamsize>(size));
+                if (!f) {
+                    throw std::runtime_error("LiteRT: read failed for " + path);
+                }
+                buf_ptr = buf.get();
+                retained_buffers_.emplace(path, std::move(buf));
             }
-            litert_check(LiteRtCreateModelFromBuffer(buf->data(), buf->size(), &m),
+            litert_check(LiteRtCreateModelFromBuffer(buf_ptr->data(), buf_ptr->size(), &m),
                          "CreateModelFromBuffer");
-            retained_buffers_.push_back(std::move(buf));
         } else {
             f.close();
             litert_check(LiteRtCreateModelFromFile(path.c_str(), &m), "CreateModelFromFile");
@@ -218,11 +230,14 @@ private:
     LiteRTEngine& operator=(const LiteRTEngine&) = delete;
 
     LiteRtEnvironment env_ = nullptr;
-    // Backing storage for models loaded via LiteRtCreateModelFromBuffer.
-    // LiteRT retains a zero-copy pointer into each buffer for the model's
-    // lifetime, so buffers must outlive any models created from them. The
-    // engine is a singleton, so this naturally lives until process exit.
-    std::vector<std::unique_ptr<std::vector<char>>> retained_buffers_;
+    // Backing storage for models loaded via LiteRtCreateModelFromBuffer,
+    // keyed by file path. LiteRT retains a zero-copy pointer into each
+    // buffer for the model's lifetime, so buffers must outlive any models
+    // created from them. The engine is a singleton, so this naturally
+    // lives until process exit. Keying by path means re-loading the same
+    // file reuses the existing buffer instead of allocating another copy
+    // (matters for test suites that re-instantiate big-model wrappers).
+    std::unordered_map<std::string, std::unique_ptr<std::vector<char>>> retained_buffers_;
 };
 
 }  // namespace speech_core
