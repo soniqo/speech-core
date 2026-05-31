@@ -6,6 +6,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -90,11 +91,28 @@ public:
     bool had_gpu_fallback() const { return gpu_fallback_; }
     const std::string& gpu_fallback_reason() const { return gpu_fallback_reason_; }
 
+    /// Resolve the intra-op thread count for ORT sessions.
+    /// Default is 2 — empirically optimal on Parakeet's profile of many
+    /// short calls per utterance (decoder-joint runs ~50 times, each on
+    /// tiny tensors; thread-pool overhead per call > parallel-GEMM win).
+    /// Measured on the LibriSpeech-100 bench (LiteRT v2.1, ORT 1.26 CUDA):
+    ///   intra=2  CPU 28.77x RTF / CUDA 32.91x RTF (baseline)
+    ///   intra=16 CPU 24.25x RTF / CUDA 26.49x RTF (15–20% slower)
+    /// The env var stays available for long-utterance / large-batch
+    /// workloads where the parallel win does dominate.
+    static int resolve_intra_threads() {
+        if (const char* env = std::getenv("SPEECH_CORE_ORT_THREADS")) {
+            int v = std::atoi(env);
+            if (v > 0) return v;
+        }
+        return 2;
+    }
+
     OrtSession* load(const std::string& path, bool nnapi = true) {
         OrtSessionOptions* opts = nullptr;
         ort_check(api_, api_->CreateSessionOptions(&opts));
         api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
-        api_->SetIntraOpNumThreads(opts, 2);
+        api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
 
         // A GPU EP (CUDA / TensorRT), when resolved on a desktop/server build,
         // takes priority over NNAPI/QNN. The `nnapi` argument is the model
@@ -162,7 +180,7 @@ public:
             opts = nullptr;
             ort_check(api_, api_->CreateSessionOptions(&opts));
             api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
-            api_->SetIntraOpNumThreads(opts, 4);
+            api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
 
             ort_check(api_, api_->CreateSession(env_, ort_path.c_str(), opts, &session));
         } else if (create_status != nullptr) {

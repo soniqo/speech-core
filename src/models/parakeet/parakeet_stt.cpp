@@ -36,6 +36,15 @@ ParakeetStt::ParakeetStt(
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
     encoder_       = engine.load(encoder_path, hw_accel);
+    // Decoder-joint stays CPU even when hw_accel=true. The published
+    // file is FP32 (the "-int8.onnx" filename is misleading — only the
+    // encoder is INT8), so we tried the GPU path: WER stayed at 5.63%
+    // on LibriSpeech-100 but wall time went UP 8% (32.9x -> 30.5x RTF).
+    // Each decoder-joint call ships ~640-hidden tensors over the PCIe
+    // bus 50+ times per utterance; for tensors this small the GPU
+    // dispatch + memcpy beats the FP32 LSTM kernel's compute time. Same
+    // anti-pattern as Silero VAD on CUDA (the small-chunk overhead win
+    // is documented in tests/test_models.cpp:test_silero_vad_cuda).
     decoder_joint_ = engine.load(decoder_joint_path, false);
 
     load_vocab(vocab_path);
