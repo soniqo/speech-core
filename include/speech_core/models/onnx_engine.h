@@ -234,9 +234,19 @@ private:
             OrtStatus* cs = api_->CreateTensorRTProviderOptions(&trt);
             if (cs == nullptr && trt != nullptr) {
                 // Cache built TensorRT engines on disk so the (expensive) engine
-                // build only happens on first run, not every cold start.
+                // build only happens on first run, not every cold start. Pick the
+                // OS temp dir from env (TMPDIR on Unix, TEMP on Windows) so the
+                // path is valid on both platforms; fall back to a sane default.
+                const char* tmp = std::getenv("TMPDIR");
+                if (tmp == nullptr) tmp = std::getenv("TEMP");
+                if (tmp == nullptr) tmp = std::getenv("TMP");
+#ifdef _WIN32
+                std::string cache = std::string(tmp ? tmp : ".") + "\\speech_core_trt_cache";
+#else
+                std::string cache = std::string(tmp ? tmp : "/tmp") + "/speech_core_trt_cache";
+#endif
                 const char* keys[] = {"trt_engine_cache_enable", "trt_engine_cache_path"};
-                const char* vals[] = {"1", "/tmp/speech_core_trt_cache"};
+                const char* vals[] = {"1", cache.c_str()};
                 OrtStatus* us = api_->UpdateTensorRTProviderOptions(trt, keys, vals, 2);
                 if (us != nullptr) api_->ReleaseStatus(us);  // non-fatal: keep defaults
                 OrtStatus* as = api_->SessionOptionsAppendExecutionProvider_TensorRT_V2(opts, trt);
