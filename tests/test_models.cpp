@@ -19,6 +19,7 @@
 #include "speech_core/models/deepfilter.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
 #include "speech_core/vad/streaming_vad.h"
@@ -480,6 +481,54 @@ void test_silero_vad_cuda(const std::string& dir) {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// ONNX VoxCPM2 load smoke — constructs the wrapper from the random-init
+// exported graphs at /tmp/voxcpm2-onnx/ (the tiny-init bundle from
+// speech-models, used until the real-weights text_prefill export lands).
+// Skips cleanly when the bundle isn't present so CI stays green.
+// ---------------------------------------------------------------------------
+
+void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
+    // The VoxCPM2 ONNX bundle is independent of $SPEECH_MODEL_DIR — it lives
+    // alongside the speech-models export workspace. Tries a sensible default
+    // and falls back to the env var $SPEECH_VOXCPM2_ONNX_DIR for CI flexibility.
+    const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
+    std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
+
+    // File names mirror the speech-models/models/voxcpm2/export/convert_onnx.py
+    // output exactly: voxcpm2-{graph}.onnx (the speech-cloud LiteRT bundle uses
+    // the same prefix on the .tflite side too, so the wrapper file naming
+    // stays parallel between backends).
+    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
+    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
+    std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
+    std::string tokenizer     = vox_dir + "/tokenizer.json";
+
+    if (!file_exists(text_prefill) || !file_exists(token_step)
+        || !file_exists(audio_encoder) || !file_exists(audio_decoder)
+        || !file_exists(tokenizer))
+    {
+        std::printf("  [skip] ONNX VoxCPM2 bundle not in %s "
+                    "(set SPEECH_VOXCPM2_ONNX_DIR to override)\n", vox_dir.c_str());
+        return;
+    }
+    std::printf("  test_onnx_voxcpm2_load ... ");
+
+    // Just construct + destruct: confirms the four sessions load, the
+    // tokenizer parses, and the I/O introspection paths don't throw.
+    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+                                     audio_encoder, audio_decoder,
+                                     tokenizer, /*hw_accel=*/false);
+    REQUIRE(tts.output_sample_rate() == 48000);
+    REQUIRE(tts.max_text_tokens() > 0);
+    REQUIRE(!tts.has_reference());
+
+    std::printf("ok (max_text=%d)\n", tts.max_text_tokens());
+}
+
+// ---------------------------------------------------------------------------
+
 }  // namespace
 
 int main() {
@@ -515,6 +564,7 @@ int main() {
     RUN(test_deepfilter);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_silero_vad_cuda);
+    RUN(test_onnx_voxcpm2_load);
     #undef RUN
 
     if (failures > 0) {

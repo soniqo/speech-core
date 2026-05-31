@@ -99,14 +99,25 @@ if(SPEECH_CORE_WITH_ONNX)
         set_target_properties(onnxruntime PROPERTIES IMPORTED_IMPLIB "${_ORT_IMPLIB}")
     endif()
 
-    add_library(speech_core_models
+    set(_SPEECH_CORE_MODELS_SOURCES
         src/models/silero/silero_vad.cpp
         src/models/parakeet/parakeet_stt.cpp
         src/models/kokoro/kokoro_tts.cpp
         src/models/kokoro/kokoro_phonemizer.cpp
         src/models/kokoro/kokoro_multilingual.cpp
         src/models/deepfilter/deepfilter.cpp
+        src/models/voxcpm2/onnx_voxcpm2_tts.cpp
     )
+    # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
+    # avoid duplicate symbols when a downstream binary links both targets, we
+    # only compile it into speech_core_models when the LiteRT target isn't
+    # being built. When both are on, speech_core_models_litert owns the symbol
+    # and speech_core_models picks it up through the link line.
+    if(NOT SPEECH_CORE_WITH_LITERT)
+        list(APPEND _SPEECH_CORE_MODELS_SOURCES
+            src/models/litert/voxcpm2_tokenizer.cpp)
+    endif()
+    add_library(speech_core_models ${_SPEECH_CORE_MODELS_SOURCES})
 
     target_include_directories(speech_core_models
         PUBLIC
