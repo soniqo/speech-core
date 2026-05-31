@@ -249,6 +249,16 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_models COMMAND test_models)
+
+        # ORT micro-benchmark (perf tool, not registered as a ctest). Picks
+        # CPU vs CUDA via SPEECH_CORE_ORT_PROVIDER at runtime, so the same
+        # binary serves both reports.
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_ort_models.cpp)
+            add_executable(bench_ort_models tests/bench_ort_models.cpp)
+            target_link_libraries(bench_ort_models PRIVATE speech_core_models)
+            target_compile_definitions(bench_ort_models PRIVATE
+                SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        endif()
     endif()
 
     # LiteRT model integration tests — require SPEECH_CORE_WITH_LITERT=ON.

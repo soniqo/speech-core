@@ -13,7 +13,9 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/litert_nemotron_streaming_stt.h"
+#include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
+#include "speech_core/models/litert_voxcpm2_tts.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +27,16 @@
 #include <fstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#else
+#include <sys/resource.h>
+#endif
 
 namespace {
 
@@ -199,6 +211,103 @@ void bench_parakeet_batch(const std::string& dir, int warmup, int runs) {
                 med, audio_seconds / (med / 1000.0));
 }
 
+double peak_rss_mb() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<double>(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0);
+    }
+    return 0.0;
+#else
+    struct rusage r{};
+    getrusage(RUSAGE_SELF, &r);
+#ifdef __APPLE__
+    return static_cast<double>(r.ru_maxrss) / (1024.0 * 1024.0);
+#else
+    return static_cast<double>(r.ru_maxrss) / 1024.0;
+#endif
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// VoxCPM2 — autoregressive TTS, the heaviest model. Wall time per step is the
+// thing that scales; RTF is steps × 160ms / wall_time. Single measured run
+// because each takes ~25 s and runs are deterministic with a pinned seed.
+// ---------------------------------------------------------------------------
+
+void bench_voxcpm2(const std::string& dir, int /*warmup*/, int /*runs*/) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string enc  = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string tok  = dir + "/tokenizer.json";
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::printf("[skip] voxcpm2 files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("\n=== VoxCPM2 TTS (LiteRT CPU) ===\n");
+    auto t_load = clk::now();
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, enc, dec, tok, /*hw_accel=*/false);
+    std::printf("model load: %.0f ms\n", ms_since(t_load));
+    tts.set_instruction("clear, natural delivery");
+    tts.set_max_steps(128);
+    tts.set_min_steps_before_stop(32);
+    tts.set_seed(4242);
+
+    const std::string text = "The quick brown fox jumps over the lazy dog";
+    size_t samples = 0;
+    auto t = clk::now();
+    tts.synthesize(text, "en",
+        [&](const float*, size_t n, bool) { samples += n; });
+    double wall_ms = ms_since(t);
+    int tokens = tts.tokens_generated();
+    double audio_s = static_cast<double>(samples) / 48000.0;  // VoxCPM2 = 48 kHz
+    double rtf = audio_s / (wall_ms / 1000.0);
+    double ms_per_step = wall_ms / std::max(1, tokens);
+    std::printf("  wall=%.0fms tokens=%d audio=%.2fs RTF=%.3fx ms_per_step=%.0fms rss=%.0fMB\n",
+                wall_ms, tokens, audio_s, rtf, ms_per_step, peak_rss_mb());
+    std::printf("  SUMMARY voxcpm2: RTF=%.3fx ms_per_step=%.0fms\n", rtf, ms_per_step);
+}
+
+// ---------------------------------------------------------------------------
+// Omnilingual CTC STT — fixed 5 s chunks, batch over the full fixture.
+// ---------------------------------------------------------------------------
+
+void bench_omnilingual(const std::string& dir, int warmup, int runs) {
+    std::string model = dir + "/omnilingual-ctc-300m.tflite";
+    std::string tokp  = dir + "/tokenizer.model";
+    if (!file_exists(model) || !file_exists(tokp)) {
+        std::printf("[skip] omnilingual files not in %s\n", dir.c_str());
+        return;
+    }
+    auto audio = load_audio_16k();
+    if (audio.empty()) { std::printf("[skip] no fixture\n"); return; }
+    const double audio_seconds = static_cast<double>(audio.size()) / 16000.0;
+
+    std::printf("\n=== Omnilingual CTC-300M (LiteRT CPU, audio=%.2fs) ===\n", audio_seconds);
+    auto t_load = clk::now();
+    speech_core::LiteRTOmnilingualStt stt(model, tokp, /*hw_accel=*/false);
+    std::printf("model load: %.0f ms\n", ms_since(t_load));
+
+    std::vector<double> all_ms;
+    std::string text;
+    for (int r = 0; r < warmup + runs; ++r) {
+        auto t = clk::now();
+        auto res = stt.transcribe(audio.data(), audio.size(), 16000);
+        double dt = ms_since(t);
+        if (r >= warmup) {
+            all_ms.push_back(dt);
+            text = res.text;
+            std::printf("  run %d: %.0f ms RTF=%.3fx text_len=%zu\n",
+                        r - warmup, dt, audio_seconds / (dt / 1000.0), res.text.size());
+        }
+    }
+    double med = pct(all_ms, 50);
+    std::printf("  SUMMARY omnilingual: %.0f ms RTF=%.3fx rss=%.0fMB text=\"%.80s\"\n",
+                med, audio_seconds / (med / 1000.0), peak_rss_mb(), text.c_str());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -213,5 +322,8 @@ int main(int argc, char** argv) {
 
     bench_nemotron_streaming(dir, warmup, runs);
     bench_parakeet_batch(dir, warmup, runs);
+    bench_omnilingual(dir, warmup, runs);
+    bench_voxcpm2(dir, warmup, runs);
+    std::printf("\n[peak RSS = %.0f MB across the run]\n", peak_rss_mb());
     return 0;
 }
