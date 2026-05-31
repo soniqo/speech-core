@@ -515,8 +515,21 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     }
     std::printf("  test_onnx_voxcpm2_load ... ");
 
-    // Just construct + destruct: confirms the four sessions load, the
+    // Construct + introspect: confirms all four ORT sessions load, the
     // tokenizer parses, and the I/O introspection paths don't throw.
+    //
+    // We deliberately do NOT exercise the audio paths (set_reference +
+    // synthesize) here because the smoke fixture is the random-init tiny
+    // config exported by speech-models for shape/numerical validation
+    // (kFeatDim=16, kHidden=128, ...). The C++ wrapper's internal
+    // tensor shapes mirror the production LiteRT bundle's constants
+    // (kFeatDim=64, kPatchSize=4, kHidden=2048 — see
+    // include/speech_core/models/litert_voxcpm2_tts.h:139-160), so the
+    // audio_encoder / audio_decoder / text_prefill calls would dim-mismatch
+    // against a tiny-config bundle. End-to-end AR-loop testing requires a
+    // bundle exported from the real openbmb/VoxCPM2 weights at the
+    // production config — that's a follow-up to running convert_onnx.py
+    // with --weights pointed at the downloaded checkpoint.
     speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
                                      audio_encoder, audio_decoder,
                                      tokenizer, /*hw_accel=*/false);
