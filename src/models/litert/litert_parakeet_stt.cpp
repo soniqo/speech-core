@@ -309,10 +309,6 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
         out_log.read(logits.data(), logits.size() * sizeof(float));
         out_c  .read(c_out.data(),  c_out.size()  * sizeof(float));
 
-        // Commit decoder state every step (matches the prod-verified wrapper).
-        h = h_out;
-        c = c_out;
-
         // argmax over tokens + blank (indices 0..kVocab inclusive).
         int   best_token = 0;
         float best_logit = logits[0];
@@ -336,6 +332,19 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
             prev_token = best_token;
             auto lang_it = lang_tokens_.find(best_token);
             if (lang_it != lang_tokens_.end()) detected_lang = lang_it->second;
+
+            // Commit LSTM state ONLY on non-blank emission. The predictor
+            // input changes only when we emit a token; on blank we keep
+            // the prior state and re-run the joint with the same predictor
+            // context against the next encoder frame. The ORT wrapper at
+            // src/models/parakeet/parakeet_stt.cpp:348-355 does the same
+            // — wiring this differently here was the root cause of the
+            // 34.6% LibriSpeech WER (vs 5.7% on ORT) reported in the
+            // bench/wer_*.csv comparison; mismatched predictor state on
+            // blank cascades produced empty utterances and mid-sentence
+            // collapse for ~half of dev-clean.
+            h = h_out;
+            c = c_out;
         }
 
         if (best_token == kBlank || best_dur > 0 || symbols_at_t >= kMaxSymbols) {
