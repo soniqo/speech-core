@@ -518,6 +518,66 @@ int run_corpus(const std::string& dir, const std::string& manifest_path,
     return 0;
 }
 
+int run_corpus_nemotron(const std::string& dir, const std::string& manifest_path) {
+    // Same dir-resolution shape as bench_nemotron: env override wins, otherwise
+    // `${dir}/nemotron-streaming-onnx`. Three model files + vocab JSON.
+    std::string nem_dir;
+    if (const char* p = std::getenv("SPEECH_NEMOTRON_ONNX_DIR")) nem_dir = p;
+    if (nem_dir.empty()) nem_dir = dir + "/nemotron-streaming-onnx";
+    std::string enc = nem_dir + "/nemotron-streaming-encoder.onnx";
+    std::string dec = nem_dir + "/nemotron-streaming-decoder.onnx";
+    std::string jnt = nem_dir + "/nemotron-streaming-joint.onnx";
+    std::string vcb = nem_dir + "/vocab.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt) || !file_exists(vcb)) {
+        std::fprintf(stderr, "nemotron files missing in %s\n", nem_dir.c_str());
+        return 1;
+    }
+    speech_core::OnnxNemotronStreamingStt stt(enc, dec, jnt, vcb, /*hw_accel=*/true);
+
+    std::ifstream m(manifest_path);
+    if (!m) { std::fprintf(stderr, "cannot open manifest %s\n", manifest_path.c_str()); return 1; }
+    std::printf("#uid,provider,audio_s,wall_ms,transcript\n");
+
+    constexpr size_t kChunkSamples = 1280;  // 80 ms @ 16 kHz — matches encoder stride
+
+    std::string line;
+    while (std::getline(m, line)) {
+        if (line.empty()) continue;
+        size_t c1 = line.find(','); if (c1 == std::string::npos) continue;
+        size_t c2 = line.find(',', c1 + 1); if (c2 == std::string::npos) continue;
+        std::string uid      = line.substr(0, c1);
+        std::string wav_path = line.substr(c1 + 1, c2 - c1 - 1);
+        auto wav = read_wav(wav_path);
+        if (wav.samples.empty()) {
+            std::fprintf(stderr, "skip %s: cannot read %s\n", uid.c_str(), wav_path.c_str());
+            continue;
+        }
+        std::vector<float> audio_16k = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+
+        std::string transcript;
+        auto t = clk::now();
+        stt.begin_stream(16000);
+        for (size_t off = 0; off < audio_16k.size(); off += kChunkSamples) {
+            size_t n = (kChunkSamples < audio_16k.size() - off)
+                       ? kChunkSamples : (audio_16k.size() - off);
+            auto partial = stt.push_chunk(audio_16k.data() + off, n);
+            if (!partial.text.empty()) transcript += partial.text;
+        }
+        auto final_r = stt.end_stream();
+        if (!final_r.text.empty()) transcript = final_r.text;
+        double wall = ms_since(t);
+        double audio_s = static_cast<double>(audio_16k.size()) / 16000.0;
+        for (char& ch : transcript) if (ch == ',') ch = ' ';
+        std::printf("%s,%s,%.2f,%.1f,%s\n", uid.c_str(), provider_label(),
+                    audio_s, wall, transcript.c_str());
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -528,13 +588,18 @@ int main(int argc, char** argv) {
     }
     // Corpus mode if --manifest <path> passed; else default fixture bench.
     // Optional --batch N (default 1) batches encoder calls.
+    // --nemotron-manifest <path> routes to the Nemotron streaming corpus
+    // harness instead (each utterance streamed in 80 ms chunks).
     std::string manifest;
+    std::string nemotron_manifest;
     int batch_size = 1;
     for (int i = 1; i + 1 < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--manifest") manifest = argv[i + 1];
+        else if (arg == "--nemotron-manifest") nemotron_manifest = argv[i + 1];
         else if (arg == "--batch") batch_size = std::atoi(argv[i + 1]);
     }
+    if (!nemotron_manifest.empty()) return run_corpus_nemotron(dir, nemotron_manifest);
     if (!manifest.empty()) return run_corpus(dir, manifest, batch_size);
     std::printf("#model,provider,metric,load_ms,wall_ms,rtf,rss_mb,extra\n");
     bench_silero(dir);
