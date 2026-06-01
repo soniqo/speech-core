@@ -233,35 +233,67 @@ def print_table(stats: List[EngineStats]) -> None:
 
 
 def print_verdict(stats: List[EngineStats]) -> None:
-    by_label = {s.label: s for s in stats}
-    baseline = by_label.get("litert")
-    candidate = by_label.get("ort-cuda")
-    if baseline is None or candidate is None:
-        return
+    """Two-tier verdict:
 
-    delta = candidate.wer_mean - baseline.wer_mean
-    abs_delta_pct = abs(delta) * 100.0
+      Tier 1 (the export-fidelity gate): each ORT candidate vs LiteRT.
+        Same inference mode (streaming, 80 ms), so the delta isolates the
+        ONNX export from any other difference. Threshold: 1.0% absolute.
+
+      Tier 2 (the ceiling gate): each engine vs NeMo FP32 reference.
+        Different inference mode (offline vs streaming) so the gap is the
+        sum of (a) streaming penalty and (b) any quantization cost. This
+        is informational, not a hard publish gate.
+    """
+    by_label = {s.label: s for s in stats}
     threshold_pct = 1.0
 
-    if abs_delta_pct <= threshold_pct:
-        print(
-            f"[OK]  ort-cuda WER within {threshold_pct:.1f}% absolute of litert-cpu baseline "
-            f"-- safe to publish."
-        )
-    else:
-        worse_or_better = "worse" if delta > 0 else "better"
-        print(
-            f"[WARN] ort-cuda WER is {abs_delta_pct:.1f}% absolute {worse_or_better} than "
-            f"litert-cpu -- investigate before publishing."
-        )
+    litert = by_label.get("litert")
+    nemo   = by_label.get("nemo-fp32")
+
+    # Tier 1: ORT candidates vs LiteRT (same streaming mode → export delta).
+    for cand_label in ("ort-cuda", "ort-cuda-int8", "ort-cpu"):
+        cand = by_label.get(cand_label)
+        if cand is None or litert is None:
+            continue
+        delta = cand.wer_mean - litert.wer_mean
+        abs_delta_pct = abs(delta) * 100.0
+        if abs_delta_pct <= threshold_pct:
+            print(
+                f"[OK]   {cand_label} WER within {threshold_pct:.1f}% absolute of litert "
+                f"({_fmt_pct(cand.wer_mean)} vs {_fmt_pct(litert.wer_mean)}, "
+                f"delta {delta*100:+.2f} pts) -- export faithful."
+            )
+        else:
+            worse_or_better = "worse" if delta > 0 else "better"
+            print(
+                f"[WARN] {cand_label} WER is {abs_delta_pct:.1f}% absolute {worse_or_better} "
+                f"than litert ({_fmt_pct(cand.wer_mean)} vs {_fmt_pct(litert.wer_mean)}) "
+                f"-- investigate before publishing."
+            )
+
+    # Tier 2: streaming penalty / quantization cost vs NeMo FP32 reference.
+    if nemo is not None:
+        print()
+        print(f"NeMo FP32 reference (offline): {_fmt_pct(nemo.wer_mean)} mean WER, "
+              f"{_fmt_pct(nemo.wer_p50)} p50 -- model's quality ceiling.")
+        for other in stats:
+            if other.label == "nemo-fp32":
+                continue
+            gap = other.wer_mean - nemo.wer_mean
+            print(f"  {other.label:>15}: +{gap*100:5.2f} pts vs ref (streaming "
+                  f"+ quantization penalty)")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Compare Nemotron streaming STT engines on WER/RTF.")
     parser.add_argument("--manifest", required=True, help="Path to manifest CSV (uid,wav_path,reference).")
     parser.add_argument("--ort-cuda", dest="ort_cuda", default=None, help="Path to ORT CUDA results CSV.")
+    parser.add_argument("--ort-cuda-int8", dest="ort_cuda_int8", default=None,
+                        help="Path to ORT CUDA INT8-encoder results CSV.")
     parser.add_argument("--ort-cpu", dest="ort_cpu", default=None, help="Path to ORT CPU results CSV.")
     parser.add_argument("--litert", dest="litert", default=None, help="Path to LiteRT results CSV.")
+    parser.add_argument("--nemo-fp32", dest="nemo_fp32", default=None,
+                        help="Path to NeMo PyTorch FP32 reference results CSV (offline mode).")
     args = parser.parse_args(argv)
 
     refs = load_manifest(args.manifest)
@@ -270,7 +302,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     sources: List[Tuple[str, Optional[str]]] = [
+        ("nemo-fp32", args.nemo_fp32),
         ("ort-cuda", args.ort_cuda),
+        ("ort-cuda-int8", args.ort_cuda_int8),
         ("ort-cpu", args.ort_cpu),
         ("litert", args.litert),
     ]
