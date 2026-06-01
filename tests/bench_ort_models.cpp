@@ -13,6 +13,7 @@
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_nemotron_streaming_stt.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
@@ -266,6 +267,71 @@ void bench_kokoro(const std::string& dir) {
 // Skips when missing or tiny-config (max_text < 256).
 // ---------------------------------------------------------------------------
 
+void bench_nemotron(const std::string& dir) {
+    // Nemotron-streaming bundle lives outside scripts/models — we look for it
+    // via SPEECH_NEMOTRON_ONNX_DIR (the converter's `--output-dir`) with a
+    // sensible fallback for the local dev path.
+    std::string nem_dir;
+    if (const char* p = std::getenv("SPEECH_NEMOTRON_ONNX_DIR")) nem_dir = p;
+    if (nem_dir.empty()) nem_dir = dir + "/nemotron-streaming-onnx";
+    std::string enc = nem_dir + "/nemotron-streaming-encoder.onnx";
+    std::string dec = nem_dir + "/nemotron-streaming-decoder.onnx";
+    std::string jnt = nem_dir + "/nemotron-streaming-joint.onnx";
+    std::string voc = nem_dir + "/vocab.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt) || !file_exists(voc)) {
+        std::fprintf(stderr, "[skip] nemotron streaming files in %s\n", nem_dir.c_str());
+        return;
+    }
+    auto audio = load_audio_16k();
+    if (audio.empty()) { std::fprintf(stderr, "[skip] no fixture\n"); return; }
+
+    auto t_load = clk::now();
+    speech_core::OnnxNemotronStreamingStt stt(enc, dec, jnt, voc, /*hw_accel=*/true);
+    double load_ms = ms_since(t_load);
+
+    // Match the LiteRT bench's 80 ms streaming cadence (1280 samples @ 16 kHz)
+    // — only the runtime differs. One warmup full pass; then 3 measured runs.
+    constexpr size_t kChunk = 1280;
+    {
+        stt.begin_stream(16000);
+        for (size_t off = 0; off < audio.size(); off += kChunk) {
+            size_t len = (kChunk < audio.size() - off) ? kChunk : (audio.size() - off);
+            (void)stt.push_chunk(audio.data() + off, len);
+        }
+        stt.end_stream();
+    }
+
+    std::vector<double> walls, chunk_ms, first_partials;
+    std::string last_text;
+    for (int r = 0; r < 3; ++r) {
+        stt.begin_stream(16000);
+        auto t_stream = clk::now();
+        double first_partial_ms = -1.0;
+        for (size_t off = 0; off < audio.size(); off += kChunk) {
+            size_t len = (kChunk < audio.size() - off) ? kChunk : (audio.size() - off);
+            auto t_c = clk::now();
+            auto p = stt.push_chunk(audio.data() + off, len);
+            chunk_ms.push_back(ms_since(t_c));
+            if (first_partial_ms < 0 && !p.text.empty()) first_partial_ms = ms_since(t_stream);
+        }
+        walls.push_back(ms_since(t_stream));
+        first_partials.push_back(first_partial_ms);
+        last_text = stt.end_stream().text;
+    }
+    double wall_ms = pct(walls, 50);
+    double audio_s = static_cast<double>(audio.size()) / 16000.0;
+    for (char& c : last_text) if (c == ',') c = ' ';
+    if (last_text.size() > 80) last_text.resize(80);
+    char ex[256];
+    std::snprintf(ex, sizeof(ex),
+                  "p50=%.0fms p95=%.0fms chunk_p50=%.1fms chunk_p95=%.1fms first_partial=%.0fms text=\"%s\"",
+                  pct(walls, 50), pct(walls, 95),
+                  pct(chunk_ms, 50), pct(chunk_ms, 95),
+                  pct(first_partials, 50), last_text.c_str());
+    emit("nemotron-streaming", "stream", load_ms, wall_ms,
+         audio_s / (wall_ms / 1000.0), peak_rss_mb(), ex);
+}
+
 void bench_voxcpm2(const std::string& /*dir*/) {
     const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
     std::string vox = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
@@ -475,5 +541,6 @@ int main(int argc, char** argv) {
     bench_parakeet(dir);
     bench_kokoro(dir);
     bench_voxcpm2(dir);
+    bench_nemotron(dir);
     return 0;
 }
