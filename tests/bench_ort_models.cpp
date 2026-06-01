@@ -13,6 +13,7 @@
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
 
@@ -257,6 +258,76 @@ void bench_kokoro(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// VoxCPM2 ONNX TTS — the comparison the LiteRT bench shows at 0.10x RTF / ~12 GB
+// RSS / 1.55 s per AR step on CPU. The ONNX wrapper drives the same 4-graph
+// pipeline; with hw_accel=true (CUDA) the per-step compute should drop
+// substantially (text_prefill once + token_step ×N is where the GPU win lives).
+// Picks the bundle from $SPEECH_VOXCPM2_ONNX_DIR or /tmp/voxcpm2-onnx.
+// Skips when missing or tiny-config (max_text < 256).
+// ---------------------------------------------------------------------------
+
+void bench_voxcpm2(const std::string& /*dir*/) {
+    const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
+    std::string vox = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
+    std::string prefill = vox + "/voxcpm2-text-prefill.onnx";
+    std::string step    = vox + "/voxcpm2-token-step.onnx";
+    std::string enc     = vox + "/voxcpm2-audio-encoder.onnx";
+    std::string dec     = vox + "/voxcpm2-audio-decoder.onnx";
+    std::string tok     = vox + "/tokenizer.json";
+    if (!file_exists(prefill) || !file_exists(step) || !file_exists(enc)
+        || !file_exists(dec) || !file_exists(tok)) {
+        std::fprintf(stderr, "[skip] voxcpm2 bundle\n");
+        return;
+    }
+
+    auto t_load = clk::now();
+    speech_core::OnnxVoxCPM2Tts tts(prefill, step, enc, dec, tok,
+                                     /*hw_accel=*/true);
+    double load_ms = ms_since(t_load);
+    if (tts.max_text_tokens() < 256) {
+        std::fprintf(stderr, "[skip] voxcpm2 bundle is tiny-config (max_text=%d)\n",
+                     tts.max_text_tokens());
+        return;
+    }
+    tts.set_seed(4242);
+    tts.set_max_steps(32);
+    tts.set_min_steps_before_stop(8);
+
+    const std::string text = "The quick brown fox jumps over the lazy dog";
+
+    // Warmup — one short run to populate ORT caches + amortize CUDA EP init.
+    {
+        size_t s = 0;
+        tts.synthesize(text, "en",
+                       [&](const float*, size_t n, bool) { s += n; });
+        (void)s;
+    }
+
+    // Measured: 3 runs, take the median wall.
+    std::vector<double> walls;
+    size_t last_samples = 0;
+    int    last_tokens  = 0;
+    for (int i = 0; i < 3; ++i) {
+        size_t samples = 0;
+        auto t = clk::now();
+        tts.synthesize(text, "en",
+                       [&](const float*, size_t n, bool) { samples += n; });
+        walls.push_back(ms_since(t));
+        last_samples = samples;
+        last_tokens  = tts.tokens_generated();
+    }
+    double med = pct(walls, 50);
+    double audio_s = static_cast<double>(last_samples) / 48000.0;  // VoxCPM2 outputs 48 kHz
+    double ms_per_step = (last_tokens > 0) ? med / last_tokens : 0.0;
+    char ex[256];
+    std::snprintf(ex, sizeof(ex),
+                  "p50=%.0fms p95=%.0fms audio=%.2fs steps=%d ms_per_step=%.0fms",
+                  med, pct(walls, 95), audio_s, last_tokens, ms_per_step);
+    emit("voxcpm2-tts", "synth", load_ms, med, audio_s / (med / 1000.0),
+         peak_rss_mb(), ex);
+}
+
+// ---------------------------------------------------------------------------
 // Corpus mode — read a CSV manifest (uid,wav_path,reference) and transcribe
 // each utterance with Parakeet. Per-utterance latency + transcript go to
 // stdout for the Python orchestrator to aggregate (WER computed there).
@@ -403,5 +474,6 @@ int main(int argc, char** argv) {
     bench_silero(dir);
     bench_parakeet(dir);
     bench_kokoro(dir);
+    bench_voxcpm2(dir);
     return 0;
 }

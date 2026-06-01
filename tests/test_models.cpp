@@ -515,21 +515,9 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     }
     std::printf("  test_onnx_voxcpm2_load ... ");
 
-    // Construct + introspect: confirms all four ORT sessions load, the
-    // tokenizer parses, and the I/O introspection paths don't throw.
-    //
-    // We deliberately do NOT exercise the audio paths (set_reference +
-    // synthesize) here because the smoke fixture is the random-init tiny
-    // config exported by speech-models for shape/numerical validation
-    // (kFeatDim=16, kHidden=128, ...). The C++ wrapper's internal
-    // tensor shapes mirror the production LiteRT bundle's constants
-    // (kFeatDim=64, kPatchSize=4, kHidden=2048 — see
-    // include/speech_core/models/litert_voxcpm2_tts.h:139-160), so the
-    // audio_encoder / audio_decoder / text_prefill calls would dim-mismatch
-    // against a tiny-config bundle. End-to-end AR-loop testing requires a
-    // bundle exported from the real openbmb/VoxCPM2 weights at the
-    // production config — that's a follow-up to running convert_onnx.py
-    // with --weights pointed at the downloaded checkpoint.
+    // Phase 1 (always): construct + introspect. Confirms all four ORT
+    // sessions load, the tokenizer parses, and the I/O introspection paths
+    // don't throw.
     speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
                                      audio_encoder, audio_decoder,
                                      tokenizer, /*hw_accel=*/false);
@@ -537,7 +525,123 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     REQUIRE(tts.max_text_tokens() > 0);
     REQUIRE(!tts.has_reference());
 
-    std::printf("ok (max_text=%d)\n", tts.max_text_tokens());
+    // Phase 2 (production-config only): exercise the runtime audio paths
+    // end-to-end with set_reference + a few AR steps + at least one
+    // audio_decoder Run. We gate on max_text_tokens() >= 256 because the
+    // tiny shape-validation bundle from speech-models exports with
+    // max_text=32 (kFeatDim=16, kHidden=128) — those tensor dims would
+    // mismatch the C++ wrapper's production constants (kFeatDim=64,
+    // kPatchSize=4, kHidden=2048; see litert_voxcpm2_tts.h:139-160).
+    // A real-weights export from openbmb/VoxCPM2 keeps max_text=512.
+    if (tts.max_text_tokens() < 256) {
+        std::printf("ok (max_text=%d, tiny config — skip runtime audio test)\n",
+                    tts.max_text_tokens());
+        return;
+    }
+    // Encoder Run: short 220 Hz ramp as reference clip.
+    std::vector<float> ref(16000 * 2, 0.0f);
+    for (size_t i = 0; i < ref.size(); ++i) {
+        ref[i] = 0.05f * std::sin(2.0f * kPi * 220.0f * static_cast<float>(i) / 16000.0f);
+    }
+    tts.set_reference(ref.data(), ref.size(), 16000);
+    REQUIRE(tts.has_reference());
+
+    // Decoder Run: cap the AR loop tight so the test stays bounded.
+    tts.set_seed(4242);
+    tts.set_max_steps(16);
+    tts.set_min_steps_before_stop(0);
+    size_t samples = 0;
+    bool got_final = false;
+    bool any_nonfinite = false;
+    tts.synthesize("hi", "en",
+        [&](const float* s, size_t n, bool is_final) {
+            samples += n;
+            if (is_final) got_final = true;
+            for (size_t i = 0; i < n; ++i) {
+                if (!std::isfinite(s[i])) any_nonfinite = true;
+            }
+        });
+    REQUIRE(got_final);
+    REQUIRE(samples > 0);
+    REQUIRE(!any_nonfinite);
+
+    std::printf("ok (max_text=%d production tokens=%d samples=%zu)\n",
+                tts.max_text_tokens(), tts.tokens_generated(), samples);
+}
+
+// ---------------------------------------------------------------------------
+// VoxCPM2 ONNX → Parakeet ORT round-trip — mirrors test_kokoro_parakeet_roundtrip.
+// Synthesizes the pangram via the ONNX VoxCPM2 wrapper, resamples to 16 kHz,
+// and asserts ≥ 4 of the 6 content words land in the Parakeet ORT transcript.
+// Same gating as test_onnx_voxcpm2_load (production config required).
+// ---------------------------------------------------------------------------
+
+void test_onnx_voxcpm2_parakeet_roundtrip(const std::string& dir) {
+    const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
+    std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
+
+    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
+    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
+    std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
+    std::string tokenizer     = vox_dir + "/tokenizer.json";
+    std::string parakeet_enc  = dir + "/parakeet-encoder-int8.onnx";
+    std::string parakeet_dec  = dir + "/parakeet-decoder-joint-int8.onnx";
+    std::string parakeet_voc  = dir + "/vocab.json";
+
+    if (!file_exists(text_prefill) || !file_exists(token_step)
+        || !file_exists(audio_encoder) || !file_exists(audio_decoder)
+        || !file_exists(tokenizer)
+        || !file_exists(parakeet_enc) || !file_exists(parakeet_dec)
+        || !file_exists(parakeet_voc))
+    {
+        std::printf("  [skip] roundtrip needs VoxCPM2 ONNX bundle + parakeet\n");
+        return;
+    }
+
+    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+                                     audio_encoder, audio_decoder,
+                                     tokenizer, /*hw_accel=*/true);
+    if (tts.max_text_tokens() < 256) {
+        std::printf("  [skip] roundtrip needs production-config VoxCPM2 bundle "
+                    "(max_text=%d)\n", tts.max_text_tokens());
+        return;
+    }
+    std::printf("  test_onnx_voxcpm2_parakeet_roundtrip ... ");
+
+    tts.set_seed(4242);
+    tts.set_max_steps(128);
+    tts.set_min_steps_before_stop(32);
+
+    const std::string phrase = "The quick brown fox jumps over the lazy dog";
+    std::vector<float> audio_48k;
+    bool got_final = false;
+    tts.synthesize(phrase, "en",
+        [&](const float* s, size_t n, bool is_final) {
+            if (s && n) audio_48k.insert(audio_48k.end(), s, s + n);
+            if (is_final) got_final = true;
+        });
+    REQUIRE(got_final);
+    REQUIRE(!audio_48k.empty());
+
+    auto audio_16k = speech_core::Resampler::resample(
+        audio_48k.data(), audio_48k.size(), 48000, 16000);
+    REQUIRE(!audio_16k.empty());
+
+    speech_core::ParakeetStt stt(parakeet_enc, parakeet_dec, parakeet_voc,
+                                  /*hw_accel=*/true);
+    auto result = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+
+    std::string lower = to_lower(result.text);
+    const char* words[] = {"quick", "brown", "fox", "jumps", "lazy", "dog"};
+    int matched = 0;
+    for (const char* w : words) {
+        if (lower.find(w) != std::string::npos) ++matched;
+    }
+    std::printf("tokens=%d text=\"%s\" matched=%d/6 ",
+                tts.tokens_generated(), result.text.c_str(), matched);
+    REQUIRE(matched >= 4);
+    std::printf("ok\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +682,7 @@ int main() {
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_silero_vad_cuda);
     RUN(test_onnx_voxcpm2_load);
+    RUN(test_onnx_voxcpm2_parakeet_roundtrip);
     #undef RUN
 
     if (failures > 0) {
