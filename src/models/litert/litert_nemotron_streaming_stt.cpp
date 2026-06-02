@@ -74,36 +74,171 @@ LiteRTNemotronStreamingStt::LiteRTNemotronStreamingStt(
     // at larger chunk modes. Source: config.json streaming.outputFrames;
     // fall back to T_out - 1.
     output_frames_ = std::max(1, enc_t_out_ - 1);
+    // LiteRT's introspection of input tensor layouts is unreliable for our
+    // exports: the SignatureRunner's input-index order does not match the
+    // semantic forward() argument order, and the layouts come back in an
+    // arbitrary tensor-id order that may not put audio_signal at index 0.
+    // Worse, on the freshly-exported 560 ms bundle the introspection
+    // returned 80 ms-default dims for every input — i.e. it failed silently.
+    // Read everything we can from config.json (the canonical source) and
+    // only fall back to introspection / defaults when the file is missing.
     {
         std::string cfg_path = encoder_path;
         auto slash = cfg_path.find_last_of("/\\");
         if (slash != std::string::npos) cfg_path = cfg_path.substr(0, slash);
         cfg_path += "/config.json";
         std::string text = json::read_file(cfg_path);
-        if (!text.empty()) {
-            const std::string key = "\"outputFrames\"";
-            auto pos = text.find(key);
-            if (pos != std::string::npos) {
-                pos = text.find(':', pos);
-                if (pos != std::string::npos) {
-                    ++pos;
-                    while (pos < text.size()
-                           && (text[pos] == ' ' || text[pos] == '\t'
-                               || text[pos] == '\n' || text[pos] == '\r')) ++pos;
-                    int v = 0;
-                    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
-                        v = v * 10 + (text[pos] - '0');
-                        ++pos;
-                    }
-                    if (v > 0 && v <= enc_t_out_) output_frames_ = v;
-                }
+        auto read_int = [&](const std::string& key) -> int {
+            const std::string k = "\"" + key + "\"";
+            auto pos = text.find(k);
+            if (pos == std::string::npos) return -1;
+            pos = text.find(':', pos);
+            if (pos == std::string::npos) return -1;
+            ++pos;
+            while (pos < text.size()
+                   && (text[pos] == ' ' || text[pos] == '\t'
+                       || text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            int v = 0;
+            bool any = false;
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+                v = v * 10 + (text[pos] - '0'); ++pos; any = true;
             }
+            return any ? v : -1;
+        };
+        if (!text.empty()) {
+            int v;
+            if ((v = read_int("outputFrames"))    > 0) output_frames_         = v;
+            if ((v = read_int("melFrames"))       > 0) cfg_.actual_mel_frames = v;
+            if ((v = read_int("preCacheSize"))    > 0) cfg_.pre_cache_size    = v;
+            if ((v = read_int("attentionContext"))> 0) cfg_.attn_left_context = v;
+            if ((v = read_int("convCacheSize"))   > 0) cfg_.conv_cache_size   = v;
+            if ((v = read_int("encoderHidden"))   > 0) cfg_.encoder_hidden    = v;
+            if ((v = read_int("encoderLayers"))   > 0) cfg_.encoder_layers    = v;
+            if ((v = read_int("decoderHidden"))   > 0) cfg_.decoder_hidden    = v;
+            if ((v = read_int("decoderLayers"))   > 0) cfg_.decoder_layers    = v;
+            if ((v = read_int("vocabSize"))       > 0) { cfg_.vocab_size = v; cfg_.blank_id = v; }
+            // enc_t_out_ should match output_frames_ + lookahead frames; if
+            // tensor-layout introspection failed it's still the Config default
+            // (2) which is wrong for >80 ms. Derive from output_frames_ when
+            // both melFrames and outputFrames are present (T_out == output_frames
+            // for our exports — there's no lookahead frame in this NeMo
+            // streaming Conformer pipeline).
+            if (read_int("outputFrames") > 0) enc_t_out_ = output_frames_;
         }
     }
 
-    LOGI("Nemotron streaming: vocab=%zu enc_hidden=%d dec_hidden=%d T_out=%d output_frames=%d mel_frames=%d window=%d samples",
+    // Build the semantic-role -> signature-position mapping by reading the
+    // encoder's input/output names from its signature. Each tensor is named
+    // "serving_default_args_N"; the N is the original positional index from
+    // the Python wrapper's forward() args (so 0=mel, 1=mlen, 2=pre_cache,
+    // 3=cache_last_channel, 4=cache_last_time, 5=cache_last_channel_len).
+    // The published 80 ms bundle has identity mapping (pos N has args_N),
+    // but bundles produced by the WSL-side patched-NeMo + litert-torch 0.8
+    // path scramble the tensor-id order, leaving the semantic ID encoded
+    // only in the name. Without this remap, run_window() feeds buffers into
+    // the wrong slots and LiteRT rejects them with "Cannot auto-resize
+    // tensor args_2: no dims_signature exists" — same shape, wrong position.
+    {
+        LiteRtSignature sig = nullptr;
+        if (LiteRtGetModelSignature(enc_model_, 0, &sig) == kLiteRtStatusOk && sig) {
+            auto parse_args_id = [](const char* name) -> int {
+                if (!name) return -1;
+                // Try "args_N" (input naming) and "output_N" (output naming).
+                for (const char* token : {"args_", "output_"}) {
+                    const char* m = std::strstr(name, token);
+                    if (m) {
+                        int n = std::atoi(m + std::strlen(token));
+                        if (n >= 0 && n < 6) return n;
+                    }
+                }
+                // "StatefulPartitionedCall:N" fallback.
+                const char* colon = std::strrchr(name, ':');
+                if (colon) {
+                    int n = std::atoi(colon + 1);
+                    if (n >= 0 && n < 6) return n;
+                }
+                return -1;
+            };
+            // Inputs
+            int sem_to_pos_in[6] = {-1,-1,-1,-1,-1,-1};
+            for (int p = 0; p < 6; ++p) {
+                const char* name = nullptr;
+                if (LiteRtGetSignatureInputName(sig, p, &name) != kLiteRtStatusOk) continue;
+                int sem = parse_args_id(name);
+                if (sem >= 0) sem_to_pos_in[sem] = p;
+            }
+            bool full_in = true;
+            for (int s = 0; s < 6; ++s) if (sem_to_pos_in[s] < 0) full_in = false;
+            if (full_in) {
+                for (int s = 0; s < 6; ++s) enc_in_sig_pos_[s] = sem_to_pos_in[s];
+            }
+            // Outputs
+            int sem_to_pos_out[6] = {-1,-1,-1,-1,-1,-1};
+            for (int p = 0; p < 6; ++p) {
+                const char* name = nullptr;
+                if (LiteRtGetSignatureOutputName(sig, p, &name) != kLiteRtStatusOk) continue;
+                int sem = parse_args_id(name);
+                if (sem < 0) {
+                    const char* colon = name ? std::strrchr(name, ':') : nullptr;
+                    if (colon) sem = std::atoi(colon + 1);
+                }
+                if (sem >= 0 && sem < 6) sem_to_pos_out[sem] = p;
+            }
+            bool full_out = true;
+            for (int s = 0; s < 6; ++s) if (sem_to_pos_out[s] < 0) full_out = false;
+            if (full_out) {
+                for (int s = 0; s < 6; ++s) enc_out_sig_pos_[s] = sem_to_pos_out[s];
+            }
+        }
+        // Same scrambling can hit the decoder (3 in / 3 out). Joint has been
+        // identity in observed bundles, but we apply the same approach for
+        // safety if it ever scrambles.
+        LiteRtSignature dsig = nullptr;
+        if (LiteRtGetModelSignature(dec_model_, 0, &dsig) == kLiteRtStatusOk && dsig) {
+            auto parse3 = [](const char* name) -> int {
+                if (!name) return -1;
+                for (const char* token : {"args_", "output_"}) {
+                    const char* m = std::strstr(name, token);
+                    if (m) {
+                        int n = std::atoi(m + std::strlen(token));
+                        if (n >= 0 && n < 3) return n;
+                    }
+                }
+                const char* colon = std::strrchr(name, ':');
+                if (colon) {
+                    int n = std::atoi(colon + 1);
+                    if (n >= 0 && n < 3) return n;
+                }
+                return -1;
+            };
+            int dec_in_map[3] = {-1,-1,-1};
+            for (int p = 0; p < 3; ++p) {
+                const char* name = nullptr;
+                if (LiteRtGetSignatureInputName(dsig, p, &name) != kLiteRtStatusOk) continue;
+                int sem = parse3(name);
+                if (sem >= 0) dec_in_map[sem] = p;
+            }
+            bool fi = true;
+            for (int s = 0; s < 3; ++s) if (dec_in_map[s] < 0) fi = false;
+            if (fi) for (int s = 0; s < 3; ++s) dec_in_sig_pos_[s] = dec_in_map[s];
+
+            int dec_out_map[3] = {-1,-1,-1};
+            for (int p = 0; p < 3; ++p) {
+                const char* name = nullptr;
+                if (LiteRtGetSignatureOutputName(dsig, p, &name) != kLiteRtStatusOk) continue;
+                int sem = parse3(name);
+                if (sem >= 0) dec_out_map[sem] = p;
+            }
+            bool fo = true;
+            for (int s = 0; s < 3; ++s) if (dec_out_map[s] < 0) fo = false;
+            if (fo) for (int s = 0; s < 3; ++s) dec_out_sig_pos_[s] = dec_out_map[s];
+        }
+    }
+
+    LOGI("Nemotron streaming: vocab=%zu enc_hidden=%d dec_hidden=%d T_out=%d output_frames=%d mel_frames=%d pre_cache=%d attn=%d conv=%d window=%d samples",
          vocab_.size(), cfg_.encoder_hidden, cfg_.decoder_hidden, enc_t_out_,
-         output_frames_, cfg_.actual_mel_frames, chunk_samples());
+         output_frames_, cfg_.actual_mel_frames, cfg_.pre_cache_size,
+         cfg_.attn_left_context, cfg_.conv_cache_size, chunk_samples());
 }
 
 LiteRTNemotronStreamingStt::~LiteRTNemotronStreamingStt() {
@@ -184,8 +319,15 @@ void LiteRTNemotronStreamingStt::run_decoder_step(int64_t token_id) {
     LiteRtHostBuffer out_c    (env, t_state,  dec_c_.size() * sizeof(float));
 
     // decoder I/O: in [token, h, c] -> out [hidden, h_new, c_new]
-    LiteRtTensorBuffer ins [3] = { in_tok.raw(), in_h.raw(), in_c.raw() };
-    LiteRtTensorBuffer outs[3] = { out_hid.raw(), out_h.raw(), out_c.raw() };
+    // decoder I/O semantic order: in [token, h, c] -> out [hidden, h_new, c_new]
+    // Some 560 ms-style bundles scramble tensor IDs; remap via dec_in_sig_pos_.
+    LiteRtTensorBuffer sem_ins [3] = { in_tok.raw(), in_h.raw(), in_c.raw() };
+    LiteRtTensorBuffer sem_outs[3] = { out_hid.raw(), out_h.raw(), out_c.raw() };
+    LiteRtTensorBuffer ins[3], outs[3];
+    for (int s = 0; s < 3; ++s) {
+        ins [dec_in_sig_pos_[s]]  = sem_ins[s];
+        outs[dec_out_sig_pos_[s]] = sem_outs[s];
+    }
     litert_check(LiteRtRunCompiledModel(dec_compiled_, 0, 3, ins, 3, outs), "Nemotron decoder Run");
 
     out_hid.read(dec_hidden_.data(), dec_hidden_.size() * sizeof(float));
@@ -249,13 +391,25 @@ std::string LiteRTNemotronStreamingStt::run_window() {
     LiteRtHostBuffer out_clt (env, t_clt, cache_last_time_.size() * sizeof(float));
     LiteRtHostBuffer out_chl (env, t_i32, sizeof(int32_t));
 
-    // encoder I/O order (traced export):
+    // encoder I/O semantic order:
     //   in:  mel, mel_len, pre_cache, cache_last_channel, cache_last_time, ch_len
     //   out: encoded, encoded_len, pre_cache', cache_last_channel', cache_last_time', ch_len'
-    LiteRtTensorBuffer eins [6] = { in_mel.raw(), in_mlen.raw(), in_pre.raw(),
-                                    in_clc.raw(), in_clt.raw(), in_chl.raw() };
-    LiteRtTensorBuffer eouts[6] = { out_enc.raw(), out_elen.raw(), out_pre.raw(),
-                                    out_clc.raw(), out_clt.raw(), out_chl.raw() };
+    // The actual signature position of each tensor depends on the bundle:
+    // identity for the published 80 ms bundle, scrambled for our newly-
+    // exported bundles. enc_in_sig_pos_/enc_out_sig_pos_ remap.
+    LiteRtTensorBuffer sem_eins[6] = {
+        in_mel.raw(), in_mlen.raw(), in_pre.raw(),
+        in_clc.raw(), in_clt.raw(), in_chl.raw()
+    };
+    LiteRtTensorBuffer sem_eouts[6] = {
+        out_enc.raw(), out_elen.raw(), out_pre.raw(),
+        out_clc.raw(), out_clt.raw(), out_chl.raw()
+    };
+    LiteRtTensorBuffer eins[6], eouts[6];
+    for (int s = 0; s < 6; ++s) {
+        eins [enc_in_sig_pos_[s]]  = sem_eins[s];
+        eouts[enc_out_sig_pos_[s]] = sem_eouts[s];
+    }
     litert_check(LiteRtRunCompiledModel(enc_compiled_, 0, 6, eins, 6, eouts), "Nemotron encoder Run");
 
     // Roll caches forward for the next window.

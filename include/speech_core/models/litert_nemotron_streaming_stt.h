@@ -92,6 +92,16 @@ private:
     int    enc_t_out_     = 2;  // encoder output frames per window (read at load)
     int    output_frames_ = 1;  // committed frames per window (T_out minus lookahead;
                                 // overridden from config.json's streaming.outputFrames).
+    // Encoder signature input position (0..5) per semantic role. The published
+    // 80 ms bundle has identity mapping (args_N at position N), but bundles
+    // re-exported via the agent's WSL patched-NeMo path have a jumbled
+    // tensor-id order (args_5 at pos 0, etc.). Built at load time by parsing
+    // the "serving_default_args_N" suffix from LiteRtGetSignatureInputName.
+    // Default to identity; only updated if name parsing succeeds.
+    int    enc_in_sig_pos_[6]  = {0, 1, 2, 3, 4, 5};
+    int    enc_out_sig_pos_[6] = {0, 1, 2, 3, 4, 5};
+    int    dec_in_sig_pos_[3]  = {0, 1, 2};
+    int    dec_out_sig_pos_[3] = {0, 1, 2};
     std::vector<std::string> vocab_;
 
     // ---- per-stream state ----
