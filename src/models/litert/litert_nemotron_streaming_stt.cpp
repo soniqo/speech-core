@@ -338,10 +338,22 @@ PartialResult LiteRTNemotronStreamingStt::push_chunk(const float* audio, size_t 
 }
 
 void LiteRTNemotronStreamingStt::flush_stream() {
-    // No-op: only full windows are decoded; a trailing partial window is held.
+    // Pad any leftover partial window with silence so the encoder gets
+    // a final pass on the trailing audio. Otherwise the last 0..chunk_ms
+    // of every utterance is dropped — bucketing the LibriSpeech-100
+    // corpus on the ORT path (same architecture, same export contract)
+    // showed this trailing-loss concentrated 7.23 absolute WER points
+    // on utterances <5s. The same bug bites here.
+    if (!stream_init_) return;
+    if (pending_.empty()) return;
+    const int win = chunk_samples();
+    if (static_cast<int>(pending_.size()) >= win) return;
+    pending_.resize(static_cast<size_t>(win), 0.0f);
+    accumulated_text_ += run_window();
 }
 
 TranscriptionResult LiteRTNemotronStreamingStt::end_stream() {
+    flush_stream();
     TranscriptionResult out;
     out.text = accumulated_text_;
     stream_init_ = false;

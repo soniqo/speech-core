@@ -526,10 +526,26 @@ PartialResult OnnxNemotronStreamingStt::push_chunk(const float* audio, size_t le
 }
 
 void OnnxNemotronStreamingStt::flush_stream() {
-    // No-op: only full windows are decoded; a trailing partial window is held.
+    // Pad any leftover partial window with silence so the encoder gets
+    // a final pass on the trailing audio. Otherwise the last 0..chunk_ms
+    // of every utterance is dropped — on a 4.59 s LibriSpeech utterance
+    // with chunk_samples=10080 (~630 ms) that's the last ~180 ms,
+    // typically 1-3 trailing words (e.g. "Quilter M A" -> "Quilter M",
+    // "in a London theatre" -> "in a"). Bucketing the LibriSpeech-100
+    // corpus shows the gap vs NeMo offline concentrates on short
+    // utterances (<5s: +7.23 pts vs 5-10s: +1.85 pts) — exactly the
+    // signature of a fixed per-utterance trailing-loss being a larger
+    // fraction of shorter audio.
+    if (!stream_init_) return;
+    if (pending_.empty()) return;
+    const int win = chunk_samples();
+    if (static_cast<int>(pending_.size()) >= win) return;  // run_window will get it
+    pending_.resize(static_cast<size_t>(win), 0.0f);
+    accumulated_text_ += run_window();
 }
 
 TranscriptionResult OnnxNemotronStreamingStt::end_stream() {
+    flush_stream();
     TranscriptionResult out;
     out.text = accumulated_text_;
     stream_init_ = false;
