@@ -105,7 +105,9 @@ private:
     IoNames jnt_io_;
 
     Config cfg_;
-    int    enc_t_out_ = 2;  // encoder output frames per window (read at load)
+    int    enc_t_out_     = 2;  // encoder output frames per window (read at load)
+    int    output_frames_ = 1;  // committed frames per window (T_out minus lookahead;
+                                // overridden from config.json's streaming.outputFrames).
     std::vector<std::string> vocab_;
 
     // ---- per-stream state ----

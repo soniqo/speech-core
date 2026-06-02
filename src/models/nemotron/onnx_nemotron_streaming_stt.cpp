@@ -101,8 +101,124 @@ OnnxNemotronStreamingStt::OnnxNemotronStreamingStt(
         api_->ReleaseTypeInfo(ti);
     }
 
-    LOGI("Nemotron streaming (ORT): vocab=%zu enc_hidden=%d dec_hidden=%d T_out=%d window=%d samples",
-         vocab_.size(), cfg_.encoder_hidden, cfg_.decoder_hidden, enc_t_out_, chunk_samples());
+    // Encoder input[0] = audio_signal [1, mel_bins, frames]; read frames to
+    // auto-detect chunk size. Different exports pin different chunk_ms
+    // (80/160/560/1120 -> 9/17/64/121 mel frames). Without this, the wrapper
+    // assumes 80ms and feeds misaligned windows to a larger-chunk export.
+    OrtTypeInfo* in_ti = nullptr;
+    if (api_->SessionGetInputTypeInfo(enc_, 0, &in_ti) == nullptr) {
+        const OrtTensorTypeAndShapeInfo* shape = nullptr;
+        if (api_->CastTypeInfoToTensorInfo(in_ti, &shape) == nullptr && shape) {
+            size_t rank = 0;
+            api_->GetDimensionsCount(shape, &rank);
+            if (rank >= 3) {
+                std::vector<int64_t> dims(rank);
+                api_->GetDimensions(shape, dims.data(), rank);
+                if (dims[2] > 0) cfg_.actual_mel_frames = static_cast<int>(dims[2]);
+            }
+        }
+        api_->ReleaseTypeInfo(in_ti);
+    }
+
+    // Encoder input[2] = pre_cache [1, mel_bins, pre_cache_size]. The
+    // pre_cache_size pin differs across chunk-mode exports (16 at 80/160 ms,
+    // 9 at 560/1120 ms) and the wrong size shape-mismatches the Run call
+    // (which on the CUDA EP fails silently — exit code 0, no transcript).
+    OrtTypeInfo* in_ti2 = nullptr;
+    if (api_->SessionGetInputTypeInfo(enc_, 2, &in_ti2) == nullptr) {
+        const OrtTensorTypeAndShapeInfo* shape = nullptr;
+        if (api_->CastTypeInfoToTensorInfo(in_ti2, &shape) == nullptr && shape) {
+            size_t rank = 0;
+            api_->GetDimensionsCount(shape, &rank);
+            if (rank >= 3) {
+                std::vector<int64_t> dims(rank);
+                api_->GetDimensions(shape, dims.data(), rank);
+                if (dims[2] > 0) cfg_.pre_cache_size = static_cast<int>(dims[2]);
+            }
+        }
+        api_->ReleaseTypeInfo(in_ti2);
+    }
+
+    // Encoder input[3] = cache_last_channel [L, 1, attn_left, H]. Auto-detect
+    // attn_left_context too, in case any chunk-mode export deviates from 70.
+    OrtTypeInfo* in_ti3 = nullptr;
+    if (api_->SessionGetInputTypeInfo(enc_, 3, &in_ti3) == nullptr) {
+        const OrtTensorTypeAndShapeInfo* shape = nullptr;
+        if (api_->CastTypeInfoToTensorInfo(in_ti3, &shape) == nullptr && shape) {
+            size_t rank = 0;
+            api_->GetDimensionsCount(shape, &rank);
+            if (rank >= 4) {
+                std::vector<int64_t> dims(rank);
+                api_->GetDimensions(shape, dims.data(), rank);
+                if (dims[0] > 0) cfg_.encoder_layers    = static_cast<int>(dims[0]);
+                if (dims[2] > 0) cfg_.attn_left_context = static_cast<int>(dims[2]);
+                if (dims[3] > 0) cfg_.encoder_hidden    = static_cast<int>(dims[3]);
+            }
+        }
+        api_->ReleaseTypeInfo(in_ti3);
+    }
+
+    // Encoder input[4] = cache_last_time [L, 1, H, conv_cache_size]. Auto-
+    // detect conv_cache_size (kernel - 1; typically 8 but worth confirming).
+    OrtTypeInfo* in_ti4 = nullptr;
+    if (api_->SessionGetInputTypeInfo(enc_, 4, &in_ti4) == nullptr) {
+        const OrtTensorTypeAndShapeInfo* shape = nullptr;
+        if (api_->CastTypeInfoToTensorInfo(in_ti4, &shape) == nullptr && shape) {
+            size_t rank = 0;
+            api_->GetDimensionsCount(shape, &rank);
+            if (rank >= 4) {
+                std::vector<int64_t> dims(rank);
+                api_->GetDimensions(shape, dims.data(), rank);
+                if (dims[3] > 0) cfg_.conv_cache_size = static_cast<int>(dims[3]);
+            }
+        }
+        api_->ReleaseTypeInfo(in_ti4);
+    }
+
+    // Committed encoder frames per window. The cache-aware streaming encoder
+    // emits T_out frames per Run, of which the FIRST `output_frames_` are
+    // committed (their text gets emitted into the transcript) and the
+    // remaining T_out - output_frames_ are right-context lookahead that gets
+    // re-computed (with more left context) in the next window. Without this,
+    // the wrapper only decoded frame 0 regardless of chunk size — fine for
+    // 80 ms (output_frames=1) but catastrophic for 160/560/1120 ms exports
+    // where output_frames is 2/7/14.
+    //
+    // Source of truth: config.json's streaming.outputFrames field. Fall back
+    // to T_out - 1 (assume one lookahead frame) if config.json isn't on disk.
+    output_frames_ = std::max(1, enc_t_out_ - 1);
+    {
+        // Look for config.json next to the encoder. Strip the filename.
+        std::string cfg_path = encoder_path;
+        auto slash = cfg_path.find_last_of("/\\");
+        if (slash != std::string::npos) cfg_path = cfg_path.substr(0, slash);
+        cfg_path += "/config.json";
+        std::string text = json::read_file(cfg_path);
+        if (!text.empty()) {
+            // Cheap scan for "outputFrames": <int>. Tolerates nesting.
+            const std::string key = "\"outputFrames\"";
+            auto pos = text.find(key);
+            if (pos != std::string::npos) {
+                pos = text.find(':', pos);
+                if (pos != std::string::npos) {
+                    ++pos;
+                    while (pos < text.size()
+                           && (text[pos] == ' ' || text[pos] == '\t'
+                               || text[pos] == '\n' || text[pos] == '\r')) ++pos;
+                    int v = 0;
+                    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+                        v = v * 10 + (text[pos] - '0');
+                        ++pos;
+                    }
+                    if (v > 0 && v <= enc_t_out_) output_frames_ = v;
+                }
+            }
+        }
+    }
+
+    LOGI("Nemotron streaming (ORT): vocab=%zu enc_hidden=%d dec_hidden=%d T_out=%d output_frames=%d mel_frames=%d window=%d samples",
+         vocab_.size(), cfg_.encoder_hidden, cfg_.decoder_hidden, enc_t_out_,
+         output_frames_, cfg_.actual_mel_frames, chunk_samples());
 }
 
 OnnxNemotronStreamingStt::~OnnxNemotronStreamingStt() {
@@ -273,10 +389,20 @@ std::string OnnxNemotronStreamingStt::run_window() {
 
     OrtValue* enc_in[6]  = {t_mel, t_mlen, t_pre, t_clc, t_clt, t_chl};
     OrtValue* enc_out[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    if (std::getenv("NEMOTRON_DEBUG")) {
+        std::fprintf(stderr,
+            "[nem] run_window: mel=%dx%d pcm=%zu pre_cache=%zu clc=%zu clt=%zu ch_len=%lld\n",
+            cfg_.mel_bins, n_frames, pcm.size(), pre_cache_.size(),
+            cache_last_channel_.size(), cache_last_time_.size(),
+            static_cast<long long>(ch_len));
+    }
     ort_check(api_, api_->Run(
         enc_, nullptr,
         enc_io_.in_names.data(),  enc_in,  enc_io_.in_names.size(),
         enc_io_.out_names.data(), enc_io_.out_names.size(), enc_out));
+    if (std::getenv("NEMOTRON_DEBUG")) {
+        std::fprintf(stderr, "[nem] encoder Run ok\n");
+    }
 
     auto copy_out = [&](OrtValue* v, void* dst, size_t bytes) {
         void* p = nullptr;
@@ -320,47 +446,56 @@ std::string OnnxNemotronStreamingStt::run_window() {
     api_->ReleaseValue(t_mlen);
     api_->ReleaseValue(t_mel);
 
-    // Greedy RNN-T over the FIRST encoder frame only (frame 0 = first
-    // encoder_hidden floats). The second frame is right-context lookahead,
-    // re-settled on the next window — feeding it duplicates output.
+    // Greedy RNN-T over the COMMITTED encoder frames (frames 0..output_frames_-1).
+    // The remaining T_out - output_frames_ frames are right-context lookahead,
+    // re-settled on the next window — feeding them duplicates output. For
+    // 80 ms chunks (output_frames_=1) we decode only frame 0, same as before.
+    // For 160/560/1120 ms (output_frames_=2/7/14) we now decode multiple
+    // frames per window — this is what closes the streaming-quality gap.
     const int64_t s_encf  [3] = {1, 1, cfg_.encoder_hidden};
     const int64_t s_dechid[3] = {1, 1, cfg_.decoder_hidden};
     const size_t  n_logits     = static_cast<size_t>(cfg_.vocab_size) + 1;
 
     std::string emitted;
-    for (int expand = 0; expand < cfg_.max_symbols; ++expand) {
-        OrtValue* t_encf   = nullptr;
-        OrtValue* t_dechid = nullptr;
-        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-            mem, encoded.data(), static_cast<size_t>(cfg_.encoder_hidden) * sizeof(float),
-            s_encf, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_encf));
-        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-            mem, dec_hidden_.data(), dec_hidden_.size() * sizeof(float),
-            s_dechid, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_dechid));
+    for (int frame = 0; frame < output_frames_; ++frame) {
+        // Offset into encoded[]: frame 0 starts at index 0, frame 1 at
+        // encoder_hidden, etc. The joint sees one encoder_hidden vector.
+        const size_t frame_off = static_cast<size_t>(frame) * cfg_.encoder_hidden;
+        for (int expand = 0; expand < cfg_.max_symbols; ++expand) {
+            OrtValue* t_encf   = nullptr;
+            OrtValue* t_dechid = nullptr;
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, encoded.data() + frame_off,
+                static_cast<size_t>(cfg_.encoder_hidden) * sizeof(float),
+                s_encf, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_encf));
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, dec_hidden_.data(), dec_hidden_.size() * sizeof(float),
+                s_dechid, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_dechid));
 
-        OrtValue* jin[2]  = {t_encf, t_dechid};
-        OrtValue* jout[1] = {nullptr};
-        ort_check(api_, api_->Run(
-            jnt_, nullptr,
-            jnt_io_.in_names.data(),  jin,  jnt_io_.in_names.size(),
-            jnt_io_.out_names.data(), jnt_io_.out_names.size(), jout));
+            OrtValue* jin[2]  = {t_encf, t_dechid};
+            OrtValue* jout[1] = {nullptr};
+            ort_check(api_, api_->Run(
+                jnt_, nullptr,
+                jnt_io_.in_names.data(),  jin,  jnt_io_.in_names.size(),
+                jnt_io_.out_names.data(), jnt_io_.out_names.size(), jout));
 
-        std::vector<float> logits(n_logits);
-        copy_out(jout[0], logits.data(), n_logits * sizeof(float));
+            std::vector<float> logits(n_logits);
+            copy_out(jout[0], logits.data(), n_logits * sizeof(float));
 
-        api_->ReleaseValue(jout[0]);
-        api_->ReleaseValue(t_dechid);
-        api_->ReleaseValue(t_encf);
+            api_->ReleaseValue(jout[0]);
+            api_->ReleaseValue(t_dechid);
+            api_->ReleaseValue(t_encf);
 
-        int   best   = 0;
-        float best_v = logits[0];
-        for (size_t i = 1; i < n_logits; ++i) {
-            if (logits[i] > best_v) { best_v = logits[i]; best = static_cast<int>(i); }
+            int   best   = 0;
+            float best_v = logits[0];
+            for (size_t i = 1; i < n_logits; ++i) {
+                if (logits[i] > best_v) { best_v = logits[i]; best = static_cast<int>(i); }
+            }
+            if (best == cfg_.blank_id) break;  // advance to the next encoder frame
+
+            emitted += token_to_text(best);
+            run_decoder_step(best);  // advance the predictor for the next expansion
         }
-        if (best == cfg_.blank_id) break;  // advance to the next encoder frame
-
-        emitted += token_to_text(best);
-        run_decoder_step(best);  // advance the predictor for the next expansion
     }
     return emitted;
 }
