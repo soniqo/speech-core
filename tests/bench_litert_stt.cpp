@@ -381,6 +381,59 @@ int run_corpus(const std::string& dir, const std::string& backend,
     return 0;
 }
 
+int corpus_nemotron(const std::string& dir, const std::string& manifest_path) {
+    std::string enc = dir + "/nemotron-streaming-encoder.tflite";
+    std::string dec = dir + "/nemotron-streaming-decoder.tflite";
+    std::string jnt = dir + "/nemotron-streaming-joint.tflite";
+    std::string voc = dir + "/nemotron-vocab.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt) || !file_exists(voc)) {
+        std::fprintf(stderr, "nemotron files missing in %s\n", dir.c_str());
+        return 1;
+    }
+    std::ifstream m(manifest_path);
+    if (!m) {
+        std::fprintf(stderr, "cannot open manifest %s\n", manifest_path.c_str());
+        return 1;
+    }
+    std::printf("#uid,provider,audio_s,wall_ms,transcript\n");
+
+    speech_core::LiteRTNemotronStreamingStt stt(enc, dec, jnt, voc, /*hw_accel=*/false);
+    constexpr size_t kChunk = 1280;  // 80 ms @ 16 kHz
+
+    std::string line;
+    while (std::getline(m, line)) {
+        if (line.empty()) continue;
+        size_t c1 = line.find(','); if (c1 == std::string::npos) continue;
+        size_t c2 = line.find(',', c1 + 1); if (c2 == std::string::npos) continue;
+        std::string uid = line.substr(0, c1);
+        std::string wav_path = line.substr(c1 + 1, c2 - c1 - 1);
+        auto wav = load_wav_mono_pcm16(wav_path);
+        if (wav.samples.empty()) { std::fprintf(stderr, "skip %s\n", uid.c_str()); continue; }
+        auto a16k = wav.sample_rate == 16000
+            ? wav.samples
+            : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                               wav.sample_rate, 16000);
+
+        auto t = clk::now();
+        stt.begin_stream(16000);
+        std::string text;
+        for (size_t off = 0; off < a16k.size(); off += kChunk) {
+            size_t len = (kChunk < a16k.size() - off) ? kChunk : (a16k.size() - off);
+            auto p = stt.push_chunk(a16k.data() + off, len);
+            if (!p.text.empty()) text = p.text;
+        }
+        auto final_res = stt.end_stream();
+        if (!final_res.text.empty()) text = final_res.text;
+        double wall = ms_since(t);
+        double audio_s = static_cast<double>(a16k.size()) / 16000.0;
+        for (char& ch : text) if (ch == ',') ch = ' ';
+        std::printf("%s,litert-nemotron,%.2f,%.1f,%s\n",
+                    uid.c_str(), audio_s, wall, text.c_str());
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -390,11 +443,14 @@ int main(int argc, char** argv) {
         return 0;
     }
     // Corpus mode: --manifest <csv> --backend <parakeet|omnilingual>
-    std::string manifest, backend = "parakeet";
+    // OR --nemotron-manifest <csv> (Nemotron streaming).
+    std::string manifest, backend = "parakeet", nemotron_manifest;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--manifest") manifest = argv[i + 1];
         else if (std::string(argv[i]) == "--backend") backend = argv[i + 1];
+        else if (std::string(argv[i]) == "--nemotron-manifest") nemotron_manifest = argv[i + 1];
     }
+    if (!nemotron_manifest.empty()) return corpus_nemotron(dir, nemotron_manifest);
     if (!manifest.empty()) return run_corpus(dir, backend, manifest);
 
     int warmup = (argc > 1) ? std::atoi(argv[1]) : 1;

@@ -107,6 +107,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/kokoro/kokoro_multilingual.cpp
         src/models/deepfilter/deepfilter.cpp
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
+        src/models/nemotron/onnx_nemotron_streaming_stt.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
     # avoid duplicate symbols when a downstream binary links both targets, we
@@ -267,6 +268,12 @@ if(SPEECH_CORE_BUILD_TESTS)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_ort_models.cpp)
             add_executable(bench_ort_models tests/bench_ort_models.cpp)
             target_link_libraries(bench_ort_models PRIVATE speech_core_models)
+            if(SPEECH_CORE_WITH_LITERT)
+                # Tokenizer symbol lives in speech_core_models_litert when both
+                # backends are enabled (see the conditional above the sources
+                # list) — link it so OnnxVoxCPM2Tts's references resolve.
+                target_link_libraries(bench_ort_models PRIVATE speech_core_models_litert)
+            endif()
             target_compile_definitions(bench_ort_models PRIVATE
                 SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         endif()
