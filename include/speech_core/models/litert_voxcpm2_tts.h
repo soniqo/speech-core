@@ -5,9 +5,13 @@
 #include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace speech_core {
@@ -100,6 +104,24 @@ public:
     /// from the loaded graph; 512 on the deployed bundle.
     int max_text_tokens() const { return max_text_; }
 
+    /// Configure the keep-warm policy for the text_prefill graph.
+    ///
+    /// 0 (default) → always release the graph after each synthesize() finishes
+    /// its prefill stage. Lowest cold-RSS footprint; every call pays a
+    /// ~3-5 second cold-load on the next request.
+    ///
+    /// >0 → hold the prefill graph loaded across synthesize() calls; an internal
+    /// reaper thread releases it once no synthesize() has touched it for `ms`.
+    /// Trades a steady-state ~1.9 GiB of resident memory for zero cold-load on
+    /// the hot path. Recommended for realtime / voice-agent workloads where
+    /// turns arrive within seconds of each other. Internally clamped to a
+    /// minimum poll cadence so very small values still behave sanely.
+    ///
+    /// The reaper thread is always running; idle_release_ms_ == 0 just turns
+    /// its eviction step into a no-op. Re-enable via a positive value at any
+    /// time without restarting the wrapper.
+    void set_idle_release_ms(int64_t ms);
+
     /// Condition subsequent synthesize() calls on a reference speaker clip.
     /// `pcm` is mono float samples in [-1, 1] at `sample_rate`; it's resampled
     /// to 16 kHz and padded/truncated to the encoder's fixed 6.4 s window, then
@@ -138,6 +160,33 @@ private:
 
     void load_text_prefill();
     void release_text_prefill();
+
+    // Keep-warm cache for text_prefill.
+    //
+    // When idle_release_ms_ > 0, synthesize() leaves the prefill graph loaded
+    // after its prefill stage; the reaper thread frees it once no synthesize()
+    // has touched it for the configured idle window. When 0, synthesize()
+    // releases at the end of every prefill (the original lazy-load path).
+    //
+    // Serialisation: prefill_mutex_ guards both the load/release transitions
+    // and the prefill-stage Run() against the reaper thread. The reaper uses
+    // try_lock so an in-flight synthesize() is never interrupted -- if the
+    // mutex is busy, the reaper just retries next tick. last_prefill_used_
+    // is updated under prefill_mutex_ at the entry and exit of each synth's
+    // prefill stage, and read by the reaper under the same lock.
+    //
+    // Shutdown: destructor sets reaper_stop_, notifies the CV, joins the
+    // thread, then proceeds to destroy the remaining graphs. The reaper never
+    // touches a destroyed handle because the destructor blocks on join.
+    std::atomic<std::int64_t>          idle_release_ms_{0};
+    std::chrono::steady_clock::time_point last_prefill_used_{};
+    std::mutex                         prefill_mutex_;
+    std::atomic<bool>                  reaper_stop_{false};
+    std::condition_variable            reaper_cv_;
+    std::mutex                         reaper_mutex_;
+    std::thread                        reaper_thread_;
+
+    void reaper_loop_();
 
     std::unique_ptr<VoxCPM2Tokenizer> tokenizer_;
     int audio_start_token_     = -1;

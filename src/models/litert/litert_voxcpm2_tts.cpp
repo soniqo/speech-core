@@ -92,9 +92,24 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
     // fatal here (set_reference() throws if they're missing when used).
     ref_audio_start_token_ = tokenizer_->token_id("<|ref_audio_start|>");
     ref_audio_end_token_   = tokenizer_->token_id("<|ref_audio_end|>");
+
+    // Start the keep-warm reaper. The thread polls every second; when
+    // idle_release_ms_ is 0 (the default) its eviction step is a no-op so
+    // the steady-state behaviour matches the original lazy-load path. A
+    // caller flips it on via set_idle_release_ms() any time after construct.
+    reaper_thread_ = std::thread(&LiteRTVoxCPM2Tts::reaper_loop_, this);
 }
 
 LiteRTVoxCPM2Tts::~LiteRTVoxCPM2Tts() {
+    // Shut the reaper down first so it can't fire after we destroy the
+    // prefill graph (or any of the resident graphs it could observe).
+    {
+        std::lock_guard<std::mutex> lock(reaper_mutex_);
+        reaper_stop_.store(true);
+    }
+    reaper_cv_.notify_all();
+    if (reaper_thread_.joinable()) reaper_thread_.join();
+
     if (audio_decoder_compiled_) LiteRtDestroyCompiledModel(audio_decoder_compiled_);
     if (audio_decoder_model_)    LiteRtDestroyModel(audio_decoder_model_);
     if (audio_encoder_compiled_) LiteRtDestroyCompiledModel(audio_encoder_compiled_);
@@ -102,6 +117,39 @@ LiteRTVoxCPM2Tts::~LiteRTVoxCPM2Tts() {
     if (token_step_compiled_)    LiteRtDestroyCompiledModel(token_step_compiled_);
     if (token_step_model_)       LiteRtDestroyModel(token_step_model_);
     release_text_prefill();
+}
+
+void LiteRTVoxCPM2Tts::set_idle_release_ms(std::int64_t ms) {
+    idle_release_ms_.store(ms);
+}
+
+void LiteRTVoxCPM2Tts::reaper_loop_() {
+    constexpr auto poll_interval = std::chrono::seconds(1);
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(reaper_mutex_);
+            reaper_cv_.wait_for(lock, poll_interval,
+                                [this] { return reaper_stop_.load(); });
+        }
+        if (reaper_stop_.load()) return;
+
+        const std::int64_t idle_ms = idle_release_ms_.load();
+        if (idle_ms <= 0) continue;
+
+        // Don't block synthesize() -- if a call is in progress (holding the
+        // prefill mutex), defer eviction to the next tick.
+        std::unique_lock<std::mutex> lock(prefill_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) continue;
+
+        if (!text_prefill_compiled_) continue;  // already released
+
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - last_prefill_used_)
+                            .count();
+        if (age > idle_ms) {
+            release_text_prefill();
+        }
+    }
 }
 
 void LiteRTVoxCPM2Tts::load_text_prefill() {
@@ -304,21 +352,28 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
 
     // --- 2. text_prefill → initial hiddens + caches.
     //
-    // Lazy load: the text_prefill graph (~1.9 GiB INT8 on disk, similar in
-    // RAM) is the largest of the four LiteRT bundles; it is invoked exactly
-    // once per synthesize() and never used again until the next call.
-    // Keeping it resident dominates the synthesize-worker's idle RSS and
-    // pushes the prod CCX23 (16 GiB total, shared with the data plane) over
-    // the cliff when inference adds its working set on top. Load here, free
-    // immediately after reading prefill outputs (below). The cold-load cost
-    // shows up as a one-time delay at the start of each batch call.
-    load_text_prefill();
+    // Lifecycle is controlled by idle_release_ms_:
+    //   - 0 (default): load on entry, release on exit. The classic lazy-load
+    //     path. Every call pays the cold-load (~3-5 s) but cold-RSS sits at
+    //     ~6 GiB between calls.
+    //   - >0 (keep-warm): load on entry if not already resident, leave loaded
+    //     on exit. The reaper thread releases after the configured idle
+    //     window. Sustains ~9-10 GiB warm RSS but zero cold-load on the hot
+    //     path -- the right trade for LiveKit/realtime turns arriving within
+    //     seconds of each other.
+    //
+    // The entire prefill stage runs under prefill_mutex_ so the reaper can't
+    // evict the graph mid-Run(). The AR loop below uses token_step (a
+    // separate graph) and doesn't need the lock.
     std::vector<float> lm_hidden       (kHidden);
     std::vector<float> residual_hidden (kHidden);
     std::vector<float> prefix_feat_cond(kPredFeatFloats);
     std::vector<float> base_prefill    (base_prefill_floats_);
     std::vector<float> residual_prefill(residual_prefill_floats_);
     auto env = LiteRTEngine::get().env();
+    std::unique_lock<std::mutex> prefill_lock(prefill_mutex_);
+    load_text_prefill();
+    last_prefill_used_ = std::chrono::steady_clock::now();
     {
         auto t_text_tokens = make_type(kLiteRtElementTypeInt64,   {1, max_text_});
         auto t_text_mask   = make_type(kLiteRtElementTypeFloat32, {1, max_text_});
@@ -362,13 +417,22 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
         out_bcache.read(base_prefill.data(),     base_prefill.size()     * sizeof(float));
         out_rcache.read(residual_prefill.data(), residual_prefill.size() * sizeof(float));
     }
-    // Free the prefill graph + its retained_buffers_ entry the moment we are
-    // done with it. Everything downstream (cache padding, AR loop, decoder)
-    // operates on the std::vector copies of the prefill outputs read above.
-    // This drops ~1.9 GiB of process RSS before the AR loop's working set
-    // ramps up -- the difference between fitting inside the synth pod's
-    // 11 GiB limit on the prod CCX23 and OOMKilling mid-synthesise.
-    release_text_prefill();
+    // Release strategy: depends on idle_release_ms_.
+    //
+    // When 0 (always-release path): free the graph + retained_buffers_ entry
+    // immediately -- the original behaviour that fits the AR loop inside the
+    // 11 GiB pod limit on the prod CCX23.
+    //
+    // When >0 (keep-warm path): leave the graph loaded and just update
+    // last_prefill_used_; the reaper thread evicts after the idle window.
+    // Glibc's heap arena retains the bookkeeping pages either way, so the
+    // steady-state RSS is roughly the same once the first synth has run --
+    // the win is purely on cold-load latency for back-to-back calls.
+    last_prefill_used_ = std::chrono::steady_clock::now();
+    if (idle_release_ms_.load() == 0) {
+        release_text_prefill();
+    }
+    prefill_lock.unlock();
 
     if (std::getenv("VOXCPM2_DEBUG")) {
         auto rms = [](const std::vector<float>& v) {
