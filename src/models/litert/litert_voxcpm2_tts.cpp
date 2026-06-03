@@ -444,35 +444,64 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     bool stopped_by_model = false;
     const bool debug_steps = std::getenv("VOXCPM2_DEBUG") != nullptr;
 
+    // Pre-allocate the token_step input + output tensor buffers ONCE before
+    // the AR loop. The graph shape is fixed (full_seq_ + kHidden + ... are
+    // constants across iterations), so the buffer sizes don't change step
+    // to step. The original implementation allocated 13 fresh managed
+    // tensor buffers PER step × ~1000-2000 steps per synthesize, pushing
+    // RSS past 14 GiB mid-call and OOMKilling the synth pod on the 16 GiB
+    // CCX23. With buffers hoisted, allocation count drops to 13 total
+    // (per call), each reused via write()/read() per step.
+    //
+    // The data backing each LiteRtHostBuffer is aligned-managed memory
+    // owned by LiteRT (LiteRtCreateManagedTensorBuffer); the constructor
+    // without a `seed` argument allocates fresh but leaves the contents
+    // uninitialised. We seed them inside the loop via write().
+    LiteRtHostBuffer in_lm    (env, t_lm,     lm_hidden.size()        * sizeof(float));
+    LiteRtHostBuffer in_resid (env, t_resid,  residual_hidden.size()  * sizeof(float));
+    LiteRtHostBuffer in_pfc   (env, t_pfc,    prefix_feat_cond.size() * sizeof(float));
+    LiteRtHostBuffer in_bcache(env, t_bcache, base_cache.size()       * sizeof(float));
+    LiteRtHostBuffer in_rcache(env, t_rcache, residual_cache.size()   * sizeof(float));
+    LiteRtHostBuffer in_pos   (env, t_pos,    sizeof(int64_t));
+    LiteRtHostBuffer in_noise (env, t_noise,  noise.size()            * sizeof(float));
+
+    LiteRtHostBuffer out_pred  (env, t_pred,   pred_feat.size()      * sizeof(float));
+    LiteRtHostBuffer out_stop  (env, t_stop,   stop_logits.size()    * sizeof(float));
+    LiteRtHostBuffer out_lm    (env, t_lm,     next_lm.size()        * sizeof(float));
+    LiteRtHostBuffer out_resid (env, t_resid,  next_resid.size()     * sizeof(float));
+    LiteRtHostBuffer out_bcache(env, t_bcache, base_cache.size()     * sizeof(float));
+    LiteRtHostBuffer out_rcache(env, t_rcache, residual_cache.size() * sizeof(float));
+
+    // ins/outs are tiny (just pointers). Stays out of the loop too so we
+    // don't redo the array fill every step. LiteRtRunCompiledModel reads
+    // these by pointer; the underlying TensorBuffer handles are stable
+    // for the buffer's lifetime.
+    LiteRtTensorBuffer ins[7] = {
+        in_lm.raw(), in_resid.raw(), in_pfc.raw(),
+        in_bcache.raw(), in_rcache.raw(), in_pos.raw(), in_noise.raw()
+    };
+    LiteRtTensorBuffer outs[6] = {
+        out_pred.raw(), out_stop.raw(), out_lm.raw(), out_resid.raw(),
+        out_bcache.raw(), out_rcache.raw()
+    };
+
     for (int step = 0; step < max_steps_; ++step) {
         if (cancelled_.load(std::memory_order_relaxed)) break;
 
         for (float& v : noise) v = normal(rng);
         const int64_t position_id = static_cast<int64_t>(context_length + step);
 
-        LiteRtHostBuffer in_lm    (env, t_lm,     lm_hidden.size()        * sizeof(float), lm_hidden.data());
-        LiteRtHostBuffer in_resid (env, t_resid,  residual_hidden.size()  * sizeof(float), residual_hidden.data());
-        LiteRtHostBuffer in_pfc   (env, t_pfc,    prefix_feat_cond.size() * sizeof(float), prefix_feat_cond.data());
-        LiteRtHostBuffer in_bcache(env, t_bcache, base_cache.size()       * sizeof(float), base_cache.data());
-        LiteRtHostBuffer in_rcache(env, t_rcache, residual_cache.size()   * sizeof(float), residual_cache.data());
-        LiteRtHostBuffer in_pos   (env, t_pos,    sizeof(int64_t),                         &position_id);
-        LiteRtHostBuffer in_noise (env, t_noise,  noise.size()            * sizeof(float), noise.data());
+        // Refresh each input buffer with this step's data. write() is a
+        // Lock-memcpy-Unlock on LiteRT's aligned host memory — no extra
+        // allocation, just copies the bytes the graph will consume.
+        in_lm    .write(lm_hidden.data(),        lm_hidden.size()        * sizeof(float));
+        in_resid .write(residual_hidden.data(),  residual_hidden.size()  * sizeof(float));
+        in_pfc   .write(prefix_feat_cond.data(), prefix_feat_cond.size() * sizeof(float));
+        in_bcache.write(base_cache.data(),       base_cache.size()       * sizeof(float));
+        in_rcache.write(residual_cache.data(),   residual_cache.size()   * sizeof(float));
+        in_pos   .write(&position_id,            sizeof(int64_t));
+        in_noise .write(noise.data(),            noise.size()            * sizeof(float));
 
-        LiteRtHostBuffer out_pred  (env, t_pred,   pred_feat.size()      * sizeof(float));
-        LiteRtHostBuffer out_stop  (env, t_stop,   stop_logits.size()    * sizeof(float));
-        LiteRtHostBuffer out_lm    (env, t_lm,     next_lm.size()        * sizeof(float));
-        LiteRtHostBuffer out_resid (env, t_resid,  next_resid.size()     * sizeof(float));
-        LiteRtHostBuffer out_bcache(env, t_bcache, base_cache.size()     * sizeof(float));
-        LiteRtHostBuffer out_rcache(env, t_rcache, residual_cache.size() * sizeof(float));
-
-        LiteRtTensorBuffer ins[7] = {
-            in_lm.raw(), in_resid.raw(), in_pfc.raw(),
-            in_bcache.raw(), in_rcache.raw(), in_pos.raw(), in_noise.raw()
-        };
-        LiteRtTensorBuffer outs[6] = {
-            out_pred.raw(), out_stop.raw(), out_lm.raw(), out_resid.raw(),
-            out_bcache.raw(), out_rcache.raw()
-        };
         litert_check(LiteRtRunCompiledModel(token_step_compiled_, 0, 7, ins, 6, outs),
                      "token_step Run");
 
