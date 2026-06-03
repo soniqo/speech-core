@@ -4,8 +4,10 @@
 #include "speech_core/util/json.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 
 namespace speech_core {
 
@@ -117,13 +119,30 @@ LiteRTNemotronStreamingStt::LiteRTNemotronStreamingStt(
             if ((v = read_int("decoderHidden"))   > 0) cfg_.decoder_hidden    = v;
             if ((v = read_int("decoderLayers"))   > 0) cfg_.decoder_layers    = v;
             if ((v = read_int("vocabSize"))       > 0) { cfg_.vocab_size = v; cfg_.blank_id = v; }
-            // enc_t_out_ should match output_frames_ + lookahead frames; if
-            // tensor-layout introspection failed it's still the Config default
-            // (2) which is wrong for >80 ms. Derive from output_frames_ when
-            // both melFrames and outputFrames are present (T_out == output_frames
-            // for our exports — there's no lookahead frame in this NeMo
-            // streaming Conformer pipeline).
-            if (read_int("outputFrames") > 0) enc_t_out_ = output_frames_;
+            // Authoritative T_out: chunkSize + rightContext. The cache-aware
+            // streaming Conformer emits committed frames (chunkSize) plus
+            // right-context lookahead frames in one Run; only chunkSize gets
+            // appended to the transcript, the lookahead is re-settled (with
+            // more left context) on the next window.
+            //
+            // The earlier override `enc_t_out_ = output_frames_` was wrong:
+            // it sized the out_enc host buffer to `output_frames_ * H * 4`
+            // bytes while LiteRT writes `(output_frames_ + right_context) *
+            // H * 4` bytes. The trailing right_context * H * 4 bytes
+            // overflowed onto adjacent LiteRtHostBuffers (out_elen / out_pre
+            // / out_clc), corrupted their heap headers, and the process died
+            // silently mid-Run with no LiteRT error message — matching the
+            // "exit 127, no error" symptom on 560 ms bundles.
+            //
+            // For 80 ms: chunkSize=1, rightContext=1 → T_out=2. ✓
+            // For 320 ms: chunkSize=4, rightContext=3 → T_out=7.
+            // For 560 ms: chunkSize=?, rightContext=? → T_out=8 (per bundle dump).
+            int chunk_size  = read_int("chunkSize");
+            int right_ctx   = read_int("rightContext");
+            if (chunk_size > 0 && right_ctx >= 0) {
+                enc_t_out_     = chunk_size + right_ctx;
+                output_frames_ = chunk_size;
+            }
         }
     }
 
@@ -337,7 +356,27 @@ void LiteRTNemotronStreamingStt::run_decoder_step(int64_t token_id) {
 
 // Drain one window from pending_, run mel -> encoder (cache-aware) -> greedy
 // RNN-T over the first encoder frame, return the emitted text.
+//
+// Per-Run timing is opt-in via SPEECH_LITERT_PROFILE=1. Cumulative totals are
+// printed to stderr at end_stream(). Off by default — the gettime calls add
+// ~100 ns per Run which is noise but the prints aren't.
+namespace { struct ProfAcc {
+    double mel_ms = 0, enc_ms = 0, jnt_ms = 0, dec_ms = 0;
+    int    n_windows = 0, n_jnt = 0, n_dec = 0;
+    bool   on = std::getenv("SPEECH_LITERT_PROFILE") != nullptr;
+    ~ProfAcc() {
+        if (!on || n_windows == 0) return;
+        std::fprintf(stderr,
+            "\n[profile] windows=%d mel=%.1f enc=%.1f jnt=%.1f(n=%d) dec=%.1f(n=%d) total=%.1f ms\n",
+            n_windows, mel_ms, enc_ms, jnt_ms, n_jnt, dec_ms, n_dec,
+            mel_ms + enc_ms + jnt_ms + dec_ms);
+    }
+}; }
+static thread_local ProfAcc g_prof;
+
 std::string LiteRTNemotronStreamingStt::run_window() {
+    using clk = std::chrono::steady_clock;
+    auto t0 = clk::now();
     const int n_frames = cfg_.actual_mel_frames;
     const int win      = chunk_samples();
     if (static_cast<int>(pending_.size()) < win) return {};
@@ -361,6 +400,8 @@ std::string LiteRTNemotronStreamingStt::run_window() {
         }
         mel.swap(trimmed);
     }
+
+    if (g_prof.on) g_prof.mel_ms += std::chrono::duration<double, std::milli>(clk::now() - t0).count();
 
     auto env = LiteRTEngine::get().env();
     auto t_mel  = make_type(kLiteRtElementTypeFloat32, {1, cfg_.mel_bins, n_frames});
@@ -410,7 +451,9 @@ std::string LiteRTNemotronStreamingStt::run_window() {
         eins [enc_in_sig_pos_[s]]  = sem_eins[s];
         eouts[enc_out_sig_pos_[s]] = sem_eouts[s];
     }
+    auto t_enc_start = clk::now();
     litert_check(LiteRtRunCompiledModel(enc_compiled_, 0, 6, eins, 6, eouts), "Nemotron encoder Run");
+    if (g_prof.on) g_prof.enc_ms += std::chrono::duration<double, std::milli>(clk::now() - t_enc_start).count();
 
     // Roll caches forward for the next window.
     out_pre.read(pre_cache_.data(),          pre_cache_.size() * sizeof(float));
@@ -446,7 +489,9 @@ std::string LiteRTNemotronStreamingStt::run_window() {
 
             LiteRtTensorBuffer jins [2] = { in_encf.raw(), in_dechid.raw() };
             LiteRtTensorBuffer jouts[1] = { out_log.raw() };
+            auto t_jnt = clk::now();
             litert_check(LiteRtRunCompiledModel(jnt_compiled_, 0, 2, jins, 1, jouts), "Nemotron joint Run");
+            if (g_prof.on) { g_prof.jnt_ms += std::chrono::duration<double, std::milli>(clk::now() - t_jnt).count(); ++g_prof.n_jnt; }
 
             std::vector<float> logits(n_logits);
             out_log.read(logits.data(), n_logits * sizeof(float));
@@ -459,10 +504,13 @@ std::string LiteRTNemotronStreamingStt::run_window() {
             if (best == cfg_.blank_id) break;  // advance to the next encoder frame
 
             emitted += token_to_text(best);
+            auto t_dec = clk::now();
             run_decoder_step(best);  // advance the predictor for the next expansion
+            if (g_prof.on) { g_prof.dec_ms += std::chrono::duration<double, std::milli>(clk::now() - t_dec).count(); ++g_prof.n_dec; }
         }
     }
 
+    if (g_prof.on) ++g_prof.n_windows;
     return emitted;
 }
 
