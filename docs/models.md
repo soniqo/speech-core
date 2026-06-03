@@ -165,7 +165,7 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
   - `token-step`: one autoregressive step (called up to 2048 times per generation), consumes and emits the K/V cache explicitly
   - `audio-encoder`: 16 kHz PCM reference clip → conditioning features
   - `audio-decoder`: latent → 48 kHz PCM output
-- **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists. **`synthesize()` throws** — the orchestration loop and the HF-tokenizer integration are deferred.
+- **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h). Reference-audio voice cloning isn't yet surfaced through `TTSInterface` (see the paragraph above).
 - Bundle is large (~4.6 GB total). Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 

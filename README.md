@@ -19,7 +19,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) | Voice activity detection | ✓ | ✓ |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) | Speech-to-text | ✓ | ✓ |
-| [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | — | ✓ |
+| [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | ✓ | ✓ |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |
@@ -33,10 +33,10 @@ Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embed
 
 | Backend | Static lib | Runtime dep | Platforms | Setup |
 |---|---|---|---|---|
-| ONNX | `speech_core_models` | `onnxruntime` | Linux, macOS, Android | `ORT_DIR` from an ONNX Runtime release |
+| ONNX | `speech_core_models` | `onnxruntime` | Linux, macOS, Windows, Android | `ORT_DIR` from an ONNX Runtime release |
 | LiteRT | `speech_core_models_litert` | `libLiteRt` | Linux x86_64, Windows x86_64, Android, macOS arm64 | `scripts/fetch_litert.sh` (extracts from the `ai-edge-litert` PyPI wheel) |
 
-Both backends run CPU inference today; GPU / NNAPI / QNN delegate selection is a follow-up.
+**Hardware acceleration.** ONNX: NNAPI on Android, QNN on Qualcomm Linux (drop `libQnnHtp.so` on the lib path), optional NVIDIA CUDA / TensorRT via `-DSPEECH_CORE_WITH_CUDA=ON` — runtime-gated by `SPEECH_CORE_ORT_PROVIDER` with silent CPU fallback. LiteRT runs CPU only today; Hexagon / GPU delegates exist in `libLiteRt` but aren't wired through the C API yet.
 
 ## Quick start
 
@@ -183,12 +183,15 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 # + ONNX backend
 cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime && cmake --build build
 
+# + ONNX with NVIDIA CUDA / TensorRT (ORT_DIR must be a GPU-enabled ONNX Runtime)
+cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DSPEECH_CORE_WITH_CUDA=ON -DORT_DIR=/path/to/onnxruntime-gpu && cmake --build build
+
 # + LiteRT backend
 scripts/fetch_litert.sh build/litert
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cmake --build build
 ```
 
-LiteRT headers are vendored in `third_party/litert/` (no setup). `LITERT_DIR` points at the directory holding `libLiteRt.{so,dylib,dll}` (Windows also needs `LiteRt.lib`). Add `-DSPEECH_CORE_BUILD_EXAMPLES=ON` for the Linux CLI demos (`speech_transcribe`, `speech_synthesize`, …) — see [`examples/linux`](examples/linux).
+LiteRT headers are vendored in `third_party/litert/` (no setup). `LITERT_DIR` points at the directory holding `libLiteRt.{so,dylib,dll}` (Windows also needs `LiteRt.lib`). Add `-DSPEECH_CORE_BUILD_EXAMPLES=ON` for the Linux CLI demos (`speech_transcribe`, `speech_synthesize`, …) — see [`examples/linux`](examples/linux). A voice-cloning CLI (`speech_voxcpm2_clone`) is built automatically whenever `SPEECH_CORE_WITH_LITERT=ON` — see [`examples/litert`](examples/litert).
 
 ## Testing & CI
 
