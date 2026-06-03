@@ -254,10 +254,19 @@ private:
     OnnxEngine& operator=(const OnnxEngine&) = delete;
 
 public:
-    /// Whether CUDA Graph capture has been enabled via the
-    /// SPEECH_CORE_CUDA_GRAPH env var (default off). Wrappers that loaded
-    /// their session with enable_cuda_graph=true check this before allowing
-    /// dynamic-shape paths that would invalidate the captured graph.
+    /// Whether the SPEECH_CORE_CUDA_GRAPH env var is set to "1" (default off).
+    ///
+    /// IMPORTANT — currently inert scaffolding. Returning true here does NOT
+    /// engage CUDA Graph capture in any wrapper:
+    ///   * No wrapper currently consults this flag to gate dynamic-shape paths
+    ///     (despite the original docstring promising they would).
+    ///   * ORT's op partitioning still blocks capture for voxcpm2-token-step:
+    ///     the exported graph has 36 Memcpy bridges between CPU and GPU
+    ///     subgraphs, and capture requires every op to live on the GPU.
+    /// The only observable effect is the "CUDA Graph capture enabled for: ..."
+    /// log line at session load via try_append_gpu (see UpdateCUDAProviderOptions
+    /// in this file). Kept so future wrappers can wire shape-stability gates
+    /// once the export is fully CUDA-resident.
     bool cuda_graph_enabled() const {
         const char* env = std::getenv("SPEECH_CORE_CUDA_GRAPH");
         return env != nullptr && env[0] == '1';

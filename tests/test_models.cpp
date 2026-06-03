@@ -723,7 +723,20 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
                     "(max_text=%d)\n", tts.max_text_tokens());
         return;
     }
-    std::printf("  test_onnx_voxcpm2_wer_corpus ... ");
+    // Surface which inference path will execute. The IoBinding refactor in this
+    // wrapper is gated on a non-CPU EP being resolved (see synthesize()'s
+    // use_gpu_bind check). On CPU-only builds, on GPU builds whose ORT didn't
+    // link CUDA, and on machines without an NVIDIA device, the test silently
+    // falls back to the pre-existing host path -- making this print the only
+    // way a reviewer or CI can tell whether the GPU+IoBinding code was actually
+    // exercised, or whether a green run only validates the legacy path.
+    const auto _gpu = OnnxEngine::get().gpu_provider();
+    const char* _gpu_name = (_gpu == OrtGpuProvider::Cuda     ? "CUDA"
+                          :  _gpu == OrtGpuProvider::TensorRT ? "TensorRT"
+                          :                                     "CPU (host path)");
+    const char* _bind = (_gpu == OrtGpuProvider::None ? "OFF" : "ON");
+    std::printf("  test_onnx_voxcpm2_wer_corpus [provider=%s iobinding=%s] ... ",
+                _gpu_name, _bind);
     std::fflush(stdout);
 
     // 15 short clean-English phrases (paraphrases of LibriSpeech-style
