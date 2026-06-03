@@ -223,6 +223,22 @@ public:
         *out_compiled = c;
     }
 
+    /// Release the retained file buffer for `path`, if any.
+    ///
+    /// The caller MUST have already destroyed any `LiteRtModel` created from
+    /// this path -- the model holds a zero-copy pointer into the buffer, so
+    /// freeing the buffer while a model still references it is undefined
+    /// behaviour. This is the lazy-unload path used by the VoxCPM2 wrapper
+    /// to drop the ~1.9 GiB text_prefill graph between synthesize() calls,
+    /// freeing ~2 GiB of node headroom on the prod CCX23 (16 GiB total,
+    /// otherwise too cramped to host inference + Postgres + NATS + MinIO +
+    /// realtime-worker side-by-side). No-op when `path` was below the
+    /// CreateModelFromBuffer threshold (1 GiB) and therefore was never
+    /// retained.
+    void release_buffer(const std::string& path) {
+        retained_buffers_.erase(path);
+    }
+
 private:
     LiteRTEngine() = default;
     ~LiteRTEngine() { if (env_) LiteRtDestroyEnvironment(env_); }

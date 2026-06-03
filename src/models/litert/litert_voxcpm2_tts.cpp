@@ -53,19 +53,34 @@ LiteRTVoxCPM2Tts::LiteRTVoxCPM2Tts(const std::string& text_prefill_path,
                                     const std::string& tokenizer_path,
                                     bool hw_accel)
 {
+    // Remember the prefill path + hw_accel choice for the lazy load/unload
+    // cycle that runs across every synthesize() call. The other three graphs
+    // (token_step, audio_encoder, audio_decoder) stay resident across calls
+    // because they're either used per-step in the AR loop (token_step) or
+    // cheap enough that the reload-each-call latency would dominate.
+    text_prefill_path_     = text_prefill_path;
+    text_prefill_hw_accel_ = hw_accel;
+
     auto& engine = LiteRTEngine::get();
-    engine.load(text_prefill_path,  hw_accel, &text_prefill_model_,  &text_prefill_compiled_);
     engine.load(token_step_path,    hw_accel, &token_step_model_,    &token_step_compiled_);
     engine.load(audio_encoder_path, hw_accel, &audio_encoder_model_, &audio_encoder_compiled_);
     engine.load(audio_decoder_path, hw_accel, &audio_decoder_model_, &audio_decoder_compiled_);
 
-    // Derive the context geometry from the prefill graph, then the cache sizes.
+    // Load text_prefill once so we can derive the context geometry from its
+    // input shape, then release it. The engine's retained_buffers_ entry is
+    // freed too -- otherwise the 1.9 GiB file would sit resident even though
+    // the compiled model is gone. The first synthesize() call pays the
+    // reload cost; subsequent calls pay it again because we release at the
+    // end of each prefill (worker-side amortisation lives outside this
+    // class).
+    load_text_prefill();
     max_text_                = query_prefill_context(text_prefill_model_);
     full_seq_                = max_text_ + kMaxGenerated;
     base_cache_floats_       = 2L * kBaseLayers     * kKvHeads * full_seq_ * kHeadDim;
     residual_cache_floats_   = 2L * kResidualLayers * kKvHeads * full_seq_ * kHeadDim;
     base_prefill_floats_     = 2L * kBaseLayers     * kKvHeads * max_text_ * kHeadDim;
     residual_prefill_floats_ = 2L * kResidualLayers * kKvHeads * max_text_ * kHeadDim;
+    release_text_prefill();
 
     tokenizer_         = std::make_unique<VoxCPM2Tokenizer>(tokenizer_path);
     audio_start_token_ = tokenizer_->token_id("<|audio_start|>");
@@ -86,8 +101,28 @@ LiteRTVoxCPM2Tts::~LiteRTVoxCPM2Tts() {
     if (audio_encoder_model_)    LiteRtDestroyModel(audio_encoder_model_);
     if (token_step_compiled_)    LiteRtDestroyCompiledModel(token_step_compiled_);
     if (token_step_model_)       LiteRtDestroyModel(token_step_model_);
-    if (text_prefill_compiled_)  LiteRtDestroyCompiledModel(text_prefill_compiled_);
-    if (text_prefill_model_)     LiteRtDestroyModel(text_prefill_model_);
+    release_text_prefill();
+}
+
+void LiteRTVoxCPM2Tts::load_text_prefill() {
+    if (text_prefill_compiled_) return;  // already loaded
+    LiteRTEngine::get().load(text_prefill_path_, text_prefill_hw_accel_,
+                              &text_prefill_model_, &text_prefill_compiled_);
+}
+
+void LiteRTVoxCPM2Tts::release_text_prefill() {
+    if (text_prefill_compiled_) {
+        LiteRtDestroyCompiledModel(text_prefill_compiled_);
+        text_prefill_compiled_ = nullptr;
+    }
+    if (text_prefill_model_) {
+        LiteRtDestroyModel(text_prefill_model_);
+        text_prefill_model_ = nullptr;
+    }
+    // Engine's retained_buffers_ holds a ~1.9 GiB copy of the file (kept
+    // because LiteRtCreateModelFromBuffer's input must outlive the model);
+    // drop it now that the model is destroyed.
+    LiteRTEngine::get().release_buffer(text_prefill_path_);
 }
 
 void LiteRTVoxCPM2Tts::cancel() {
@@ -268,6 +303,16 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
     const int64_t context_length_scalar = context_length;
 
     // --- 2. text_prefill → initial hiddens + caches.
+    //
+    // Lazy load: the text_prefill graph (~1.9 GiB INT8 on disk, similar in
+    // RAM) is the largest of the four LiteRT bundles; it is invoked exactly
+    // once per synthesize() and never used again until the next call.
+    // Keeping it resident dominates the synthesize-worker's idle RSS and
+    // pushes the prod CCX23 (16 GiB total, shared with the data plane) over
+    // the cliff when inference adds its working set on top. Load here, free
+    // immediately after reading prefill outputs (below). The cold-load cost
+    // shows up as a one-time delay at the start of each batch call.
+    load_text_prefill();
     std::vector<float> lm_hidden       (kHidden);
     std::vector<float> residual_hidden (kHidden);
     std::vector<float> prefix_feat_cond(kPredFeatFloats);
@@ -317,6 +362,13 @@ void LiteRTVoxCPM2Tts::synthesize(const std::string& text,
         out_bcache.read(base_prefill.data(),     base_prefill.size()     * sizeof(float));
         out_rcache.read(residual_prefill.data(), residual_prefill.size() * sizeof(float));
     }
+    // Free the prefill graph + its retained_buffers_ entry the moment we are
+    // done with it. Everything downstream (cache padding, AR loop, decoder)
+    // operates on the std::vector copies of the prefill outputs read above.
+    // This drops ~1.9 GiB of process RSS before the AR loop's working set
+    // ramps up -- the difference between fitting inside the synth pod's
+    // 11 GiB limit on the prod CCX23 and OOMKilling mid-synthesise.
+    release_text_prefill();
 
     if (std::getenv("VOXCPM2_DEBUG")) {
         auto rms = [](const std::vector<float>& v) {

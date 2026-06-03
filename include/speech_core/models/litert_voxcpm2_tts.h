@@ -115,6 +115,18 @@ public:
     bool has_reference() const { return ref_frames_ > 0; }
 
 private:
+    // text_prefill is the largest graph in the bundle (~1.9 GiB INT8). It is
+    // invoked exactly once per synthesize() call and never used between calls.
+    // To keep idle RSS low (so the prod CCX23 has node headroom for inference
+    // + the rest of the cluster) we lazy-load it: the constructor loads it
+    // once to query max_text_, then frees it; synthesize() reloads it for
+    // the prefill stage and frees it again before entering the AR loop. The
+    // path is retained so we can reload without re-plumbing it through every
+    // caller. The compiled + model handles stay nullptr while unloaded;
+    // load_text_prefill() / release_text_prefill() are the canonical entry
+    // points.
+    std::string         text_prefill_path_;
+    bool                text_prefill_hw_accel_ = false;
     LiteRtModel         text_prefill_model_    = nullptr;
     LiteRtCompiledModel text_prefill_compiled_ = nullptr;
     LiteRtModel         token_step_model_      = nullptr;
@@ -123,6 +135,9 @@ private:
     LiteRtCompiledModel audio_encoder_compiled_= nullptr;
     LiteRtModel         audio_decoder_model_   = nullptr;
     LiteRtCompiledModel audio_decoder_compiled_= nullptr;
+
+    void load_text_prefill();
+    void release_text_prefill();
 
     std::unique_ptr<VoxCPM2Tokenizer> tokenizer_;
     int audio_start_token_     = -1;
