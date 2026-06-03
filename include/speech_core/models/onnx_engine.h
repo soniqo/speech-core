@@ -108,11 +108,31 @@ public:
         return 2;
     }
 
-    OrtSession* load(const std::string& path, bool nnapi = true) {
+    OrtSession* load(const std::string& path, bool nnapi = true,
+                     bool enable_cuda_graph = false) {
         OrtSessionOptions* opts = nullptr;
         ort_check(api_, api_->CreateSessionOptions(&opts));
         api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
         api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+        // EXPERIMENT: share a single CPU arena across all sessions. Each
+        // session.use_env_allocators=1 routes its CPU allocations through
+        // the env's registered arena instead of creating a per-session one.
+        // VoxCPM2 bundle = 4 sessions; deduplicating arena overhead saves
+        // ~0.5-1 GB. arena_extend_strategy=kSameAsRequested keeps growth
+        // tight (no 1.5x speculative bumps).
+        ort_check(api_, api_->AddSessionConfigEntry(
+            opts, "session.use_env_allocators", "1"));
+        // EXPERIMENT: BF16 models route weights through a Cast(BF16->FP32)
+        // node per initializer. ORT's ConstantFolding optimizer would
+        // collapse each Cast into an FP32 constant at session-load time,
+        // erasing the BF16 storage savings. Gate this behind an env var
+        // so non-BF16 models still get all optimizations.
+        if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {
+            if (skip[0] != '\0') {
+                ort_check(api_, api_->AddSessionConfigEntry(
+                    opts, "session.disable_specific_optimizers", skip));
+            }
+        }
 
         // A GPU EP (CUDA / TensorRT), when resolved on a desktop/server build,
         // takes priority over NNAPI/QNN. The `nnapi` argument is the model
@@ -121,7 +141,7 @@ public:
         // honour it and keep the session on CPU, GPU present or not.
         bool gpu_attempted = false;
         if (nnapi && gpu_provider_ != OrtGpuProvider::None) {
-            gpu_attempted = try_append_gpu(opts, path);
+            gpu_attempted = try_append_gpu(opts, path, enable_cuda_graph);
             if (!gpu_attempted) {
                 // CUDA was resolved at startup (libs visible, env let it run)
                 // but the per-session append failed — most often a missing
@@ -181,6 +201,14 @@ public:
             ort_check(api_, api_->CreateSessionOptions(&opts));
             api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
             api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_env_allocators", "1"));
+            if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {
+                if (skip[0] != '\0') {
+                    ort_check(api_, api_->AddSessionConfigEntry(
+                        opts, "session.disable_specific_optimizers", skip));
+                }
+            }
 
             ort_check(api_, api_->CreateSession(env_, ort_path.c_str(), opts, &session));
         } else if (create_status != nullptr) {
@@ -209,12 +237,42 @@ private:
         ort_check(api_, api_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "speech", &env_));
         ort_check(api_, api_->CreateCpuMemoryInfo(
             OrtArenaAllocator, OrtMemTypeDefault, &mem_));
+        // Register a single CPU arena on the env. Each session opts in via
+        // session.use_env_allocators=1 (set in load() above), so the 4
+        // VoxCPM2 sessions share one arena instead of holding four. The
+        // arena_extend_strategy=1 (kSameAsRequested) avoids the default
+        // kNextPowerOfTwo growth — at ~8 GB initializers per session, the
+        // 1.5x speculative bump would balloon RSS.
+        OrtArenaCfg* arena_cfg = nullptr;
+        ort_check(api_, api_->CreateArenaCfg(0, 1, -1, -1, &arena_cfg));
+        ort_check(api_, api_->CreateAndRegisterAllocator(env_, mem_, arena_cfg));
+        api_->ReleaseArenaCfg(arena_cfg);
         gpu_provider_ = resolve_gpu_provider();
     }
 
     OnnxEngine(const OnnxEngine&) = delete;
     OnnxEngine& operator=(const OnnxEngine&) = delete;
 
+public:
+    /// Whether the SPEECH_CORE_CUDA_GRAPH env var is set to "1" (default off).
+    ///
+    /// IMPORTANT — currently inert scaffolding. Returning true here does NOT
+    /// engage CUDA Graph capture in any wrapper:
+    ///   * No wrapper currently consults this flag to gate dynamic-shape paths
+    ///     (despite the original docstring promising they would).
+    ///   * ORT's op partitioning still blocks capture for voxcpm2-token-step:
+    ///     the exported graph has 36 Memcpy bridges between CPU and GPU
+    ///     subgraphs, and capture requires every op to live on the GPU.
+    /// The only observable effect is the "CUDA Graph capture enabled for: ..."
+    /// log line at session load via try_append_gpu (see UpdateCUDAProviderOptions
+    /// in this file). Kept so future wrappers can wire shape-stability gates
+    /// once the export is fully CUDA-resident.
+    bool cuda_graph_enabled() const {
+        const char* env = std::getenv("SPEECH_CORE_CUDA_GRAPH");
+        return env != nullptr && env[0] == '1';
+    }
+
+private:
     /// Resolve which (if any) GPU EP to use. Three gates, all must pass:
     ///   1. Build: SPEECH_CORE_WITH_CUDA must be defined (the CMake option that
     ///      links a CUDA-enabled ORT). Without it we never touch GPU symbols.
@@ -286,7 +344,8 @@ private:
     /// SessionOptionsAppendExecutionProvider_CUDA_V2), which the header
     /// documents as *returning failure* on a non-CUDA-enabled build rather
     /// than crashing — the basis of the silent CPU fallback.
-    bool try_append_gpu(OrtSessionOptions* opts, const std::string& path) {
+    bool try_append_gpu(OrtSessionOptions* opts, const std::string& path,
+                        bool enable_cuda_graph = false) {
 #if defined(SPEECH_CORE_WITH_CUDA) && !defined(__ANDROID__)
         const char* fname = path.c_str() + path.find_last_of('/') + 1;
         bool appended = false;
@@ -334,6 +393,23 @@ private:
             // Build is not actually CUDA-enabled (or OOM) — bail.
             api_->ReleaseStatus(cs);
             return appended;  // TRT may already have appended above
+        }
+        // CUDA Graph capture: a single Graph Launch replaces ~1400 individual
+        // kernel launches per token_step iteration, eliminating the launch
+        // overhead bottleneck for small-tensor transformer steps. Requires
+        // fixed input shapes (we have them) and IoBinding (also in place).
+        // Without these two, ORT silently falls back to per-call launches.
+        if (enable_cuda_graph) {
+            const char* keys[] = {"enable_cuda_graph"};
+            const char* vals[] = {"1"};
+            OrtStatus* us = api_->UpdateCUDAProviderOptions(cuda, keys, vals, 1);
+            if (us != nullptr) {
+                LOGI("CUDA Graph option update failed (%s); continuing without graph capture",
+                     api_->GetErrorMessage(us));
+                api_->ReleaseStatus(us);
+            } else {
+                LOGI("CUDA Graph capture enabled for: %s", fname);
+            }
         }
         OrtStatus* as = api_->SessionOptionsAppendExecutionProvider_CUDA_V2(opts, cuda);
         api_->ReleaseCUDAProviderOptions(cuda);

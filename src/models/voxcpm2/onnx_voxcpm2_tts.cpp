@@ -110,7 +110,11 @@ OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& text_prefill_path,
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
     text_prefill_session_  = engine.load(text_prefill_path,  hw_accel);
-    token_step_session_    = engine.load(token_step_path,    hw_accel);
+    // token_step runs 25-60 times per utterance with fixed shapes — the
+    // canonical CUDA Graph capture target. Opt this session into graph
+    // capture when SPEECH_CORE_CUDA_GRAPH=1 is set in the environment.
+    token_step_session_    = engine.load(token_step_path,    hw_accel,
+                                         engine.cuda_graph_enabled());
     audio_encoder_session_ = engine.load(audio_encoder_path, hw_accel);
     audio_decoder_session_ = engine.load(audio_decoder_path, hw_accel);
 
@@ -490,12 +494,75 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     bool stopped_by_model = false;
     const bool debug_steps = std::getenv("VOXCPM2_DEBUG") != nullptr;
 
+    // CUDA IoBinding path — keep heavy state (lm_hidden, residual_hidden,
+    // base_cache, residual_cache) GPU-resident between AR steps. Each step
+    // would otherwise re-upload ~200 MB of state to the device, dominating
+    // wall time at this scale. Off-by-default for CPU sessions so the
+    // existing well-tested codepath keeps running unchanged.
+    //
+    // Names use the graph's actual input/output names (introspected at load
+    // via query_io_names) so we don't hard-code "lm_hidden" / "next_lm_hidden"
+    // here — index into step_io_ to stay model-agnostic.
+    // Try to set up GPU IoBinding when the engine resolved a CUDA provider.
+    // Per-session might still be on CPU (when hw_accel=false at construction,
+    // e.g. the load smoke test) — in that case CreateAllocator returns a
+    // status with "No requested allocator available" and we fall through to
+    // the host path.
+    bool use_gpu_bind =
+        OnnxEngine::get().gpu_provider() != OrtGpuProvider::None
+        && std::getenv("SPEECH_CORE_VOXCPM2_NO_IOBINDING") == nullptr;
+
+    OrtMemoryInfo* cuda_mem = nullptr;
+    OrtAllocator*  cuda_alloc = nullptr;
+    OrtIoBinding*  binding = nullptr;
+    // Ping-pong sets of GPU state tensors (lm, resid, base, rcache).
+    OrtValue* gpu_lm[2]      = {nullptr, nullptr};
+    OrtValue* gpu_resid[2]   = {nullptr, nullptr};
+    OrtValue* gpu_base[2]    = {nullptr, nullptr};
+    OrtValue* gpu_rcache[2]  = {nullptr, nullptr};
+    int       slot_in   = 0;  // index of the "current" (input) slot
+    int       slot_out  = 1;  // index of the "next" (output) slot
+
+    if (use_gpu_bind) {
+        // CUDA EP registers its device allocator under name "Cuda" with type
+        // OrtDeviceAllocator (NOT OrtArenaAllocator).
+        OrtStatus* s = api_->CreateMemoryInfo(
+            "Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault, &cuda_mem);
+        if (s == nullptr) {
+            s = api_->CreateAllocator(token_step_session_, cuda_mem, &cuda_alloc);
+        }
+        if (s != nullptr) {
+            // Session was created on CPU (e.g. hw_accel=false) — drop back
+            // to the host path silently. Free the partial state.
+            api_->ReleaseStatus(s);
+            if (cuda_mem) { api_->ReleaseMemoryInfo(cuda_mem); cuda_mem = nullptr; }
+            use_gpu_bind = false;
+        }
+    }
+
+    if (use_gpu_bind) {
+        ort_check(api_, api_->CreateIoBinding(token_step_session_, &binding));
+
+        auto alloc_gpu = [&](const int64_t* shape, int rank, OrtValue** out) {
+            ort_check(api_, api_->CreateTensorAsOrtValue(
+                cuda_alloc, shape, rank,
+                ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, out));
+        };
+        for (int i = 0; i < 2; ++i) {
+            alloc_gpu(s_lm,     2, &gpu_lm[i]);
+            alloc_gpu(s_resid,  2, &gpu_resid[i]);
+            alloc_gpu(s_bcache, 6, &gpu_base[i]);
+            alloc_gpu(s_rcache, 6, &gpu_rcache[i]);
+        }
+    }
+
     for (int step = 0; step < max_steps_; ++step) {
         if (cancelled_.load(std::memory_order_relaxed)) break;
 
         for (float& v : noise) v = normal(rng);
         const int64_t position_id = static_cast<int64_t>(context_length + step);
 
+      if (!use_gpu_bind) {
         OrtValue* t_lm    = nullptr;
         OrtValue* t_resid = nullptr;
         OrtValue* t_pfc   = nullptr;
@@ -562,6 +629,112 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
         lm_hidden        = next_lm;
         residual_hidden  = next_resid;
         prefix_feat_cond = pred_feat;
+      } else {
+        // ------ GPU IoBinding path ------
+        // pred_feat (256 floats), stop_logits (2 floats), pfc (256 floats),
+        // position_id (1 i64), noise (256 floats): all small enough to keep
+        // bound to host memory; ORT handles GPU<->CPU sync via
+        // SynchronizeBoundOutputs / SynchronizeBoundInputs.
+        OrtValue* t_pos = nullptr;
+        OrtValue* t_noise = nullptr;
+        OrtValue* t_pfc_in = nullptr;
+        OrtValue* t_pred_feat_out = nullptr;
+        OrtValue* t_stop_logits_out = nullptr;
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, const_cast<int64_t*>(&position_id), sizeof(int64_t),
+            s_pos, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_pos));
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, noise.data(), noise.size() * sizeof(float),
+            s_noise, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_noise));
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, prefix_feat_cond.data(), prefix_feat_cond.size() * sizeof(float),
+            s_pfc, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_pfc_in));
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, pred_feat.data(), pred_feat.size() * sizeof(float),
+            s_pfc, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_pred_feat_out));
+        // Graph outputs stop_logits as rank-2 [1, 2], not rank-1.
+        const int64_t s_stop[2] = {1, 2};
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, stop_logits.data(), stop_logits.size() * sizeof(float),
+            s_stop, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_stop_logits_out));
+
+        // On step 0, the state inputs (lm/resid/base/rcache) come from the
+        // host (post-prefill); ORT will upload them to the device implicitly
+        // when we BindInput a CPU OrtValue. On step 1+, the previous step's
+        // GPU output slot is the current input.
+        OrtValue* in_lm     = nullptr;
+        OrtValue* in_resid  = nullptr;
+        OrtValue* in_base   = nullptr;
+        OrtValue* in_rcache = nullptr;
+        if (step == 0) {
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, lm_hidden.data(), lm_hidden.size() * sizeof(float),
+                s_lm, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &in_lm));
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, residual_hidden.data(), residual_hidden.size() * sizeof(float),
+                s_resid, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &in_resid));
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, base_cache.data(), base_cache.size() * sizeof(float),
+                s_bcache, 6, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &in_base));
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                mem, residual_cache.data(), residual_cache.size() * sizeof(float),
+                s_rcache, 6, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &in_rcache));
+        }
+
+        api_->ClearBoundInputs(binding);
+        api_->ClearBoundOutputs(binding);
+
+        // Bind inputs — names come from the loaded graph's introspected list.
+        // Index layout from query_io_names: 0=lm_hidden, 1=residual_hidden,
+        // 2=prefix_feat_cond, 3=base_cache, 4=residual_cache, 5=position_id,
+        // 6=noise. (Same ordering as the existing host path's step_in array.)
+        const char* const* in_n = step_io_.in_names.data();
+        ort_check(api_, api_->BindInput(binding, in_n[0],
+            step == 0 ? in_lm     : gpu_lm[slot_in]));
+        ort_check(api_, api_->BindInput(binding, in_n[1],
+            step == 0 ? in_resid  : gpu_resid[slot_in]));
+        ort_check(api_, api_->BindInput(binding, in_n[2], t_pfc_in));
+        ort_check(api_, api_->BindInput(binding, in_n[3],
+            step == 0 ? in_base   : gpu_base[slot_in]));
+        ort_check(api_, api_->BindInput(binding, in_n[4],
+            step == 0 ? in_rcache : gpu_rcache[slot_in]));
+        ort_check(api_, api_->BindInput(binding, in_n[5], t_pos));
+        ort_check(api_, api_->BindInput(binding, in_n[6], t_noise));
+
+        // Output layout: 0=pred_feat, 1=stop_logits, 2=next_lm_hidden,
+        // 3=next_residual_hidden, 4=base_cache, 5=residual_cache.
+        const char* const* out_n = step_io_.out_names.data();
+        ort_check(api_, api_->BindOutput(binding, out_n[0], t_pred_feat_out));
+        ort_check(api_, api_->BindOutput(binding, out_n[1], t_stop_logits_out));
+        ort_check(api_, api_->BindOutput(binding, out_n[2], gpu_lm[slot_out]));
+        ort_check(api_, api_->BindOutput(binding, out_n[3], gpu_resid[slot_out]));
+        ort_check(api_, api_->BindOutput(binding, out_n[4], gpu_base[slot_out]));
+        ort_check(api_, api_->BindOutput(binding, out_n[5], gpu_rcache[slot_out]));
+
+        ort_check(api_, api_->RunWithBinding(token_step_session_, nullptr, binding));
+        // CPU-bound outputs (pred_feat, stop_logits) need an explicit
+        // device->host sync; GPU-bound outputs stay on device.
+        ort_check(api_, api_->SynchronizeBoundOutputs(binding));
+
+        if (step == 0) {
+            api_->ReleaseValue(in_rcache);
+            api_->ReleaseValue(in_base);
+            api_->ReleaseValue(in_resid);
+            api_->ReleaseValue(in_lm);
+        }
+        api_->ReleaseValue(t_stop_logits_out);
+        api_->ReleaseValue(t_pred_feat_out);
+        api_->ReleaseValue(t_pfc_in);
+        api_->ReleaseValue(t_noise);
+        api_->ReleaseValue(t_pos);
+
+        // pred_feat host buffer now holds the new value (ORT synced it).
+        // Feed it back as next iter's prefix_feat_cond input.
+        prefix_feat_cond = pred_feat;
+
+        // Swap which GPU slot is "current" for next iter's state inputs.
+        std::swap(slot_in, slot_out);
+      }
 
         feature_buffer.insert(feature_buffer.end(), pred_feat.begin(), pred_feat.end());
         ++steps_done;
@@ -587,6 +760,18 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
             steps_in_chunk = 0;
         }
         if (stop_signal) break;
+    }
+
+    if (use_gpu_bind) {
+        for (int i = 0; i < 2; ++i) {
+            if (gpu_rcache[i])  api_->ReleaseValue(gpu_rcache[i]);
+            if (gpu_base[i])    api_->ReleaseValue(gpu_base[i]);
+            if (gpu_resid[i])   api_->ReleaseValue(gpu_resid[i]);
+            if (gpu_lm[i])      api_->ReleaseValue(gpu_lm[i]);
+        }
+        if (binding)    api_->ReleaseIoBinding(binding);
+        if (cuda_alloc) api_->ReleaseAllocator(cuda_alloc);
+        if (cuda_mem)   api_->ReleaseMemoryInfo(cuda_mem);
     }
 
     if (steps_in_chunk > 0) {

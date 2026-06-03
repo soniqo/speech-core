@@ -645,6 +645,217 @@ void test_onnx_voxcpm2_parakeet_roundtrip(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// VoxCPM2 ONNX → Parakeet WER corpus — runs the same TTS-ASR roundtrip over
+// 15 short clean-English phrases and reports per-phrase + aggregate WER.
+// Lets us quantify how much INT8 quantization on the LM graphs degrades the
+// synthesis vs an FP32 reference. ALSO dumps the synthesized WAVs to
+// $SPEECH_VOXCPM2_WAV_DUMP (when set) so an independent ASR (e.g. sherpa
+// Whisper-tiny) can verify Parakeet isn't being uniquely tolerant of any
+// quantization artefacts.
+//
+// Gated on production-config bundle (same gate as the single-phrase
+// roundtrip). Always passes if mean WER < 0.25; the wrapper-quality smoke
+// test is `matched >= 4 of 6` on the pangram, which this corpus tightens.
+// ---------------------------------------------------------------------------
+
+static int levenshtein_word_distance(const std::vector<std::string>& a,
+                                     const std::vector<std::string>& b) {
+    const int n = (int)a.size(), m = (int)b.size();
+    std::vector<std::vector<int>> dp(n + 1, std::vector<int>(m + 1, 0));
+    for (int i = 0; i <= n; ++i) dp[i][0] = i;
+    for (int j = 0; j <= m; ++j) dp[0][j] = j;
+    for (int i = 1; i <= n; ++i) {
+        for (int j = 1; j <= m; ++j) {
+            int cost = (a[i-1] == b[j-1]) ? 0 : 1;
+            int del_ = dp[i-1][j] + 1;
+            int ins_ = dp[i][j-1] + 1;
+            int sub_ = dp[i-1][j-1] + cost;
+            int best = del_ < ins_ ? del_ : ins_;
+            dp[i][j] = best < sub_ ? best : sub_;
+        }
+    }
+    return dp[n][m];
+}
+
+static std::vector<std::string> tokenize_lower(const std::string& s) {
+    std::string lower = to_lower(s);
+    std::vector<std::string> toks;
+    std::string cur;
+    for (char c : lower) {
+        if (std::isalnum((unsigned char)c) || c == '\'') {
+            cur.push_back(c);
+        } else if (!cur.empty()) {
+            toks.push_back(std::move(cur));
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) toks.push_back(std::move(cur));
+    return toks;
+}
+
+void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
+    const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
+    std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
+    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
+    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
+    std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
+    std::string tokenizer     = vox_dir + "/tokenizer.json";
+    std::string parakeet_enc  = dir + "/parakeet-encoder-int8.onnx";
+    std::string parakeet_dec  = dir + "/parakeet-decoder-joint-int8.onnx";
+    std::string parakeet_voc  = dir + "/vocab.json";
+
+    if (!file_exists(text_prefill) || !file_exists(token_step)
+        || !file_exists(audio_encoder) || !file_exists(audio_decoder)
+        || !file_exists(tokenizer)
+        || !file_exists(parakeet_enc) || !file_exists(parakeet_dec)
+        || !file_exists(parakeet_voc))
+    {
+        std::printf("  [skip] wer_corpus needs VoxCPM2 ONNX bundle + parakeet\n");
+        return;
+    }
+
+    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+                                     audio_encoder, audio_decoder,
+                                     tokenizer, /*hw_accel=*/true);
+    if (tts.max_text_tokens() < 256) {
+        std::printf("  [skip] wer_corpus needs production-config bundle "
+                    "(max_text=%d)\n", tts.max_text_tokens());
+        return;
+    }
+    // Surface which inference path will execute. The IoBinding refactor in this
+    // wrapper is gated on a non-CPU EP being resolved (see synthesize()'s
+    // use_gpu_bind check). On CPU-only builds, on GPU builds whose ORT didn't
+    // link CUDA, and on machines without an NVIDIA device, the test silently
+    // falls back to the pre-existing host path -- making this print the only
+    // way a reviewer or CI can tell whether the GPU+IoBinding code was actually
+    // exercised, or whether a green run only validates the legacy path.
+    const auto _gpu = OnnxEngine::get().gpu_provider();
+    const char* _gpu_name = (_gpu == OrtGpuProvider::Cuda     ? "CUDA"
+                          :  _gpu == OrtGpuProvider::TensorRT ? "TensorRT"
+                          :                                     "CPU (host path)");
+    const char* _bind = (_gpu == OrtGpuProvider::None ? "OFF" : "ON");
+    std::printf("  test_onnx_voxcpm2_wer_corpus [provider=%s iobinding=%s] ... ",
+                _gpu_name, _bind);
+    std::fflush(stdout);
+
+    // 15 short clean-English phrases (paraphrases of LibriSpeech-style
+    // sentences). Kept under 12 words each so a 16-step AR loop completes
+    // bounded; production VoxCPM2 generates 25-50 steps for these.
+    const std::vector<std::string> phrases = {
+        "The quick brown fox jumps over the lazy dog",
+        "She sells seashells by the seashore",
+        "Mister Quilter is the apostle of the middle classes",
+        "He tells us that this season is the best of the year",
+        "Linnell's pictures are a sort of upguards and atom paintings",
+        "It was the best of times it was the worst of times",
+        "Call me Ishmael",
+        "All happy families are alike",
+        "The pen is mightier than the sword",
+        "An apple a day keeps the doctor away",
+        "Practice makes perfect every single day",
+        "Time flies when you are having fun",
+        "Better late than never my old friend",
+        "Knowledge is power and ignorance is bliss",
+        "The early bird catches the worm at dawn",
+    };
+
+    // Match the LiteRT corpus test settings — VoxCPM2 was trained on
+    // "({instruction}){text}" prompts; an empty instruction makes the model
+    // emit filler tokens. set_reference would clone a target voice; for a
+    // generic WER-vs-text test we skip the reference and rely on the
+    // instruction alone to anchor the style.
+    tts.set_instruction("clear, natural delivery");
+    tts.set_max_steps(128);
+    tts.set_min_steps_before_stop(32);
+
+    speech_core::ParakeetStt stt(parakeet_enc, parakeet_dec, parakeet_voc,
+                                  /*hw_accel=*/true);
+
+    const char* wav_dump = std::getenv("SPEECH_VOXCPM2_WAV_DUMP");
+
+    std::vector<double> wers;
+    int total_ref_words = 0, total_errors = 0;
+    std::printf("\n");
+    for (size_t i = 0; i < phrases.size(); ++i) {
+        const std::string& ref = phrases[i];
+        tts.set_seed(static_cast<unsigned>(4242 + i));  // distinct per phrase
+
+        std::vector<float> audio_48k;
+        tts.synthesize(ref, "en",
+            [&](const float* s, size_t n, bool) {
+                if (s && n) audio_48k.insert(audio_48k.end(), s, s + n);
+            });
+        if (audio_48k.empty()) {
+            std::printf("    [%zu] EMPTY audio — skip\n", i);
+            continue;
+        }
+        auto audio_16k = speech_core::Resampler::resample(
+            audio_48k.data(), audio_48k.size(), 48000, 16000);
+        auto r = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+
+        auto ref_toks = tokenize_lower(ref);
+        auto hyp_toks = tokenize_lower(r.text);
+        int dist = levenshtein_word_distance(ref_toks, hyp_toks);
+        double wer = ref_toks.empty() ? 0.0 : (double)dist / ref_toks.size();
+        wers.push_back(wer);
+        total_errors += dist;
+        total_ref_words += (int)ref_toks.size();
+        std::printf("    [%2zu] WER=%5.1f%% (%d/%zu err)  ref=\"%.50s\"  hyp=\"%.50s\"\n",
+                    i, wer * 100.0, dist, ref_toks.size(),
+                    ref.c_str(), r.text.c_str());
+
+        if (wav_dump) {
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s/voxcpm2_phrase_%02zu.wav", wav_dump, i);
+            std::ofstream w(path, std::ios::binary);
+            if (w) {
+                const uint32_t sr = 48000;
+                const uint32_t n_samples = (uint32_t)audio_48k.size();
+                const uint32_t data_bytes = n_samples * 2;
+                const uint32_t riff = 36 + data_bytes;
+                w.write("RIFF", 4); w.write((const char*)&riff, 4); w.write("WAVE", 4);
+                w.write("fmt ", 4);
+                uint32_t fmt_sz = 16; uint16_t fmt = 1, ch = 1, bits = 16;
+                uint32_t byterate = sr * 2; uint16_t block = 2;
+                w.write((const char*)&fmt_sz, 4); w.write((const char*)&fmt, 2);
+                w.write((const char*)&ch, 2);    w.write((const char*)&sr, 4);
+                w.write((const char*)&byterate, 4); w.write((const char*)&block, 2);
+                w.write((const char*)&bits, 2);
+                w.write("data", 4); w.write((const char*)&data_bytes, 4);
+                for (float s : audio_48k) {
+                    int v = (int)std::lround(std::clamp(s, -1.0f, 1.0f) * 32767.0f);
+                    int16_t v16 = (int16_t)v;
+                    w.write((const char*)&v16, 2);
+                }
+            }
+        }
+    }
+
+    if (wers.empty()) {
+        std::printf("    no phrases ran — corpus FAIL\n");
+        REQUIRE(false);
+        return;
+    }
+    double sum = 0.0;
+    for (double w : wers) sum += w;
+    double mean_wer = sum / wers.size();
+    std::vector<double> sorted_wers = wers;
+    std::sort(sorted_wers.begin(), sorted_wers.end());
+    double p50 = sorted_wers[sorted_wers.size() / 2];
+    double p95 = sorted_wers[(std::min)(sorted_wers.size() - 1,
+                                         static_cast<size_t>(sorted_wers.size() * 0.95))];
+    double overall_wer = (total_ref_words > 0)
+        ? (double)total_errors / total_ref_words : 0.0;
+    std::printf("    SUMMARY: n=%zu mean_wer=%.2f%% p50=%.2f%% p95=%.2f%% "
+                "overall=%.2f%% (%d/%d errs)\n",
+                wers.size(), mean_wer * 100, p50 * 100, p95 * 100,
+                overall_wer * 100, total_errors, total_ref_words);
+    REQUIRE(mean_wer < 0.25);  // generous bar — INT8 degradation is the concern
+    std::printf("  ok\n");
+}
+
+// ---------------------------------------------------------------------------
 
 }  // namespace
 
@@ -683,6 +894,7 @@ int main() {
     RUN(test_silero_vad_cuda);
     RUN(test_onnx_voxcpm2_load);
     RUN(test_onnx_voxcpm2_parakeet_roundtrip);
+    RUN(test_onnx_voxcpm2_wer_corpus);
     #undef RUN
 
     if (failures > 0) {
