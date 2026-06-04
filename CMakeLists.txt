@@ -102,6 +102,7 @@ if(SPEECH_CORE_WITH_ONNX)
     set(_SPEECH_CORE_MODELS_SOURCES
         src/models/silero/silero_vad.cpp
         src/models/parakeet/parakeet_stt.cpp
+        src/models/nemotron/nemotron_multilingual_stt.cpp
         src/models/kokoro/kokoro_tts.cpp
         src/models/kokoro/kokoro_phonemizer.cpp
         src/models/kokoro/kokoro_multilingual.cpp
@@ -199,6 +200,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_pyannote_segmentation.cpp
         src/models/litert/litert_omnilingual_stt.cpp
         src/models/litert/litert_nemotron_streaming_stt.cpp
+        src/models/litert/litert_nemotron_multilingual_stt.cpp
     )
 
     target_include_directories(speech_core_models_litert

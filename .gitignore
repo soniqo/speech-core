@@ -2,6 +2,8 @@ build/
 build-*/
 cmake-build-*/
 dist/
+.venv/
+venv/
 .cache/
 compile_commands.json
 *.o

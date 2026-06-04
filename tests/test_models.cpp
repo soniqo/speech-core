@@ -21,6 +21,7 @@
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/parakeet_stt.h"
+#include "speech_core/models/nemotron_multilingual_stt.h"
 #include "speech_core/models/silero_vad.h"
 #include "speech_core/vad/streaming_vad.h"
 
@@ -253,6 +254,34 @@ void test_parakeet_stt(const std::string& dir) {
 
     std::printf("ok (silence text=\"%s\" conf=%.3f)\n",
                 result.text.c_str(), result.confidence);
+}
+
+// ---------------------------------------------------------------------------
+
+void test_nemotron_multilingual_stt(const std::string& dir) {
+    std::string enc = dir + "/nemotron-multilingual-encoder.onnx";
+    std::string dec = dir + "/nemotron-multilingual-decoder.onnx";
+    std::string jnt = dir + "/nemotron-multilingual-joint.onnx";
+    std::string voc = dir + "/nemotron-multilingual-vocab.json";
+    std::string lng = dir + "/nemotron-multilingual-languages.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt)
+        || !file_exists(voc) || !file_exists(lng)) {
+        std::printf("  [skip] nemotron-multilingual files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_nemotron_multilingual_stt ... ");
+
+    speech_core::NemotronMultilingualStt stt(enc, dec, jnt, voc, lng, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+    REQUIRE(stt.supports_streaming());
+    REQUIRE(stt.set_language("en-US"));  // English prompt slot must resolve
+
+    // Pure silence → no crash, valid (possibly empty) transcription.
+    std::vector<float> silence(16000 * 1, 0.0f);
+    auto result = stt.transcribe(silence.data(), silence.size(), 16000);
+    REQUIRE(result.confidence >= 0.0f && result.confidence <= 1.0f);
+
+    std::printf("ok (silence text=\"%.40s\")\n", result.text.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -888,6 +917,7 @@ int main() {
     RUN(test_silero_vad);
     RUN(test_silero_vad_real_speech);
     RUN(test_parakeet_stt);
+    RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
     RUN(test_deepfilter);
     RUN(test_kokoro_parakeet_roundtrip);

@@ -8,8 +8,8 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Kokoro TTS, DeepFilterNet3.
-- **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
+- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3.
+- **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
 
@@ -20,6 +20,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) | Voice activity detection | ✓ | ✓ |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) | Speech-to-text | ✓ | ✓ |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | ✓ | ✓ |
+| [Nemotron-3.5 ASR Streaming Multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) | Streaming speech-to-text (multilingual, prompt-conditioned) | ✓ | ✓ |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |

@@ -15,6 +15,7 @@
 #include "speech_core/interfaces.h"
 #include "speech_core/diarization/diarization_pipeline.h"
 #include "speech_core/models/litert_nemotron_streaming_stt.h"
+#include "speech_core/models/litert_nemotron_multilingual_stt.h"
 #include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_pyannote_segmentation.h"
@@ -1118,6 +1119,46 @@ void test_litert_nemotron_streaming_stt(const std::string& dir) {
     std::printf("partials=%zu final=\"%.50s\" ok\n", partials, result.text.c_str());
 }
 
+void test_litert_nemotron_multilingual_stt(const std::string& dir) {
+    std::string enc = dir + "/nemotron-multilingual-encoder.tflite";
+    std::string dec = dir + "/nemotron-multilingual-decoder.tflite";
+    std::string jnt = dir + "/nemotron-multilingual-joint.tflite";
+    std::string voc = dir + "/nemotron-multilingual-vocab.json";
+    std::string lng = dir + "/nemotron-multilingual-languages.json";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(jnt)
+        || !file_exists(voc) || !file_exists(lng)) {
+        std::printf("  [skip] nemotron-multilingual files not in %s\n", dir.c_str());
+        return;
+    }
+    auto wav = load_wav_mono_pcm16(test_audio_path());
+    if (wav.samples.empty()) {
+        std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
+        return;
+    }
+    std::printf("  test_litert_nemotron_multilingual_stt ... ");
+
+    speech_core::LiteRTNemotronMultilingualStt stt(enc, dec, jnt, voc, lng, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+    REQUIRE(stt.supports_streaming());
+    REQUIRE(stt.set_language("en-US"));  // English prompt slot must resolve
+
+    auto audio = wav.sample_rate == 16000
+        ? wav.samples
+        : speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
+                                           wav.sample_rate, 16000);
+    REQUIRE(!audio.empty());
+
+    stt.begin_stream(16000);
+    constexpr size_t kFeed = 1600;  // 100 ms @ 16 kHz
+    for (size_t off = 0; off < audio.size(); off += kFeed) {
+        size_t len = std::min(kFeed, audio.size() - off);
+        stt.push_chunk(audio.data() + off, len);
+    }
+    auto result = stt.end_stream();
+
+    std::printf("final=\"%.50s\" ok\n", result.text.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -1163,6 +1204,7 @@ int main() {
     RUN(test_litert_omnilingual_stt);
     RUN(test_litert_diarization);
     RUN(test_litert_nemotron_streaming_stt);
+    RUN(test_litert_nemotron_multilingual_stt);
     RUN(test_voxcpm2_tokenizer);
     RUN(test_litert_voxcpm2_load);
     RUN(test_litert_voxcpm2_synthesize);
