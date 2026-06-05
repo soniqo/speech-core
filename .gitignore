@@ -5,6 +5,8 @@ dist/
 .venv/
 venv/
 .cache/
+__pycache__/
+*.pyc
 compile_commands.json
 *.o
 *.a
