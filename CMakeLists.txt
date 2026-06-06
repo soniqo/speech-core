@@ -10,11 +10,17 @@ option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
 option(SPEECH_CORE_WITH_CUDA "Enable NVIDIA GPU execution providers (CUDA / TensorRT) in the ONNX engine. Requires SPEECH_CORE_WITH_ONNX=ON and ORT_DIR pointing at a GPU-enabled ONNX Runtime (onnxruntime-gpu). Selection is further gated at runtime by env SPEECH_CORE_ORT_PROVIDER and provider availability, with automatic CPU fallback." OFF)
 option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
+option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 
 if(SPEECH_CORE_WITH_CUDA AND NOT SPEECH_CORE_WITH_ONNX)
     message(FATAL_ERROR "SPEECH_CORE_WITH_CUDA=ON requires SPEECH_CORE_WITH_ONNX=ON "
                         "(CUDA / TensorRT EPs are ONNX-Runtime-only; LiteRT cannot use CUDA).")
+endif()
+
+if(SPEECH_CORE_WITH_HF_DOWNLOAD AND NOT SPEECH_CORE_WITH_LITERT)
+    message(FATAL_ERROR "SPEECH_CORE_WITH_HF_DOWNLOAD=ON requires SPEECH_CORE_WITH_LITERT=ON "
+                        "(the download feature fetches the LiteRT VoxCPM2 bundle).")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -195,6 +201,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_parakeet_stt.cpp
         src/models/litert/litert_voxcpm2_tts.cpp
         src/models/litert/voxcpm2_c.cpp
+        src/models/litert/hf_download.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
         src/models/litert/litert_wespeaker_embedding.cpp
         src/models/litert/litert_pyannote_segmentation.cpp
@@ -223,6 +230,16 @@ if(SPEECH_CORE_WITH_LITERT)
 
     target_link_libraries(speech_core_models_litert PUBLIC speech_core litert)
 
+    # Optional first-run model download (sc_voxcpm2_create_from_pretrained).
+    # libcurl provides resumable HTTPS with an OS-native TLS backend (Schannel
+    # on Windows, Secure Transport / OpenSSL elsewhere). PRIVATE: the C ABI
+    # hides curl entirely, so downstreams don't need libcurl headers.
+    if(SPEECH_CORE_WITH_HF_DOWNLOAD)
+        find_package(CURL REQUIRED)
+        target_link_libraries(speech_core_models_litert PRIVATE CURL::libcurl)
+        target_compile_definitions(speech_core_models_litert PRIVATE SPEECH_CORE_WITH_HF_DOWNLOAD)
+    endif()
+
     # VoxCPM2 voice-cloning CLI — desktop only (skipped on Android/embedded
     # consumers that link the library but don't want an executable target).
     if(NOT ANDROID)
@@ -230,6 +247,18 @@ if(SPEECH_CORE_WITH_LITERT)
         target_link_libraries(speech_voxcpm2_clone PRIVATE speech_core_models_litert)
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+    endif()
+
+    # Debug CLI for the HF downloader (resume/retry testing). Links the internal
+    # hf_download header directly; libcurl rides in via speech_core_models_litert.
+    if(SPEECH_CORE_WITH_HF_DOWNLOAD AND NOT ANDROID)
+        add_executable(hf_fetch examples/litert/hf_fetch.cpp)
+        target_link_libraries(hf_fetch PRIVATE speech_core_models_litert)
+        target_include_directories(hf_fetch PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/models/litert)
+        if(MSVC)
+            target_compile_definitions(hf_fetch PRIVATE _USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
         endif()
     endif()
 endif()

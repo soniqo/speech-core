@@ -41,6 +41,40 @@ typedef void (*sc_voxcpm2_chunk_fn)(const float* samples, size_t length,
 /// tokenizer.json). Returns NULL on failure (reason logged to stderr).
 sc_voxcpm2_t sc_voxcpm2_create(const char* bundle_dir);
 
+/// Download progress callback for sc_voxcpm2_create_from_pretrained.
+/// `downloaded`/`total` are bytes for the current file (`total` is 0 when the
+/// size is unknown); `file_index`/`file_count` track overall progress. Invoked
+/// on the calling thread during the download; keep it light.
+typedef void (*sc_voxcpm2_progress_fn)(const char* filename, int file_index,
+                                       int file_count, uint64_t downloaded,
+                                       uint64_t total, void* context);
+
+/// Like sc_voxcpm2_create, but first ensures the VoxCPM2 LiteRT bundle for
+/// `model_id` (a Hugging Face repo, e.g. "soniqo/VoxCPM2-LiteRT") is present in
+/// a local cache, downloading any missing files. Downloads are resumable and
+/// retried, so they tolerate network interruptions (override the host with the
+/// HF_ENDPOINT env var to use a mirror).
+///
+///   model_id         : HF repo id.
+///   revision         : git revision/branch; NULL or "" means "main".
+///   cache_dir        : where bundles are cached; NULL uses a per-user default
+///                      (SPEECH_CORE_CACHE_DIR env, else the OS cache dir). The
+///                      bundle lands in <cache_dir>/<model_id with '/'→'__'>.
+///   on_progress      : optional, may be NULL.
+///   progress_context : passed back to on_progress.
+///
+/// Returns NULL on failure — including when speech-core was built without
+/// SPEECH_CORE_WITH_HF_DOWNLOAD (reason logged to stderr).
+sc_voxcpm2_t sc_voxcpm2_create_from_pretrained(const char* model_id,
+                                               const char* revision,
+                                               const char* cache_dir,
+                                               sc_voxcpm2_progress_fn on_progress,
+                                               void* progress_context);
+
+/// Whether this build has model-download support (SPEECH_CORE_WITH_HF_DOWNLOAD)
+/// compiled in. When false, sc_voxcpm2_create_from_pretrained always fails.
+bool sc_voxcpm2_has_download_support(void);
+
 /// Destroy a synthesizer and free its resources.
 void sc_voxcpm2_destroy(sc_voxcpm2_t synth);
 
