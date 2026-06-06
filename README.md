@@ -6,6 +6,12 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 **[📖 Docs](docs/)** · **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple (Swift)](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
+## Demo
+
+[![Voice cloning with VoxCPM2 — speech-studio demo](https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg)](https://www.youtube.com/watch?v=EuIU8tOWyzg)
+
+Voice cloning with VoxCPM2 driven through speech-core's `TTSInterface` (speech-studio demo).
+
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
 - **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3.
