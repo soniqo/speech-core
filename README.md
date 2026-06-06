@@ -8,9 +8,13 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 ## Demo
 
-[![Voice cloning with VoxCPM2 — speech-studio demo](https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg)](https://www.youtube.com/watch?v=EuIU8tOWyzg)
+<p>
+  <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg">
+    <img src="https://img.youtube.com/vi/EuIU8tOWyzg/hqdefault.jpg" width="320" alt="Voice cloning with VoxCPM2 — YouTube demo"/>
+  </a>
+</p>
 
-Voice cloning with VoxCPM2 driven through speech-core's `TTSInterface` (speech-studio demo).
+▶️ **[Watch on YouTube](https://www.youtube.com/watch?v=EuIU8tOWyzg)** — voice cloning with VoxCPM2 driven through speech-core's `TTSInterface` ([speech-studio](https://github.com/soniqo/speech-studio) demo).
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
