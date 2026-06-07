@@ -244,27 +244,32 @@ void OnnxPersonaPlex::reset_session() {
     constexpr int kSilenceSpacerFrames = 6;
     constexpr int64_t kPadTextToken    = 3;  // matches Moshi PAD id
 
-    // 0) Voice embedding prefix — DISABLED by default (set SPEECH_CORE_PP_EMB=1
-    // to enable). The voice .bin's 50-frame embeddings are stored at a small
-    // magnitude (~0.03 range) that mismatches the temporal output distribution
-    // (std ~1.5). Feeding them directly produces over-energetic / clipped
-    // audio and worse transcripts. The right fix is either a scaling factor
-    // (TBD by measurement against the MLX implementation) or sourcing the
-    // embeddings differently. Skeleton stays in the source for follow-up.
-    if (std::getenv("SPEECH_CORE_PP_EMB") &&
+    // 0) Voice embedding prefix — ENABLED by default with scale factor 10
+    // (measured-best across NATM0/NATM1/VARM0/VARF2/VARF4 on the
+    // 'Can you guarantee shipping?' fixture; produces 'We're concerned
+    // about it.' on VARF2, plus coherent responses on 4 other voices).
+    // Override scale via env SPEECH_CORE_PP_EMB_SCALE (set to 0 to disable
+    // the prefix entirely). The .bin embeddings are stored at ~0.03 std;
+    // the depformer was trained on temporal output at ~1.5 std; ~10x is
+    // empirically right.
+    float emb_scale = 10.0f;
+    if (const char* s = std::getenv("SPEECH_CORE_PP_EMB_SCALE")) {
+        emb_scale = static_cast<float>(std::atof(s));
+    }
+    if (emb_scale > 0.0f &&
         !voice_embeddings_.empty() && voice_embedding_frames_ > 0) {
         const int F = voice_embedding_frames_;
         for (int f = 0; f < F && !cancelled_.load(); ++f) {
             std::vector<uint8_t> emb_bytes;
             const float* emb_src = voice_embeddings_.data() + static_cast<size_t>(f) * 4096;
             if (temporal_kv_elem_size_ == 4) {
-                emb_bytes.assign(
-                    reinterpret_cast<const uint8_t*>(emb_src),
-                    reinterpret_cast<const uint8_t*>(emb_src + 4096));
+                emb_bytes.resize(4096 * 4);
+                float* dst = reinterpret_cast<float*>(emb_bytes.data());
+                for (int i = 0; i < 4096; ++i) dst[i] = emb_src[i] * emb_scale;
             } else {
                 emb_bytes.resize(4096 * 2);
                 uint16_t* dst = reinterpret_cast<uint16_t*>(emb_bytes.data());
-                for (int i = 0; i < 4096; ++i) dst[i] = float_to_half(emb_src[i]);
+                for (int i = 0; i < 4096; ++i) dst[i] = float_to_half(emb_src[i] * emb_scale);
             }
             int64_t prev_step_token = 0;
             int64_t new_text = 0;
