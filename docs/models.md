@@ -263,6 +263,19 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
 | 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
 
+### Verified end-to-end on the actual bundle (FP16, 17 GB)
+
+`tests/run_personaplex.cpp` is a standalone CLI that loads the wrapper, feeds N frames of silence, and reports per-frame latency. Measured on an RTX 5090 (Blackwell, sm_120) with ORT 1.26 GPU + CUDA 12.8 toolkit + cuDNN 9:
+
+| EP | Load | Per-frame | RTF (12.5 Hz = 80 ms/frame) |
+|---|---|---|---|
+| CPU | 29 s | 1935 ms | 24.2× slower than realtime |
+| CUDA (5090) | 11.3 s | 473 ms | **5.9× slower than realtime** |
+
+The CUDA path runs through all four graphs end-to-end (mimi_encode → temporal_step → 16 depformer_step → mimi_decode) and the `FullDuplexChunk` callback fires with the correct sample count. The 6× sub-realtime gap is from KV-cache marshalling host↔device per frame (ORT logs `16 Memcpy nodes added to the graph`). IOBinding + GPU-resident cache (mirror of VoxCPM2 task #44) would close most of this.
+
+Output is **shaped like speech but not semantically meaningful yet** because the wrapper ships with greedy argmax + no SentencePiece + no voice prompt + no delay pattern. Those are scoped follow-ups listed below.
+
 ### Follow-up refinements (tracked outside this initial drop)
 
 - **SentencePiece encode/decode** — wrapper loads the tokenizer blob but doesn't tokenize text yet; encode/decode needed for the system prompt and the text_tokens field of `FullDuplexChunk`
