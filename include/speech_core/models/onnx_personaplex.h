@@ -101,10 +101,11 @@ private:
     void mimi_decode(const std::vector<int64_t>& tokens, std::vector<float>& pcm_out);
     void temporal_forward(int64_t text_token,
                           const std::vector<int64_t>& audio_tokens_16,
-                          std::vector<uint16_t>& hidden_out);
-    void depformer_step(const std::vector<uint16_t>& hidden,
+                          std::vector<uint8_t>& hidden_out);
+    void depformer_step(const std::vector<uint8_t>& hidden,
                         int64_t prev_token, int step_idx,
                         std::vector<float>& logits_out);
+    void detect_temporal_kv_dtype();
     int  sample_token(const std::vector<float>& logits, float temperature, int top_k);
 
     // SentencePiece text decoding/encoding (minimal vendored impl in PR 5).
@@ -127,9 +128,14 @@ private:
 
     // KV cache buffers — concat-style. Temporal is ~1.5 GB fp16 at ctx=3000;
     // depformer is small (24 KB at ctx=8). Allocated lazily on first call.
-    std::vector<uint16_t> temporal_k_;   // [L=32, B=1, H=32, T_past, D=128] fp16
-    std::vector<uint16_t> temporal_v_;
-    int                   temporal_t_past_ = 0;
+    // Stored as raw bytes because the precision depends on the loaded ONNX
+    // model (FP16 for the standard bundle, FP32 for INT8-quantized bundle).
+    // Detected from the session's input dtype at construction time.
+    std::vector<uint8_t> temporal_k_;
+    std::vector<uint8_t> temporal_v_;
+    int                  temporal_t_past_ = 0;
+    int                  temporal_kv_onnx_type_ = 10;  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 default
+    size_t               temporal_kv_elem_size_ = 2;   // bytes per element
 
     // Voice prompt (loaded from voices/<name>.bin via voices_to_bin.py).
     // Format: magic + version + num_streams=17 + history=4 + cache[17*4] int64
