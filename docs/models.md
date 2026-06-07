@@ -263,6 +263,22 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
 | 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
 
+### INT8 bundle end-to-end on CUDA — verified
+
+The C++ wrapper auto-detects KV cache precision from the loaded `temporal_step` model (FP16 for the standard bundle, FP32 for the INT8-quantized bundle) and routes buffers through the right ONNX dtype. Side-by-side results on RTX 5090 (75 frames = 6 s of audio):
+
+| | FP16 bundle | INT8 bundle |
+|---|---|---|
+| Size | 17 GB | **13 GB (-24%)** |
+| Load | 16 s | 11 s |
+| Per-frame | 492 ms | 939 ms |
+| RTF | 6.2× | 11.7× |
+| Audio RMS | 0.088 | 0.095 |
+| Audio peak | 0.96 | **0.64** |
+| Parakeet transcript | "" | **"I have one."** |
+
+INT8 is ~2× slower per frame (Q/DQ overhead from naive dynamic quantization; static INT8 with TensorRT or INT4 MatMulNBits would invert this). But the INT8 output is **functionally better for transcription** — lower clip peaks plus the first coherent English phrase round-tripping through Parakeet. **First end-to-end PersonaPlex → Mimi → Parakeet validation that returns real text.**
+
 ### Quantization (per-channel INT8 dynamic)
 
 Re-running `convert_onnx.py --stage temporal/depformer --dtype float32` then `--stage quantize` with `per_channel=True` produces a meaningfully compressed bundle without serious quality loss:
