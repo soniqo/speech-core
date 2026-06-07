@@ -263,6 +263,22 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
 | 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
 
+### Mixed-precision bundle (11 GB) — INT8 temporal + FP16 depformer
+
+The C++ wrapper auto-detects KV dtype **per session** (temporal and depformer independently). When they differ, it casts the hidden state at the boundary (`hidden_to_depformer_dtype`). Three bundle layouts work end-to-end:
+
+| Bundle | mimi | temporal | depformer | Size | KV path |
+|---|---|---|---|---|---|
+| Pure FP16 | FP32 | FP16 | FP16 | **17 GB** | FP16 throughout |
+| Pure INT8 | FP32 | INT8 / FP32-KV | FP32 | **13 GB** | FP32 throughout |
+| **Mixed** | FP32 | INT8 / FP32-KV | FP16 | **11 GB** | FP32→FP16 cast at depformer boundary |
+
+The mixed bundle is **35% smaller than FP16** with no quality regression — same coherent transcripts ("But I think all the things that I'm gonna do.", "I think that's hard after that.").
+
+Memory protections on top:
+- `reset_session()` swaps the KV vectors with empty ones (`std::vector<>().swap(...)`) to release capacity, not just `.clear()`
+- `temporal_forward()` soft-caps `t_past` at `kMaxContext=3000` and ring-shifts the oldest column on each step past the cap — bounded memory + stable quality (positions beyond training ctx are attention-poison anyway)
+
 ### Full prefill sequence — coherent multi-voice responses
 
 The wrapper now mirrors speech-swift's MLX prefill layout end-to-end:
