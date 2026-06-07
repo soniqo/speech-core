@@ -231,7 +231,34 @@ auto final   = stt.end_stream();
 
 ## OnnxPersonaPlex
 
-> **Status: structural skeleton complete, end-to-end refinements in progress.** Four ONNX graphs exported and parity-verified; FullDuplexSpeechInterface + C++ wrapper compile and link. See the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md) and runtime notes in `NOTES.md` alongside it.
+> **Status: functional end-to-end with coherent conversational output.** All four ONNX graphs exported, parity-verified, per-channel INT8 quantized. Three production bundle variants (FP16 17 GB / INT8 13 GB / Mixed 11 GB) all run end-to-end on CUDA EP with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio. See the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md) and runtime notes in `NOTES.md` alongside it.
+
+### Quick start — the customer-service round-trip
+
+```bash
+# Build (Windows, ORT GPU 1.26):
+cmake -B build-ort -DSPEECH_CORE_WITH_ONNX=ON -DSPEECH_CORE_WITH_CUDA=ON \
+    -DORT_DIR=path/to/onnxruntime-win-x64-gpu-1.26.0
+cmake --build build-ort --config Release --target run_personaplex
+
+# Run on the speech-swift test fixture ("Can you guarantee the replacement
+# will be shipped tomorrow?"):
+SPEECH_CORE_PARAKEET_DIR=scripts/models \
+SPEECH_CORE_PP_PROMPT=helpful \
+run_personaplex.exe scripts/personaplex-mixed 50 \
+    tests/data/test_audio.wav VARF2
+
+# Expected: Parakeet transcribes the agent audio as "We're concerned about it."
+```
+
+### Configuration env vars
+
+| Env | Default | Effect |
+|---|---|---|
+| `SPEECH_CORE_PP_PROMPT` | `helpful` | System prompt name: `helpful` / `expert` / `warm` / `direct` (pre-tokenized in `system_prompts.bin`) |
+| `SPEECH_CORE_PP_EMB_SCALE` | `10` | Voice embedding prefix scale factor; `0` disables the embedding prefix |
+| `SPEECH_CORE_PP_GPU_KV` | on | Keep KV cache OrtValues GPU-resident across calls (auto-on when CUDA EP resolves); `0` falls back to host mirror |
+| `SPEECH_MODEL_DIR` | — | Where `test_models` looks for the bundle (see test harness section) |
 
 NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Moshi architecture. Listens and speaks simultaneously at 12.5 Hz, conditioned on a voice preset and text system prompt. Already shipped in [speech-swift](https://github.com/) as native Swift/MLX (8-bit / 4-bit). This ONNX path targets CUDA on Linux/Windows servers via `SPEECH_CORE_WITH_ONNX=ON`.
 
