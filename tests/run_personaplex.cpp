@@ -10,6 +10,11 @@
 #include "speech_core/models/onnx_personaplex.h"
 #include "speech_core/models/parakeet_stt.h"
 
+#if defined(_WIN32)
+#  include <windows.h>
+#  include <psapi.h>
+#endif
+
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -70,6 +75,18 @@ std::vector<float> resample_linear(const std::vector<float>& src, int src_rate, 
         out[i] = static_cast<float>(v0 * (1.0 - f) + v1 * f);
     }
     return out;
+}
+
+// Peak working-set size in MB (Windows). Useful for memory benchmarking
+// across the FP16 / INT8 / mixed bundles.
+size_t peak_rss_mb() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return pmc.PeakWorkingSetSize / (1024 * 1024);
+    }
+#endif
+    return 0;
 }
 
 // Basic acoustic metrics on the agent audio. Speech should have non-trivial
@@ -231,6 +248,10 @@ int main(int argc, char** argv) {
         double frame_ms = static_cast<double>(run_ms) / pp.frames_generated();
         std::printf("  per-frame:        %.1f ms\n", frame_ms);
         std::printf("  RTF (12.5 Hz):    %.3f (1.0 = realtime)\n", frame_ms / 80.0);
+    }
+
+    if (size_t rss = peak_rss_mb()) {
+        std::printf("  peak host RAM:    %zu MB\n", rss);
     }
 
     // Audio integrity stats — silence has rms<1e-4; speech is rms>=0.01.
