@@ -187,9 +187,20 @@ void OnnxPersonaPlex::reset_session() {
     frames_generated_ = 0;
     cancelled_.store(false);
 
-    // Voice prefill: replay the voice cache's 4-token tail through
-    // temporal_step. Populates KV with speaker-conditioned state.
+    // PersonaPlex prefill sequence (matches speech-swift's MLX layout):
+    //   1. Voice prompt replay (here: 4-token cache tail)
+    //   2. Silence spacer ~0.5s = 6 frames
+    //   3. Text system prompt (one token per frame)
+    //   4. Silence spacer ~0.5s = 6 frames
+    //   5. respond_stream begins -> user audio frames
+    // Each section pushes KV state but discards the hidden output. Silence
+    // spacers feed PAD text + zero audio tokens through temporal_step so the
+    // model gets clean transition boundaries between conditioning sections.
     std::vector<uint8_t> warmup_hidden;
+    constexpr int kSilenceSpacerFrames = 6;
+    constexpr int64_t kPadTextToken    = 3;  // matches Moshi PAD id
+
+    // 1) Voice prompt replay
     if (!voice_cache_.empty() && voice_history_size_ > 0) {
         const int H = voice_history_size_;
         for (int t = 0; t < H && !cancelled_.load(); ++t) {
@@ -203,10 +214,15 @@ void OnnxPersonaPlex::reset_session() {
         }
     }
 
-    // System-prompt prefill: feed pre-tokenized text IDs through temporal_step
-    // with audio streams zeroed. Mirrors speech-swift's "Text system prompt
-    // (one token per frame)" stage. Uses the prompt named in system_prompt_,
-    // defaulting to "helpful" if the name isn't loaded.
+    // 2) Silence spacer after voice
+    {
+        std::vector<int64_t> silence_audio(kAudioCodebooks, 0);
+        for (int i = 0; i < kSilenceSpacerFrames && !cancelled_.load(); ++i) {
+            temporal_forward(kPadTextToken, silence_audio, warmup_hidden);
+        }
+    }
+
+    // 3) System-prompt prefill: one text token per frame
     if (!system_prompts_.empty()) {
         auto it = system_prompts_.find(system_prompt_);
         if (it == system_prompts_.end()) {
@@ -219,6 +235,14 @@ void OnnxPersonaPlex::reset_session() {
                 if (cancelled_.load()) break;
                 temporal_forward(static_cast<int64_t>(id), silence_audio, warmup_hidden);
             }
+        }
+    }
+
+    // 4) Silence spacer after system prompt — boundary before user audio
+    {
+        std::vector<int64_t> silence_audio(kAudioCodebooks, 0);
+        for (int i = 0; i < kSilenceSpacerFrames && !cancelled_.load(); ++i) {
+            temporal_forward(kPadTextToken, silence_audio, warmup_hidden);
         }
     }
 }
