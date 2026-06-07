@@ -162,6 +162,27 @@ void OnnxPersonaPlex::reset_session() {
     temporal_t_past_ = 0;
     frames_generated_ = 0;
     cancelled_.store(false);
+
+    // Replay the voice prompt's cached 4-token tail through the temporal_step
+    // graph to warm up the KV cache with speaker-conditioned state. The voice
+    // cache layout is [num_streams=17, history=4]; stream 0 is text, 1-8 user
+    // audio, 9-16 agent audio. We don't sample new tokens — just feed the
+    // cached tokens directly as the LM input, letting the model build cache
+    // state from a voice-prior. Discards the hidden output (no agent token
+    // emission during warmup).
+    if (!voice_cache_.empty() && voice_history_size_ > 0) {
+        const int H = voice_history_size_;
+        std::vector<uint8_t> warmup_hidden;
+        for (int t = 0; t < H && !cancelled_.load(); ++t) {
+            int64_t text_tok = voice_cache_[0 * H + t];
+            std::vector<int64_t> audio_tok(kAudioCodebooks);
+            for (int cb = 0; cb < 8; ++cb) {
+                audio_tok[cb]     = voice_cache_[(1 + cb) * H + t];
+                audio_tok[8 + cb] = voice_cache_[(9 + cb) * H + t];
+            }
+            temporal_forward(text_tok, audio_tok, warmup_hidden);
+        }
+    }
 }
 
 void OnnxPersonaPlex::cancel() {
@@ -539,24 +560,11 @@ void OnnxPersonaPlex::respond_stream(const float* user_audio, size_t length,
     for (auto& h : user_audio_hist) h.fill(0);
     for (auto& h : agent_audio_hist) h.fill(0);
 
-    // If a voice is set and the .bin loaded, seed the delay history with the
-    // voice's cached tail (4 tokens × 17 streams). We take the LAST kDelayBufSize
-    // tokens from the voice cache for each stream. Layout: voice_cache_ is
-    // [num_streams * voice_history_size_], stream s at index s * h + ...
-    if (!voice_cache_.empty() && voice_history_size_ > 0) {
-        const int H = voice_history_size_;
-        auto seed = [&](std::array<int64_t, kDelayBufSize>& dst, int stream_idx) {
-            for (int i = 0; i < kDelayBufSize; ++i) {
-                int src_pos = H - kDelayBufSize + i;
-                if (src_pos < 0) src_pos = 0;
-                dst[i] = voice_cache_[
-                    static_cast<size_t>(stream_idx) * H + src_pos];
-            }
-        };
-        seed(text_hist, 0);
-        for (int cb = 0; cb < 8; ++cb) seed(user_audio_hist[cb], 1 + cb);
-        for (int cb = 0; cb < 8; ++cb) seed(agent_audio_hist[cb], 9 + cb);
-    }
+    // NOTE: voice prefill is done in reset_session() by replaying the cached
+    // 4-token tail through temporal_step (populates KV cache with speaker-
+    // conditioned state). The delay history is INTENTIONALLY left zeroed here
+    // — re-seeding it would double-condition the model on the voice (KV +
+    // input both voice-flavoured), producing over-energetic / clipped output.
 
     // Delay layout from PERSONAPLEX_DELAYS in speech-models/convert.py
     static constexpr int kUserDelays[8]  = {0, 1, 1, 1, 1, 1, 1, 1};
