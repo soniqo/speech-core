@@ -221,8 +221,11 @@ OnnxPersonaPlex::~OnnxPersonaPlex() {
 }
 
 void OnnxPersonaPlex::reset_session() {
-    temporal_k_.clear();
-    temporal_v_.clear();
+    // .clear() leaves capacity allocated. Swap with an empty vector to actually
+    // release the KV buffer — important for memory-conscious long-running
+    // services that cycle through many sessions.
+    std::vector<uint8_t>().swap(temporal_k_);
+    std::vector<uint8_t>().swap(temporal_v_);
     temporal_t_past_ = 0;
     frames_generated_ = 0;
     cancelled_.store(false);
@@ -474,6 +477,31 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
         temporal_v_.assign(data, data + n * temporal_kv_elem_size_);
     }
     ++temporal_t_past_;
+    // Soft cap at kMaxContext (model's training context). Once we hit it,
+    // drop the oldest column from each [L, B, H, T_past, D] block to keep
+    // memory bounded and quality stable (positions beyond train ctx are
+    // attention-poison anyway). Layout in temporal_k_/v_:
+    //   for each layer L: for each B,H: T_past columns of D elems each
+    if (temporal_t_past_ > kMaxContext) {
+        const size_t blocks   = static_cast<size_t>(kTemporalLayers) * kTemporalHeads;
+        const size_t old_T    = static_cast<size_t>(temporal_t_past_);
+        const size_t new_T    = static_cast<size_t>(kMaxContext);
+        const size_t D_bytes  = static_cast<size_t>(kTemporalHeadDim) * temporal_kv_elem_size_;
+        const size_t old_row  = old_T * D_bytes;
+        const size_t new_row  = new_T * D_bytes;
+        std::vector<uint8_t> trimmed_k(blocks * new_row);
+        std::vector<uint8_t> trimmed_v(blocks * new_row);
+        for (size_t b = 0; b < blocks; ++b) {
+            // Skip the oldest column (D_bytes) of each block
+            std::memcpy(trimmed_k.data() + b * new_row,
+                        temporal_k_.data() + b * old_row + D_bytes, new_row);
+            std::memcpy(trimmed_v.data() + b * new_row,
+                        temporal_v_.data() + b * old_row + D_bytes, new_row);
+        }
+        temporal_k_ = std::move(trimmed_k);
+        temporal_v_ = std::move(trimmed_v);
+        temporal_t_past_ = kMaxContext;
+    }
     api_->ReleaseValue(text_val); api_->ReleaseValue(audio_val);
     api_->ReleaseValue(k_val);    api_->ReleaseValue(v_val);
     for (auto* o : outputs) if (o) api_->ReleaseValue(o);
