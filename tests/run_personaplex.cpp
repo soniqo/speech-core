@@ -96,15 +96,15 @@ AudioStats audio_stats(const std::vector<float>& s) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr,
-                     "usage: run_personaplex <bundle_dir> [num_user_frames=4]\n"
-                     "  bundle expects: mimi_encoder.onnx, mimi_decoder.onnx,\n"
-                     "                   temporal_step.onnx, depformer_step.onnx,\n"
-                     "                   tokenizer_spm_32k_3.model,\n"
-                     "                   voices/ (optional, set_voice is no-op if absent)\n");
+                     "usage: run_personaplex <bundle_dir> [frames=4] [wav_path] [voice=NATM0]\n"
+                     "  When wav_path is given, real user audio is fed in (resampled to 24 kHz).\n"
+                     "  Otherwise silence is used. frames caps generation length regardless of wav.\n");
         return 2;
     }
     const std::string dir = argv[1];
     int num_user_frames = (argc >= 3) ? std::atoi(argv[2]) : 4;
+    const std::string wav_path = (argc >= 4) ? argv[3] : "";
+    const std::string voice    = (argc >= 5) ? argv[4] : "NATM0";
 
     const std::string enc = dir + "/mimi_encoder.onnx";
     const std::string dec = dir + "/mimi_decoder.onnx";
@@ -128,16 +128,75 @@ int main(int argc, char** argv) {
     auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::printf("Load: %lld ms\n", static_cast<long long>(load_ms));
 
-    pp.set_voice("NATM0");
+    pp.set_voice(voice);
     pp.set_system_prompt("You are a helpful assistant.");
     pp.set_max_frames(num_user_frames);
     pp.reset_session();
 
-    // 24 kHz mono silence — exercises encode + the autoregressive loop without
-    // needing a real WAV file in this smoke harness. Replace with a WAV load
-    // for the validation gate (synth speech -> Parakeet STT round trip).
-    const size_t samples_per_frame = 1920;  // 24000 / 12.5
-    std::vector<float> user_pcm(samples_per_frame * num_user_frames, 0.0f);
+    // User audio: either a real WAV (resampled to 24 kHz) or silence.
+    const size_t samples_per_frame = 1920;
+    std::vector<float> user_pcm;
+    if (!wav_path.empty()) {
+        // Minimal mono PCM16 WAV reader. Same format as test_models.cpp's load_wav.
+        std::ifstream f(wav_path, std::ios::binary);
+        if (!f) {
+            std::fprintf(stderr, "Cannot open WAV %s\n", wav_path.c_str());
+            return 1;
+        }
+        char riff[4], wave[4]; uint32_t file_size;
+        f.read(riff, 4); f.read(reinterpret_cast<char*>(&file_size), 4); f.read(wave, 4);
+        if (std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0) {
+            std::fprintf(stderr, "Not a RIFF WAVE\n"); return 1;
+        }
+        uint16_t fmt_tag = 0, channels = 0, bps = 0; uint32_t sr = 0;
+        std::vector<int16_t> pcm16;
+        char chunk_id[4]; uint32_t chunk_size;
+        while (f.read(chunk_id, 4)) {
+            f.read(reinterpret_cast<char*>(&chunk_size), 4);
+            if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
+                f.read(reinterpret_cast<char*>(&fmt_tag), 2);
+                f.read(reinterpret_cast<char*>(&channels), 2);
+                f.read(reinterpret_cast<char*>(&sr), 4);
+                f.seekg(6, std::ios::cur);
+                f.read(reinterpret_cast<char*>(&bps), 2);
+                if (chunk_size > 16) f.seekg(chunk_size - 16, std::ios::cur);
+            } else if (std::memcmp(chunk_id, "data", 4) == 0) {
+                pcm16.resize(chunk_size / 2);
+                f.read(reinterpret_cast<char*>(pcm16.data()), chunk_size);
+                break;
+            } else {
+                f.seekg(chunk_size, std::ios::cur);
+            }
+        }
+        if (fmt_tag != 1 || channels != 1 || bps != 16 || pcm16.empty()) {
+            std::fprintf(stderr, "WAV must be mono PCM16. Got fmt=%u ch=%u bps=%u\n",
+                         fmt_tag, channels, bps);
+            return 1;
+        }
+        std::vector<float> src(pcm16.size());
+        for (size_t i = 0; i < pcm16.size(); ++i) src[i] = pcm16[i] / 32768.0f;
+        // Resample to 24 kHz if needed (linear).
+        if (static_cast<int>(sr) != 24000) {
+            user_pcm = resample_linear(src, static_cast<int>(sr), 24000);
+            std::printf("WAV: loaded %s (sr=%u, %.2f s) -> resampled to %.2f s @ 24 kHz\n",
+                        wav_path.c_str(), sr, src.size() / static_cast<double>(sr),
+                        user_pcm.size() / 24000.0);
+        } else {
+            user_pcm = std::move(src);
+            std::printf("WAV: loaded %s (sr=24000, %.2f s)\n", wav_path.c_str(),
+                        user_pcm.size() / 24000.0);
+        }
+        const size_t need = samples_per_frame * num_user_frames;
+        if (user_pcm.size() < need) {
+            user_pcm.resize(need, 0.0f);
+        } else if (user_pcm.size() > need) {
+            user_pcm.resize(need);
+        }
+    } else {
+        std::printf("Input: silence (%d frames)\n", num_user_frames);
+        user_pcm.assign(samples_per_frame * num_user_frames, 0.0f);
+    }
+    std::printf("Voice: %s\n", voice.c_str());
 
     int chunks = 0;
     size_t total_emitted = 0;
