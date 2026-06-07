@@ -129,7 +129,11 @@ int main(int argc, char** argv) {
     std::printf("Load: %lld ms\n", static_cast<long long>(load_ms));
 
     pp.set_voice(voice);
-    pp.set_system_prompt("You are a helpful assistant.");
+    // System prompt is matched by NAME against the pre-tokenized blob loaded
+    // from <bundle>/system_prompts.bin. Known names: "helpful", "expert",
+    // "warm", "direct". Override via env SPEECH_CORE_PP_PROMPT.
+    const char* prompt_name = std::getenv("SPEECH_CORE_PP_PROMPT");
+    pp.set_system_prompt(prompt_name ? prompt_name : "helpful");
     pp.set_max_frames(num_user_frames);
     pp.reset_session();
 

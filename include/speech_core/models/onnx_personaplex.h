@@ -150,6 +150,13 @@ private:
     std::string          voices_dir_;
     std::string          current_voice_;
 
+    // System prompts pre-tokenized by tokenize_system_prompts.py and shipped
+    // as system_prompts.bin next to the SPM tokenizer. Maps prompt name to
+    // token IDs. The wrapper feeds these as the text stream during
+    // reset_session voice-prefill warmup, so the model is conditioned on the
+    // chosen role before user audio arrives. Avoids a SentencePiece C++ dep.
+    std::unordered_map<std::string, std::vector<int32_t>> system_prompts_;
+
     // SentencePiece model (raw bytes; we vendor a minimal decoder; the full
     // SP runtime arrives in PR 5b if needed).
     std::vector<uint8_t> spm_model_blob_;

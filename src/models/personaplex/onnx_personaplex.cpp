@@ -146,6 +146,30 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
 
     voices_dir_ = voices_dir;
 
+    // Load pre-tokenized system prompts from <bundle>/system_prompts.bin
+    // (produced by tokenize_system_prompts.py). Optional — wrapper still runs
+    // without it, just without system-prompt conditioning.
+    {
+        const std::string sp_path = tokenizer_path.substr(
+            0, tokenizer_path.find_last_of("/\\"));
+        std::ifstream sf(sp_path + "/system_prompts.bin", std::ios::binary);
+        if (sf) {
+            auto rd = [&](void* p, size_t n) { sf.read(reinterpret_cast<char*>(p), n); };
+            uint32_t magic = 0, version = 0, num_prompts = 0;
+            rd(&magic, 4); rd(&version, 4); rd(&num_prompts, 4);
+            if (magic == 0x50506573u && version == 1u) {
+                for (uint32_t i = 0; i < num_prompts; ++i) {
+                    uint32_t name_len = 0; rd(&name_len, 4);
+                    std::string name(name_len, '\0'); rd(name.data(), name_len);
+                    uint32_t num_tokens = 0; rd(&num_tokens, 4);
+                    std::vector<int32_t> ids(num_tokens);
+                    rd(ids.data(), num_tokens * sizeof(int32_t));
+                    system_prompts_[name] = std::move(ids);
+                }
+            }
+        }
+    }
+
     reset_session();
 }
 
@@ -163,16 +187,11 @@ void OnnxPersonaPlex::reset_session() {
     frames_generated_ = 0;
     cancelled_.store(false);
 
-    // Replay the voice prompt's cached 4-token tail through the temporal_step
-    // graph to warm up the KV cache with speaker-conditioned state. The voice
-    // cache layout is [num_streams=17, history=4]; stream 0 is text, 1-8 user
-    // audio, 9-16 agent audio. We don't sample new tokens — just feed the
-    // cached tokens directly as the LM input, letting the model build cache
-    // state from a voice-prior. Discards the hidden output (no agent token
-    // emission during warmup).
+    // Voice prefill: replay the voice cache's 4-token tail through
+    // temporal_step. Populates KV with speaker-conditioned state.
+    std::vector<uint8_t> warmup_hidden;
     if (!voice_cache_.empty() && voice_history_size_ > 0) {
         const int H = voice_history_size_;
-        std::vector<uint8_t> warmup_hidden;
         for (int t = 0; t < H && !cancelled_.load(); ++t) {
             int64_t text_tok = voice_cache_[0 * H + t];
             std::vector<int64_t> audio_tok(kAudioCodebooks);
@@ -181,6 +200,25 @@ void OnnxPersonaPlex::reset_session() {
                 audio_tok[8 + cb] = voice_cache_[(9 + cb) * H + t];
             }
             temporal_forward(text_tok, audio_tok, warmup_hidden);
+        }
+    }
+
+    // System-prompt prefill: feed pre-tokenized text IDs through temporal_step
+    // with audio streams zeroed. Mirrors speech-swift's "Text system prompt
+    // (one token per frame)" stage. Uses the prompt named in system_prompt_,
+    // defaulting to "helpful" if the name isn't loaded.
+    if (!system_prompts_.empty()) {
+        auto it = system_prompts_.find(system_prompt_);
+        if (it == system_prompts_.end()) {
+            it = system_prompts_.find("helpful");
+        }
+        if (it != system_prompts_.end()) {
+            const std::vector<int32_t>& ids = it->second;
+            std::vector<int64_t> silence_audio(kAudioCodebooks, 0);
+            for (int32_t id : ids) {
+                if (cancelled_.load()) break;
+                temporal_forward(static_cast<int64_t>(id), silence_audio, warmup_hidden);
+            }
         }
     }
 }
