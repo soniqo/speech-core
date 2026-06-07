@@ -894,12 +894,15 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
 // ---------------------------------------------------------------------------
 
 void test_onnx_personaplex_load(const std::string& dir) {
-    std::string enc = dir + "/personaplex-mimi-encoder.onnx";
-    std::string dec = dir + "/personaplex-mimi-decoder.onnx";
-    std::string tmp = dir + "/personaplex-temporal-step.onnx";
-    std::string dep = dir + "/personaplex-depformer-step.onnx";
-    std::string spm = dir + "/personaplex-tokenizer.model";
-    std::string voices = dir + "/personaplex-voices";
+    // Bundle layout matches download_personaplex_onnx.sh / upload_to_hf.sh.
+    // The bundle root contains the raw ONNX graphs (no 'personaplex-' prefix)
+    // alongside system_prompts.bin and a voices/ subdir.
+    std::string enc = dir + "/mimi_encoder.onnx";
+    std::string dec = dir + "/mimi_decoder.onnx";
+    std::string tmp = dir + "/temporal_step.onnx";
+    std::string dep = dir + "/depformer_step.onnx";
+    std::string spm = dir + "/tokenizer_spm_32k_3.model";
+    std::string voices = dir + "/voices";
     if (!file_exists(enc) || !file_exists(dec) || !file_exists(tmp)
         || !file_exists(dep) || !file_exists(spm)) {
         std::printf("  [skip] PersonaPlex bundle not in %s\n", dir.c_str());
@@ -909,8 +912,8 @@ void test_onnx_personaplex_load(const std::string& dir) {
 
     speech_core::OnnxPersonaPlex pp(enc, dec, tmp, dep, spm, voices, /*hw_accel=*/false);
     REQUIRE(pp.output_sample_rate() == 24000);
-    pp.set_voice("NATM0");
-    pp.set_system_prompt("You are a helpful assistant.");
+    pp.set_voice("VARF2");
+    pp.set_system_prompt("helpful");  // matches a key in system_prompts.bin
     pp.set_max_frames(4);  // tiny budget — just exercises the loop once
     pp.reset_session();
 
@@ -920,16 +923,18 @@ void test_onnx_personaplex_load(const std::string& dir) {
     std::vector<float> silence(total_samples, 0.0f);
     int chunks = 0;
     bool got_final = false;
+    size_t total_emitted = 0;
     pp.respond_stream(silence.data(), silence.size(), 24000,
         [&](const speech_core::FullDuplexChunk& c) {
             ++chunks;
+            total_emitted += c.length;
             if (c.is_final) got_final = true;
-            (void)c;
         });
     REQUIRE(chunks > 0);
     REQUIRE(got_final);
-    std::printf("ok (chunks=%d frames_generated=%d)\n",
-                chunks, pp.frames_generated());
+    REQUIRE(total_emitted > 0);
+    std::printf("ok (chunks=%d frames_generated=%d emitted=%zu)\n",
+                chunks, pp.frames_generated(), total_emitted);
 }
 
 // ---------------------------------------------------------------------------
