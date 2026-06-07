@@ -231,7 +231,8 @@ void OnnxPersonaPlex::reset_session() {
     cancelled_.store(false);
 
     // PersonaPlex prefill sequence (matches speech-swift's MLX layout):
-    //   1. Voice prompt replay (here: 4-token cache tail)
+    //   0. Voice embedding prefix (50 frames of pre-recorded hidden states)
+    //   1. Voice prompt replay (4-token cache tail)
     //   2. Silence spacer ~0.5s = 6 frames
     //   3. Text system prompt (one token per frame)
     //   4. Silence spacer ~0.5s = 6 frames
@@ -243,7 +244,47 @@ void OnnxPersonaPlex::reset_session() {
     constexpr int kSilenceSpacerFrames = 6;
     constexpr int64_t kPadTextToken    = 3;  // matches Moshi PAD id
 
-    // 1) Voice prompt replay
+    // 0) Voice embedding prefix — DISABLED by default (set SPEECH_CORE_PP_EMB=1
+    // to enable). The voice .bin's 50-frame embeddings are stored at a small
+    // magnitude (~0.03 range) that mismatches the temporal output distribution
+    // (std ~1.5). Feeding them directly produces over-energetic / clipped
+    // audio and worse transcripts. The right fix is either a scaling factor
+    // (TBD by measurement against the MLX implementation) or sourcing the
+    // embeddings differently. Skeleton stays in the source for follow-up.
+    if (std::getenv("SPEECH_CORE_PP_EMB") &&
+        !voice_embeddings_.empty() && voice_embedding_frames_ > 0) {
+        const int F = voice_embedding_frames_;
+        for (int f = 0; f < F && !cancelled_.load(); ++f) {
+            std::vector<uint8_t> emb_bytes;
+            const float* emb_src = voice_embeddings_.data() + static_cast<size_t>(f) * 4096;
+            if (temporal_kv_elem_size_ == 4) {
+                emb_bytes.assign(
+                    reinterpret_cast<const uint8_t*>(emb_src),
+                    reinterpret_cast<const uint8_t*>(emb_src + 4096));
+            } else {
+                emb_bytes.resize(4096 * 2);
+                uint16_t* dst = reinterpret_cast<uint16_t*>(emb_bytes.data());
+                for (int i = 0; i < 4096; ++i) dst[i] = float_to_half(emb_src[i]);
+            }
+            int64_t prev_step_token = 0;
+            int64_t new_text = 0;
+            std::array<int64_t, 8> new_agent{};
+            for (int k = 0; k < kDepQ; ++k) {
+                std::vector<float> logits;
+                depformer_step(emb_bytes, prev_step_token, k, logits);
+                int tok = sample_token(logits, k == 0 ? 0.7f : 0.8f,
+                                        k == 0 ? 25 : 250);
+                if (k == 0) new_text = tok;
+                else if (k <= 8) new_agent[k - 1] = tok;
+                prev_step_token = tok;
+            }
+            std::vector<int64_t> audio_in(kAudioCodebooks, 0);
+            for (int cb = 0; cb < 8; ++cb) audio_in[8 + cb] = new_agent[cb];
+            temporal_forward(new_text, audio_in, warmup_hidden);
+        }
+    }
+
+    // 1) Voice prompt replay (4-token cache tail)
     if (!voice_cache_.empty() && voice_history_size_ > 0) {
         const int H = voice_history_size_;
         for (int t = 0; t < H && !cancelled_.load(); ++t) {
