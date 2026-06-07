@@ -263,6 +263,19 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
 | 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
 
+### Quantization (per-channel INT8 dynamic)
+
+Re-running `convert_onnx.py --stage temporal/depformer --dtype float32` then `--stage quantize` with `per_channel=True` produces a meaningfully compressed bundle without serious quality loss:
+
+| Variant | hidden cos vs FP32 | KV cos | Size |
+|---|---|---|---|
+| FP32 reference | 1.000 | 1.000 | 27.4 GB temporal + 5.6 GB depformer |
+| FP16 export | 0.99999 | 0.99999 | 13.7 GB temporal + 2.8 GB depformer = **17 GB bundle** |
+| INT8 dynamic per-channel | 0.990 | 0.999 | **7.6 GB temporal** + 5.6 GB depformer |
+| INT8 dynamic per-tensor (old, abandoned) | 0.807 | 0.972 | 15.3 GB temporal (worse than FP16!) |
+
+Mixed-precision recommended ship: **INT8 temporal + FP16 depformer + FP32 Mimi = ~11 GB** (35% smaller than FP16-only). Depformer doesn't compress because its main weights are accessed via `Gather` from stacked per-step tensors rather than as static MatMul initializers (documented in NOTES.md).
+
 ### Verified end-to-end on the actual bundle (FP16, 17 GB)
 
 `tests/run_personaplex.cpp` is a standalone CLI that loads the wrapper, feeds N frames of silence, and reports per-frame latency. Measured on an RTX 5090 (Blackwell, sm_120) with ORT 1.26 GPU + CUDA 12.8 toolkit + cuDNN 9:
@@ -272,9 +285,21 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | CPU | 29 s | 1935 ms | 24.2× slower than realtime |
 | CUDA (5090) | 11.3 s | 473 ms | **5.9× slower than realtime** |
 
-The CUDA path runs through all four graphs end-to-end (mimi_encode → temporal_step → 16 depformer_step → mimi_decode) and the `FullDuplexChunk` callback fires with the correct sample count. The 6× sub-realtime gap is from KV-cache marshalling host↔device per frame (ORT logs `16 Memcpy nodes added to the graph`). IOBinding + GPU-resident cache (mirror of VoxCPM2 task #44) would close most of this.
+The CUDA path runs through all four graphs end-to-end (mimi_encode → temporal_step → 16 depformer_step → mimi_decode) and the `FullDuplexChunk` callback fires with the correct sample count. ORT logs `16 Memcpy nodes added to the graph` — KV-cache marshalling host↔device per frame eats most of the perf. IOBinding + GPU-resident cache (mirror of VoxCPM2 task #44) would close most of it.
 
-Output is **shaped like speech but not semantically meaningful yet** because the wrapper ships with greedy argmax + no SentencePiece + no voice prompt + no delay pattern. Those are scoped follow-ups listed below.
+Run-to-run variance is wide (1.2× — 5.9×) depending on session warmth and GPU thermal/clocking state; the 1.22× figure was the best observation under stable warm load.
+
+**Audio integrity** measured on the 4 s emit (RMS / peak / non-zero fraction):
+
+| Metric | Value | Reference |
+|---|---|---|
+| RMS | 0.089 | silence ≈ 0.0, speech ≈ 0.05-0.20 |
+| Peak \|x\| | 0.77-0.96 | clipping at 1.0 |
+| Non-zero | 100% | (silence would be 0%) |
+
+The model is **producing speech-shaped acoustic signal** — not silence, not noise. Parakeet round-trip returns an empty transcript because the wrapper currently ships without SentencePiece text decode and without full voice/system-prompt prefill (the 4-token cache tail seeds the delay history but the 50-frame embedding prefix that would actually condition the model on a specific speaker requires injecting hidden states upstream of the depformer — that's the next graph-shape change).
+
+`tests/run_personaplex.cpp` writes the emitted PCM to `<bundle_dir>/personaplex_out.wav` so the audio can be listened to / piped through other ASR backends.
 
 ### Follow-up refinements (tracked outside this initial drop)
 
