@@ -12,7 +12,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
-| `OnnxPersonaPlex` | `FullDuplexSpeechInterface` (planned) | `speech_core/models/onnx_personaplex.h` (planned) | **planned** — see [PersonaPlex (planned)](#onnxpersonaplex-planned) |
+| `OnnxPersonaPlex` | `FullDuplexSpeechInterface` | `speech_core/models/onnx_personaplex.h` | structural — see [OnnxPersonaPlex](#onnxpersonaplex) |
 
 ### LiteRT backend (`SPEECH_CORE_WITH_LITERT`)
 
@@ -229,9 +229,9 @@ auto final   = stt.end_stream();
 - Config defaults match the export; vocab size auto-derives from `vocab.json`.
 - Model files: [soniqo/Nemotron-Speech-Streaming-LiteRT](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) — `nemotron-streaming-{encoder,decoder,joint}.tflite`, `vocab.json`, `config.json`
 
-## OnnxPersonaPlex (planned)
+## OnnxPersonaPlex
 
-> **Status: planned, not implemented.** Tracking work is split across PRs landing in this order — see also the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md).
+> **Status: structural skeleton complete, end-to-end refinements in progress.** Four ONNX graphs exported and parity-verified; FullDuplexSpeechInterface + C++ wrapper compile and link. See the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md) and runtime notes in `NOTES.md` alongside it.
 
 NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Moshi architecture. Listens and speaks simultaneously at 12.5 Hz, conditioned on a voice preset and text system prompt. Already shipped in [speech-swift](https://github.com/) as native Swift/MLX (8-bit / 4-bit). This ONNX path targets CUDA on Linux/Windows servers via `SPEECH_CORE_WITH_ONNX=ON`.
 
@@ -251,17 +251,28 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 [Mimi decoder] → 24 kHz agent audio
 ```
 
-### Roadmap (one PR per row)
+### Status by piece
 
-| # | PR | Lands in |
-|---|---|---|
-| 1 | PyTorch reference (Kyutai-moshi-derived, loading `nvidia/personaplex-7b-v1` weights) + Mimi encoder/decoder ONNX export | speech-models |
-| 2 | `temporal_step` ONNX export — single-step graph with explicit KV-cache in/out (mirrors VoxCPM2 `token_step`) | speech-models |
-| 3 | `depformer` ONNX export — 6-layer MultiLinear with per-codebook step weights + output `linears[k]` | speech-models |
-| 4 | `FullDuplexSpeechInterface` in `interfaces.h` — streaming push-user-audio / on-agent-audio contract, voice + system-prompt config | speech-core |
-| 5 | `OnnxPersonaPlex` wrapper — orchestrates `mimi_encode → temporal_step ×N → depformer ×16 → mimi_decode`, manages KV-cache, 17-stream embedding sum, 16-codebook delay pattern, voice prompt prefill, SentencePiece text tokenizer | speech-core |
-| 6 | CUDA EP + IOBinding (KV-cache GPU-resident across steps) + optional CUDA Graph capture on `temporal_step` | speech-core |
-| 7 | `test_personaplex` + RTF/step-latency bench vs MLX baseline + full docs section replacing this stub | speech-core |
+| # | Piece | State | Where |
+|---|---|---|---|
+| 1 | PyTorch reference + Mimi encoder/decoder ONNX | **done**, per-graph PyTorch-vs-ORT MSE 1.46e-08 | speech-models `convert_onnx.py` `stage_mimi` |
+| 2 | `temporal_step` ONNX with externalized KV cache | **done**, min cos 0.999995 vs PyTorch over 4 frames | speech-models `convert_onnx.py` `stage_temporal` |
+| 3 | `depformer_step` ONNX with per-step weight Gather | **done**, min cos 0.999998 over 16 inner steps | speech-models `convert_onnx.py` `stage_depformer` |
+| 4 | `FullDuplexSpeechInterface` | **done** | `include/speech_core/interfaces.h` |
+| 5 | `OnnxPersonaPlex` wrapper structural skeleton | **done** | `include/speech_core/models/onnx_personaplex.h`, `src/models/personaplex/onnx_personaplex.cpp` |
+| 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
+| 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
+
+### Follow-up refinements (tracked outside this initial drop)
+
+- **SentencePiece encode/decode** — wrapper loads the tokenizer blob but doesn't tokenize text yet; encode/decode needed for the system prompt and the text_tokens field of `FullDuplexChunk`
+- **Voice prompt prefill** — `set_voice()` records the name; the 50-frame ~4 s replay prefix needs to load `voices/<name>.bin` and prepend to the temporal KV cache
+- **System prompt prefill** — `set_system_prompt()` records the text; tokenize and inject between silence spacers per the speech-swift cookbook
+- **Top-k + temperature + repetition penalty** sampling (greedy argmax shipping today, fine for smoke tests)
+- **Per-stream delay pattern** — PersonaPlex's `[0,0,1,1,1,1,1,1,1, 0,1,1,1,1,1,1,1]` per-stream delays not yet applied; current implementation feeds contemporaneous tokens
+- **Resampling** for non-24 kHz input
+- **IOBinding** + **CUDA Graph capture** on `temporal_step` (mirrors VoxCPM2 task #44)
+- **Bundle upload** to `soniqo/PersonaPlex-7B-ONNX` once the FP16 bundle (~16 GB total) is signed off
 
 ### Why a new interface
 
