@@ -304,7 +304,19 @@ INT8 bundle results on RTX 5090, real user audio: *"Can you guarantee the replac
 
 **Five voices produce semantically appropriate English responses.** Audio peaks mostly < 1.0 (no clipping). First PersonaPlex ONNX/CUDA INT8 implementation producing actual conversational responses end-to-end.
 
-Remaining gap to full speech-swift parity: the 50-frame embedding prefix from the voice file (we use only the 4-token cache tail). Injecting the embeddings would require a depformer graph variant that accepts external hidden input.
+### Voice embedding prefix (enabled by default, `SPEECH_CORE_PP_EMB_SCALE=10`)
+
+The voice `.bin`'s 50-frame embedding prefix IS used. Stored embeddings are at ~0.03 std but depformer was trained on temporal output at ~1.5 std — scaling 10× brings them into distribution. Empirically measured across NATM0/NATM1/VARM0/VARF2/VARF4 voices on the customer-service fixture.
+
+End-to-end results with embedding prefix at scale 10, single user utterance ("Can you guarantee the replacement will be shipped tomorrow?"), 50 frames = 4 s of agent audio:
+
+| Bundle | Disk | Host RAM | Parakeet transcript |
+|---|---|---|---|
+| FP16 (17 GB) | 17 GB | **6.0 GB** | "We can do" |
+| INT8 (13 GB) | 13 GB | 15.8 GB | "No, I think that's a fascinating." |
+| Mixed (11 GB) | 11 GB | 16.0 GB | **"We're concerned about it."** |
+
+The mixed bundle produces the textbook customer-service phrasing. FP16 has the lowest host RAM (because its KV mirror is FP16, not FP32). Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable the prefix and reclaim ~5 GB of host RAM at the cost of less topical responses.
 
 ### INT8 bundle end-to-end on CUDA — verified
 
