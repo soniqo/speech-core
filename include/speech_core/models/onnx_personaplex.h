@@ -131,14 +131,21 @@ private:
     IoNames temporal_io_;
     IoNames depformer_io_;
 
-    // KV cache buffers — concat-style. Temporal is ~1.5 GB fp16 at ctx=3000;
-    // depformer is small (24 KB at ctx=8). Allocated lazily on first call.
-    // Stored as raw bytes because the precision depends on the loaded ONNX
-    // model (FP16 for the standard bundle, FP32 for INT8-quantized bundle).
-    // Detected from the session's input dtype at construction time.
+    // KV cache buffers — concat-style. Two storage modes:
+    //   - HOST mirror (vectors): the original path. Each frame copies the
+    //     output K/V from device back to host, then re-uploads next frame.
+    //     Used when running on CPU EP.
+    //   - GPU-resident (OrtValue*): the output OrtValue from the prior
+    //     step is kept alive and passed directly as the next step's input.
+    //     No host mirror, no per-frame memcpy. Used when running on CUDA EP
+    //     and SPEECH_CORE_PP_GPU_KV != "0". Detected at construction.
+    // Stored as raw bytes when host; OrtValue* when GPU-resident.
     std::vector<uint8_t> temporal_k_;
     std::vector<uint8_t> temporal_v_;
     int                  temporal_t_past_ = 0;
+    OrtValue*            past_k_value_ = nullptr;  // GPU-resident path only
+    OrtValue*            past_v_value_ = nullptr;
+    bool                 gpu_kv_enabled_ = false;
     int                  temporal_kv_onnx_type_ = 10;  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 default
     size_t               temporal_kv_elem_size_ = 2;   // bytes per element
     // Depformer dtype tracked independently so a mixed-precision bundle

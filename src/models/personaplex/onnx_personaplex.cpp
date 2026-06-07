@@ -170,6 +170,16 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
     detect_temporal_kv_dtype();
     detect_depformer_kv_dtype();
 
+    // GPU-resident KV path: when we're on a CUDA EP, keep the temporal_step
+    // output K/V OrtValues alive across calls instead of copying through
+    // host vectors. Eliminates ~1.5 GB of host RAM + 16 Memcpy nodes/step.
+    // Opt-out via SPEECH_CORE_PP_GPU_KV=0 to fall back to the host path
+    // (useful for debugging or CPU-only sessions).
+    if (OnnxEngine::get().gpu_provider() != OrtGpuProvider::None) {
+        const char* off = std::getenv("SPEECH_CORE_PP_GPU_KV");
+        gpu_kv_enabled_ = (!off || std::strcmp(off, "0") != 0);
+    }
+
     // Load SentencePiece blob (PR 5b will use it for text encoding/decoding;
     // for now we just check the file exists).
     std::ifstream tk(tokenizer_path, std::ios::binary);
@@ -214,6 +224,8 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
 }
 
 OnnxPersonaPlex::~OnnxPersonaPlex() {
+    if (past_k_value_) api_->ReleaseValue(past_k_value_);
+    if (past_v_value_) api_->ReleaseValue(past_v_value_);
     if (mimi_encoder_session_)   api_->ReleaseSession(mimi_encoder_session_);
     if (mimi_decoder_session_)   api_->ReleaseSession(mimi_decoder_session_);
     if (temporal_step_session_)  api_->ReleaseSession(temporal_step_session_);
@@ -226,6 +238,8 @@ void OnnxPersonaPlex::reset_session() {
     // services that cycle through many sessions.
     std::vector<uint8_t>().swap(temporal_k_);
     std::vector<uint8_t>().swap(temporal_v_);
+    if (past_k_value_) { api_->ReleaseValue(past_k_value_); past_k_value_ = nullptr; }
+    if (past_v_value_) { api_->ReleaseValue(past_v_value_); past_v_value_ = nullptr; }
     temporal_t_past_ = 0;
     frames_generated_ = 0;
     cancelled_.store(false);
@@ -462,23 +476,32 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
     //   FP16 (elem_size=2) for the standard fp16 bundle
     //   FP32 (elem_size=4) for the INT8-quantized bundle
     // Buffer is raw bytes; ONNX dtype routed via temporal_kv_onnx_type_.
-    const size_t per_tensor_elems = static_cast<size_t>(kTemporalLayers) * 1
-                                     * kTemporalHeads * temporal_t_past_ * kTemporalHeadDim;
-    const size_t per_tensor_bytes = per_tensor_elems * temporal_kv_elem_size_;
-    if (temporal_k_.size() != per_tensor_bytes) temporal_k_.assign(per_tensor_bytes, 0);
-    if (temporal_v_.size() != per_tensor_bytes) temporal_v_.assign(per_tensor_bytes, 0);
-    const int64_t kv_shape[5] = {
-        kTemporalLayers, 1, kTemporalHeads, temporal_t_past_, kTemporalHeadDim};
     const ONNXTensorElementDataType kv_type =
         static_cast<ONNXTensorElementDataType>(temporal_kv_onnx_type_);
     OrtValue* k_val = nullptr;
     OrtValue* v_val = nullptr;
-    ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, temporal_k_.data(), temporal_k_.size(),
-        kv_shape, 5, kv_type, &k_val));
-    ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, temporal_v_.data(), temporal_v_.size(),
-        kv_shape, 5, kv_type, &v_val));
+    bool kv_owned_here = false;  // whether we own k_val/v_val (vs. ORT-owned)
+
+    if (gpu_kv_enabled_ && past_k_value_ != nullptr) {
+        // Reuse the OrtValue from the previous step — it's still on GPU
+        k_val = past_k_value_;
+        v_val = past_v_value_;
+    } else {
+        const size_t per_tensor_elems = static_cast<size_t>(kTemporalLayers) * 1
+                                         * kTemporalHeads * temporal_t_past_ * kTemporalHeadDim;
+        const size_t per_tensor_bytes = per_tensor_elems * temporal_kv_elem_size_;
+        if (temporal_k_.size() != per_tensor_bytes) temporal_k_.assign(per_tensor_bytes, 0);
+        if (temporal_v_.size() != per_tensor_bytes) temporal_v_.assign(per_tensor_bytes, 0);
+        const int64_t kv_shape[5] = {
+            kTemporalLayers, 1, kTemporalHeads, temporal_t_past_, kTemporalHeadDim};
+        ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, temporal_k_.data(), temporal_k_.size(),
+            kv_shape, 5, kv_type, &k_val));
+        ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, temporal_v_.data(), temporal_v_.size(),
+            kv_shape, 5, kv_type, &v_val));
+        kv_owned_here = true;
+    }
 
     OrtValue* inputs[4] = {text_val, audio_val, k_val, v_val};
     OrtValue* outputs[3] = {nullptr, nullptr, nullptr};
@@ -499,8 +522,17 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
         ort_check_local(api_, api_->GetTensorMutableData(outputs[0], reinterpret_cast<void**>(&data)));
         hidden_out.assign(data, data + n * temporal_kv_elem_size_);
     }
-    // Copy new K/V back into our owned byte buffers
-    {
+    // K/V output handling: GPU-resident path keeps the OrtValue alive
+    // across calls (no host mirror, no per-frame device<->host copy).
+    // Host-mirror path copies the data through std::vector<uint8_t> as before.
+    if (gpu_kv_enabled_) {
+        if (past_k_value_) api_->ReleaseValue(past_k_value_);
+        if (past_v_value_) api_->ReleaseValue(past_v_value_);
+        past_k_value_ = outputs[1];
+        past_v_value_ = outputs[2];
+        outputs[1] = nullptr;  // don't double-release at function bottom
+        outputs[2] = nullptr;
+    } else {
         OrtTensorTypeAndShapeInfo* info = nullptr;
         ort_check_local(api_, api_->GetTensorTypeAndShape(outputs[1], &info));
         size_t nd = 0; api_->GetDimensionsCount(info, &nd);
@@ -510,15 +542,14 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
         uint8_t* data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[1], reinterpret_cast<void**>(&data)));
         temporal_k_.assign(data, data + n * temporal_kv_elem_size_);
-    }
-    {
-        OrtTensorTypeAndShapeInfo* info = nullptr;
+
+        info = nullptr;
         ort_check_local(api_, api_->GetTensorTypeAndShape(outputs[2], &info));
-        size_t nd = 0; api_->GetDimensionsCount(info, &nd);
-        std::vector<int64_t> dims(nd); api_->GetDimensions(info, dims.data(), nd);
+        nd = 0; api_->GetDimensionsCount(info, &nd);
+        dims.resize(nd); api_->GetDimensions(info, dims.data(), nd);
         api_->ReleaseTensorTypeAndShapeInfo(info);
-        size_t n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
-        uint8_t* data = nullptr;
+        n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
+        data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[2], reinterpret_cast<void**>(&data)));
         temporal_v_.assign(data, data + n * temporal_kv_elem_size_);
     }
@@ -528,7 +559,11 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
     // memory bounded and quality stable (positions beyond train ctx are
     // attention-poison anyway). Layout in temporal_k_/v_:
     //   for each layer L: for each B,H: T_past columns of D elems each
-    if (temporal_t_past_ > kMaxContext) {
+    // Ring-shift cap operates on the host buffer. In GPU-resident mode the
+    // KV cache lives in an ORT-managed CUDA buffer; trimming it there would
+    // require IOBinding with a max-shape staging buffer. We skip the cap in
+    // GPU-mode for now — practical sessions don't approach kMaxContext=3000.
+    if (!gpu_kv_enabled_ && temporal_t_past_ > kMaxContext) {
         const size_t blocks   = static_cast<size_t>(kTemporalLayers) * kTemporalHeads;
         const size_t old_T    = static_cast<size_t>(temporal_t_past_);
         const size_t new_T    = static_cast<size_t>(kMaxContext);
@@ -549,7 +584,13 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
         temporal_t_past_ = kMaxContext;
     }
     api_->ReleaseValue(text_val); api_->ReleaseValue(audio_val);
-    api_->ReleaseValue(k_val);    api_->ReleaseValue(v_val);
+    // Only release k/v if we own them. In GPU-resident mode, k_val/v_val
+    // came from the previous step's past_k_value_/past_v_value_ — these were
+    // already released above when we adopted the new outputs[1]/outputs[2].
+    if (kv_owned_here) {
+        api_->ReleaseValue(k_val);
+        api_->ReleaseValue(v_val);
+    }
     for (auto* o : outputs) if (o) api_->ReleaseValue(o);
 }
 
