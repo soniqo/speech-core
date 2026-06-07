@@ -276,8 +276,9 @@ The C++ wrapper auto-detects KV dtype **per session** (temporal and depformer in
 The mixed bundle is **35% smaller than FP16** with no quality regression — same coherent transcripts ("But I think all the things that I'm gonna do.", "I think that's hard after that.").
 
 Memory protections on top:
-- `reset_session()` swaps the KV vectors with empty ones (`std::vector<>().swap(...)`) to release capacity, not just `.clear()`
-- `temporal_forward()` soft-caps `t_past` at `kMaxContext=3000` and ring-shifts the oldest column on each step past the cap — bounded memory + stable quality (positions beyond training ctx are attention-poison anyway)
+- **GPU-resident KV cache** (auto-on when CUDA EP resolves): the `temporal_step` output `OrtValue`s for K/V are kept alive across calls and passed directly as the next call's inputs. No host mirror, no per-frame `GetTensorMutableData`. Opt out with `SPEECH_CORE_PP_GPU_KV=0`.
+- `reset_session()` swaps the KV vectors with empty ones (`std::vector<>().swap(...)`) to release capacity, not just `.clear()`. Also releases the GPU-resident `OrtValue`s.
+- `temporal_forward()` soft-caps `t_past` at `kMaxContext=3000` and ring-shifts the oldest column on each step past the cap — bounded memory + stable quality (positions beyond training ctx are attention-poison anyway). Host-path only — GPU mode trusts ORT's dynamic shape support.
 
 ### Full prefill sequence — coherent multi-voice responses
 
