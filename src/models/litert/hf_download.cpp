@@ -17,6 +17,25 @@ namespace fs = std::filesystem;
 
 namespace speech_core::hf {
 
+// Pure decision logic shared by download_bundle. Compiled regardless of whether
+// libcurl support is enabled, so it is unit-testable in any build.
+bool final_is_complete(uint64_t final_size, uint64_t remote_size) {
+    return remote_size == 0 || final_size == remote_size;
+}
+
+FetchAction plan_part_fetch(uint64_t part_size, uint64_t remote_size, uint64_t* resume_from) {
+    if (remote_size > 0 && part_size > remote_size) {
+        if (resume_from) *resume_from = 0;
+        return FetchAction::Restart;  // over-long/corrupt .part — start over
+    }
+    if (remote_size > 0 && part_size == remote_size) {
+        if (resume_from) *resume_from = part_size;
+        return FetchAction::Complete;  // already fully downloaded
+    }
+    if (resume_from) *resume_from = part_size;  // resume (part_size may be 0)
+    return FetchAction::Resume;
+}
+
 #ifndef SPEECH_CORE_WITH_HF_DOWNLOAD
 
 bool download_supported() { return false; }
@@ -161,7 +180,7 @@ void download_bundle(const std::string& repo, const std::string& revision,
         // existing final_path is trusted; if we know the size, confirm it.)
         if (fs::exists(final_path)) {
             const uint64_t have = static_cast<uint64_t>(fs::file_size(final_path, ec));
-            if (total == 0 || have == total) {
+            if (final_is_complete(have, total)) {
                 if (on_progress) on_progress(file, i, file_count, have, have);
                 continue;
             }
@@ -170,14 +189,15 @@ void download_bundle(const std::string& repo, const std::string& revision,
 
         bool done = false;
         for (int attempt = 0; attempt < kMaxAttempts && !done; ++attempt) {
-            uint64_t have = fs::exists(part_path)
+            const uint64_t have = fs::exists(part_path)
                                 ? static_cast<uint64_t>(fs::file_size(part_path, ec))
                                 : 0;
-            if (total > 0 && have > total) {
-                fs::remove(part_path, ec);  // corrupt/over-long — restart
-                have = 0;
-            }
-            if (total > 0 && have == total) {
+            uint64_t resume_from = 0;
+            const FetchAction act = plan_part_fetch(have, total, &resume_from);
+            if (act == FetchAction::Restart) {
+                fs::remove(part_path, ec);  // over-long/corrupt — start over
+                resume_from = 0;
+            } else if (act == FetchAction::Complete) {
                 done = true;
                 break;
             }
@@ -190,8 +210,8 @@ void download_bundle(const std::string& repo, const std::string& revision,
                 std::this_thread::sleep_for(std::chrono::seconds(delay));
             }
 
-            ProgressCtx pctx{&on_progress, file, i, file_count, have, total};
-            fetch_once(url, part_path, have, pctx);
+            ProgressCtx pctx{&on_progress, file, i, file_count, resume_from, total};
+            fetch_once(url, part_path, resume_from, pctx);
 
             const uint64_t now = fs::exists(part_path)
                                      ? static_cast<uint64_t>(fs::file_size(part_path, ec))

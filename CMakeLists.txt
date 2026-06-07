@@ -276,13 +276,28 @@ if(SPEECH_CORE_BUILD_TESTS)
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         # test_models.cpp needs ORT — handled below when SPEECH_CORE_WITH_ONNX=ON.
         # test_litert_models.cpp needs LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
-        if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models")
+        if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
+           OR TEST_NAME STREQUAL "test_hf_download")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
         target_link_libraries(${TEST_NAME} PRIVATE speech_core)
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+
+    # HF downloader decision-logic test — the pure resume/skip/restart rules
+    # behind sc_voxcpm2_create_from_pretrained. Needs no libcurl or LiteRT, so it
+    # compiles hf_download.cpp's no-network branch directly and runs in every
+    # configuration (not just LiteRT builds).
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hf_download.cpp)
+        add_executable(test_hf_download
+            tests/test_hf_download.cpp
+            src/models/litert/hf_download.cpp)
+        target_include_directories(test_hf_download PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/models/litert
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_test(NAME test_hf_download COMMAND test_hf_download)
+    endif()
 
     # Model integration tests — require SPEECH_CORE_WITH_ONNX=ON.
     # Skip gracefully at runtime when SPEECH_MODEL_DIR isn't set.
