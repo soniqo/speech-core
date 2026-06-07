@@ -106,6 +106,11 @@ private:
                         int64_t prev_token, int step_idx,
                         std::vector<float>& logits_out);
     void detect_temporal_kv_dtype();
+    void detect_depformer_kv_dtype();
+    // Cast hidden bytes from temporal's dtype to depformer's dtype if they
+    // differ (e.g. INT8 temporal -> FP16 depformer). Returns a buffer in
+    // depformer dtype. If the dtypes match, returns the input unchanged.
+    std::vector<uint8_t> hidden_to_depformer_dtype(const std::vector<uint8_t>& src);
     int  sample_token(const std::vector<float>& logits, float temperature, int top_k);
 
     // SentencePiece text decoding/encoding (minimal vendored impl in PR 5).
@@ -136,6 +141,11 @@ private:
     int                  temporal_t_past_ = 0;
     int                  temporal_kv_onnx_type_ = 10;  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 default
     size_t               temporal_kv_elem_size_ = 2;   // bytes per element
+    // Depformer dtype tracked independently so a mixed-precision bundle
+    // (INT8 temporal with FP32 KV/hidden + FP16 depformer) is supported —
+    // saves ~3 GB by shipping the FP16 depformer instead of FP32.
+    int                  depformer_kv_onnx_type_ = 10;
+    size_t               depformer_kv_elem_size_ = 2;
 
     // Voice prompt (loaded from voices/<name>.bin via voices_to_bin.py).
     // Format: magic + version + num_streams=17 + history=4 + cache[17*4] int64

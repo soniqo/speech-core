@@ -103,6 +103,45 @@ void OnnxPersonaPlex::detect_temporal_kv_dtype() {
     api_->ReleaseTypeInfo(type_info);
 }
 
+void OnnxPersonaPlex::detect_depformer_kv_dtype() {
+    // Depformer input layout: transformer_out, prev_token, step_idx,
+    // past_k_all (index 3), past_v_all. Falls back to FP16 on failure.
+    OrtTypeInfo* type_info = nullptr;
+    if (api_->SessionGetInputTypeInfo(depformer_step_session_, 3, &type_info) != nullptr) {
+        return;
+    }
+    const OrtTensorTypeAndShapeInfo* shape_info = nullptr;
+    api_->CastTypeInfoToTensorInfo(type_info, &shape_info);
+    if (shape_info) {
+        ONNXTensorElementDataType elem_type;
+        api_->GetTensorElementType(shape_info, &elem_type);
+        depformer_kv_onnx_type_ = static_cast<int>(elem_type);
+        depformer_kv_elem_size_ = (elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) ? 4 : 2;
+    }
+    api_->ReleaseTypeInfo(type_info);
+}
+
+std::vector<uint8_t> OnnxPersonaPlex::hidden_to_depformer_dtype(
+        const std::vector<uint8_t>& src) {
+    if (temporal_kv_elem_size_ == depformer_kv_elem_size_) {
+        return src;
+    }
+    const size_t n_elems = src.size() / temporal_kv_elem_size_;
+    std::vector<uint8_t> dst(n_elems * depformer_kv_elem_size_);
+    if (temporal_kv_elem_size_ == 4 && depformer_kv_elem_size_ == 2) {
+        // FP32 -> FP16
+        const float* sp = reinterpret_cast<const float*>(src.data());
+        uint16_t* dp = reinterpret_cast<uint16_t*>(dst.data());
+        for (size_t i = 0; i < n_elems; ++i) dp[i] = float_to_half(sp[i]);
+    } else if (temporal_kv_elem_size_ == 2 && depformer_kv_elem_size_ == 4) {
+        // FP16 -> FP32
+        const uint16_t* sp = reinterpret_cast<const uint16_t*>(src.data());
+        float* dp = reinterpret_cast<float*>(dst.data());
+        for (size_t i = 0; i < n_elems; ++i) dp[i] = half_to_float(sp[i]);
+    }
+    return dst;
+}
+
 OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
                                   const std::string& mimi_decoder_path,
                                   const std::string& temporal_step_path,
@@ -129,6 +168,7 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
     // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT = 1. Hidden + Mimi tokens follow
     // the same precision in both cases.
     detect_temporal_kv_dtype();
+    detect_depformer_kv_dtype();
 
     // Load SentencePiece blob (PR 5b will use it for text encoding/decoding;
     // for now we just check the file exists).
@@ -453,13 +493,15 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
     }
     const size_t per_tensor_elems = static_cast<size_t>(kDepformerLayers) * 1
                               * kDepformerHeads * dep_t_past * kDepformerHeadDim;
-    const size_t per_tensor_bytes = per_tensor_elems * temporal_kv_elem_size_;
+    const size_t per_tensor_bytes = per_tensor_elems * depformer_kv_elem_size_;
     if (dep_k.size() != per_tensor_bytes) dep_k.assign(per_tensor_bytes, 0);
     if (dep_v.size() != per_tensor_bytes) dep_v.assign(per_tensor_bytes, 0);
 
     const ONNXTensorElementDataType kv_type =
-        static_cast<ONNXTensorElementDataType>(temporal_kv_onnx_type_);
-    std::vector<uint8_t> hidden_buf(hidden);
+        static_cast<ONNXTensorElementDataType>(depformer_kv_onnx_type_);
+    // Hidden may need a Cast: temporal might be FP32 (INT8 bundle) while
+    // depformer is FP16. hidden_to_depformer_dtype is a no-op if they match.
+    std::vector<uint8_t> hidden_buf = hidden_to_depformer_dtype(hidden);
     const int64_t hidden_shape[3] = {1, 1, 4096};
     OrtValue* hv = nullptr;
     ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
@@ -509,7 +551,7 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
         uint8_t* data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[0], reinterpret_cast<void**>(&data)));
         logits_out.resize(n);
-        if (temporal_kv_elem_size_ == 2) {
+        if (depformer_kv_elem_size_ == 2) {
             const uint16_t* p = reinterpret_cast<const uint16_t*>(data);
             for (size_t i = 0; i < n; ++i) logits_out[i] = half_to_float(p[i]);
         } else {
@@ -517,7 +559,7 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
             for (size_t i = 0; i < n; ++i) logits_out[i] = p[i];
         }
     }
-    // Update dep cache (raw bytes)
+    // Update dep cache (raw bytes, in depformer's own dtype)
     {
         OrtTensorTypeAndShapeInfo* info = nullptr;
         ort_check_local(api_, api_->GetTensorTypeAndShape(outputs[1], &info));
@@ -527,7 +569,7 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
         size_t n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
         uint8_t* data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[1], reinterpret_cast<void**>(&data)));
-        dep_k.assign(data, data + n * temporal_kv_elem_size_);
+        dep_k.assign(data, data + n * depformer_kv_elem_size_);
     }
     {
         OrtTensorTypeAndShapeInfo* info = nullptr;
@@ -538,7 +580,7 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
         size_t n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
         uint8_t* data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[2], reinterpret_cast<void**>(&data)));
-        dep_v.assign(data, data + n * temporal_kv_elem_size_);
+        dep_v.assign(data, data + n * depformer_kv_elem_size_);
     }
     ++dep_t_past;
     api_->ReleaseValue(hv); api_->ReleaseValue(pv); api_->ReleaseValue(sv);
