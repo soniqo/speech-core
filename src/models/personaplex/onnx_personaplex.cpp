@@ -601,19 +601,44 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
     // Depformer cache lives entirely within one temporal frame; reset at each
     // step_idx==0 by allocating zero buffers (caller responsibility). Byte
     // storage matches temporal precision (FP16 or FP32 depending on bundle).
+    // Host-mirror state (used when GPU-resident path is off).
     static thread_local std::vector<uint8_t> dep_k, dep_v;
     static thread_local int dep_t_past = 0;
+    // GPU-resident state — held across the 16 inner steps to skip per-call
+    // GetTensorMutableData copies. Reset (released) at step_idx==0 each frame.
+    static thread_local OrtValue* dep_k_value = nullptr;
+    static thread_local OrtValue* dep_v_value = nullptr;
     if (step_idx == 0) {
         dep_k.clear(); dep_v.clear(); dep_t_past = 0;
+        if (dep_k_value) { api_->ReleaseValue(dep_k_value); dep_k_value = nullptr; }
+        if (dep_v_value) { api_->ReleaseValue(dep_v_value); dep_v_value = nullptr; }
     }
-    const size_t per_tensor_elems = static_cast<size_t>(kDepformerLayers) * 1
-                              * kDepformerHeads * dep_t_past * kDepformerHeadDim;
-    const size_t per_tensor_bytes = per_tensor_elems * depformer_kv_elem_size_;
-    if (dep_k.size() != per_tensor_bytes) dep_k.assign(per_tensor_bytes, 0);
-    if (dep_v.size() != per_tensor_bytes) dep_v.assign(per_tensor_bytes, 0);
-
     const ONNXTensorElementDataType kv_type =
         static_cast<ONNXTensorElementDataType>(depformer_kv_onnx_type_);
+    OrtValue* kv_k = nullptr;
+    OrtValue* kv_v = nullptr;
+    bool dep_kv_owned_here = false;
+
+    if (gpu_kv_enabled_ && dep_k_value != nullptr) {
+        kv_k = dep_k_value;
+        kv_v = dep_v_value;
+    } else {
+        const size_t per_tensor_elems = static_cast<size_t>(kDepformerLayers) * 1
+                                  * kDepformerHeads * dep_t_past * kDepformerHeadDim;
+        const size_t per_tensor_bytes = per_tensor_elems * depformer_kv_elem_size_;
+        if (dep_k.size() != per_tensor_bytes) dep_k.assign(per_tensor_bytes, 0);
+        if (dep_v.size() != per_tensor_bytes) dep_v.assign(per_tensor_bytes, 0);
+        const int64_t kv_shape[5] = {
+            kDepformerLayers, 1, kDepformerHeads, dep_t_past, kDepformerHeadDim};
+        ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, dep_k.data(), dep_k.size(),
+            kv_shape, 5, kv_type, &kv_k));
+        ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, dep_v.data(), dep_v.size(),
+            kv_shape, 5, kv_type, &kv_v));
+        dep_kv_owned_here = true;
+    }
+
     // Hidden may need a Cast: temporal might be FP32 (INT8 bundle) while
     // depformer is FP16. hidden_to_depformer_dtype is a no-op if they match.
     std::vector<uint8_t> hidden_buf = hidden_to_depformer_dtype(hidden);
@@ -637,17 +662,8 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
         mem, step_buf, sizeof(step_buf), step_shape, 1,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &sv));
 
-    const int64_t kv_shape[5] = {
-        kDepformerLayers, 1, kDepformerHeads, dep_t_past, kDepformerHeadDim};
-    OrtValue* kv_k = nullptr;
-    OrtValue* kv_v = nullptr;
-    ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, dep_k.data(), dep_k.size(),
-        kv_shape, 5, kv_type, &kv_k));
-    ort_check_local(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, dep_v.data(), dep_v.size(),
-        kv_shape, 5, kv_type, &kv_v));
-
+    // kv_k / kv_v were set up at the top of the function (either GPU-resident
+    // reuse from the previous inner step, or freshly-created host tensors).
     OrtValue* inputs[5] = {hv, pv, sv, kv_k, kv_v};
     OrtValue* outputs[3] = {nullptr, nullptr, nullptr};
     ort_check_local(api_, api_->Run(
@@ -674,8 +690,16 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
             for (size_t i = 0; i < n; ++i) logits_out[i] = p[i];
         }
     }
-    // Update dep cache (raw bytes, in depformer's own dtype)
-    {
+    // Update dep cache. GPU-resident path adopts the output OrtValues;
+    // host path copies the data back via GetTensorMutableData.
+    if (gpu_kv_enabled_) {
+        if (dep_k_value) api_->ReleaseValue(dep_k_value);
+        if (dep_v_value) api_->ReleaseValue(dep_v_value);
+        dep_k_value = outputs[1];
+        dep_v_value = outputs[2];
+        outputs[1] = nullptr;
+        outputs[2] = nullptr;
+    } else {
         OrtTensorTypeAndShapeInfo* info = nullptr;
         ort_check_local(api_, api_->GetTensorTypeAndShape(outputs[1], &info));
         size_t nd = 0; api_->GetDimensionsCount(info, &nd);
@@ -685,21 +709,23 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint8_t>& hidden,
         uint8_t* data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[1], reinterpret_cast<void**>(&data)));
         dep_k.assign(data, data + n * depformer_kv_elem_size_);
-    }
-    {
-        OrtTensorTypeAndShapeInfo* info = nullptr;
+
+        info = nullptr;
         ort_check_local(api_, api_->GetTensorTypeAndShape(outputs[2], &info));
-        size_t nd = 0; api_->GetDimensionsCount(info, &nd);
-        std::vector<int64_t> dims(nd); api_->GetDimensions(info, dims.data(), nd);
+        nd = 0; api_->GetDimensionsCount(info, &nd);
+        dims.resize(nd); api_->GetDimensions(info, dims.data(), nd);
         api_->ReleaseTensorTypeAndShapeInfo(info);
-        size_t n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
-        uint8_t* data = nullptr;
+        n = 1; for (auto d : dims) n *= static_cast<size_t>(d);
+        data = nullptr;
         ort_check_local(api_, api_->GetTensorMutableData(outputs[2], reinterpret_cast<void**>(&data)));
         dep_v.assign(data, data + n * depformer_kv_elem_size_);
     }
     ++dep_t_past;
     api_->ReleaseValue(hv); api_->ReleaseValue(pv); api_->ReleaseValue(sv);
-    api_->ReleaseValue(kv_k); api_->ReleaseValue(kv_v);
+    if (dep_kv_owned_here) {
+        api_->ReleaseValue(kv_k);
+        api_->ReleaseValue(kv_v);
+    }
     for (auto* o : outputs) if (o) api_->ReleaseValue(o);
 }
 
