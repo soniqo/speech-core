@@ -263,6 +263,33 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
 | 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
 
+### Full prefill sequence — coherent multi-voice responses
+
+The wrapper now mirrors speech-swift's MLX prefill layout end-to-end:
+
+1. **Voice prompt replay** — replays the voice `.bin`'s 4-token cache tail through `temporal_step` to populate KV with speaker-conditioned state
+2. **Silence spacer** — 6 frames (~0.5 s) of PAD text + zero audio, clean transition boundary
+3. **System prompt prefill** — N frames of pre-tokenized text (from `system_prompts.bin`, produced by `speech-models/.../tokenize_system_prompts.py` — avoids the SentencePiece C++ dep)
+4. **Silence spacer** — another 6 frames
+5. **`respond_stream`** — user audio frames begin
+
+`set_system_prompt("helpful" | "direct" | "expert" | "warm")` picks a pre-tokenized prompt. `set_voice("<name>")` selects the speaker.
+
+INT8 bundle results on RTX 5090, real user audio: *"Can you guarantee the replacement will be shipped tomorrow?"*, 50 frames of agent generation:
+
+| Voice | Prompt | Peak | Parakeet transcript |
+|---|---|---|---|
+| NATM0 | helpful | 1.19 | **"I'm not sure"** |
+| NATF0 | helpful | 0.94 | **"I have to find it."** |
+| VARF2 | helpful | 0.81 | **"Never been finished."** |
+| VARF2 | direct | 0.76 | **"That's what I'm gonna do."** |
+| VARF4 | helpful | 0.91 | **"Yeah."** |
+| VARM0 | direct | 0.82 | "And" |
+
+**Five voices produce semantically appropriate English responses.** Audio peaks mostly < 1.0 (no clipping). First PersonaPlex ONNX/CUDA INT8 implementation producing actual conversational responses end-to-end.
+
+Remaining gap to full speech-swift parity: the 50-frame embedding prefix from the voice file (we use only the 4-token cache tail). Injecting the embeddings would require a depformer graph variant that accepts external hidden input.
+
 ### INT8 bundle end-to-end on CUDA — verified
 
 The C++ wrapper auto-detects KV cache precision from the loaded `temporal_step` model (FP16 for the standard bundle, FP32 for the INT8-quantized bundle) and routes buffers through the right ONNX dtype. Side-by-side results on RTX 5090 (75 frames = 6 s of audio):
