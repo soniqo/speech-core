@@ -11,6 +11,7 @@
 #include "speech_core/models/onnx_engine.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -409,14 +410,44 @@ void OnnxPersonaPlex::depformer_step(const std::vector<uint16_t>& hidden,
 }
 
 int OnnxPersonaPlex::sample_token(const std::vector<float>& logits,
-                                   float /*temperature*/, int /*top_k*/) {
-    // Greedy argmax. PR 5b extends to top-k + temperature + repetition penalty.
-    int argmax = 0;
-    float best = -INFINITY;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        if (logits[i] > best) { best = logits[i]; argmax = static_cast<int>(i); }
+                                   float temperature, int top_k) {
+    // Top-k + temperature sampling. PersonaPlex defaults from speech-swift:
+    //   audio: temperature 0.8, top_k 250
+    //   text:  temperature 0.7, top_k 25
+    // Caller passes the right tuple per stream.
+    const int K = static_cast<int>(logits.size());
+    if (top_k <= 0 || top_k >= K || temperature <= 0.0f) {
+        int argmax = 0;
+        float best = -INFINITY;
+        for (int i = 0; i < K; ++i) {
+            if (logits[i] > best) { best = logits[i]; argmax = i; }
+        }
+        return argmax;
     }
-    return argmax;
+    // Partial sort top-k by magnitude
+    std::vector<std::pair<float,int>> scored;
+    scored.reserve(K);
+    for (int i = 0; i < K; ++i) scored.emplace_back(logits[i], i);
+    std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+                       [](const auto& a, const auto& b){ return a.first > b.first; });
+    // Temperature-scaled softmax over the top-k
+    float maxv = scored[0].first;
+    double sum = 0.0;
+    std::vector<double> probs(top_k);
+    for (int i = 0; i < top_k; ++i) {
+        probs[i] = std::exp((scored[i].first - maxv) / temperature);
+        sum += probs[i];
+    }
+    // Multinomial sample
+    static thread_local uint64_t rng_state = 0x9E3779B97F4A7C15ULL;
+    rng_state ^= rng_state << 13; rng_state ^= rng_state >> 7; rng_state ^= rng_state << 17;
+    double r = (double)(rng_state & 0xFFFFFFFFull) / (double)0x100000000ull * sum;
+    double acc = 0.0;
+    for (int i = 0; i < top_k; ++i) {
+        acc += probs[i];
+        if (acc >= r) return scored[i].second;
+    }
+    return scored[top_k - 1].second;
 }
 
 void OnnxPersonaPlex::respond_stream(const float* user_audio, size_t length,
@@ -439,54 +470,91 @@ void OnnxPersonaPlex::respond_stream(const float* user_audio, size_t length,
     std::vector<int64_t> agent_token_log;  // accumulated [16, T_emitted] for mimi_decode
     agent_token_log.reserve(static_cast<size_t>(kMimiCodebooks) * T_frames);
 
-    std::vector<int64_t> prev_agent_tokens(kAudioCodebooks, 0);
-    int64_t prev_text_token = 0;  // PAD; PR 5b initializes from system prompt + voice
+    // Two-frame history for the delay pattern. PersonaPlex delays:
+    //   stream 0 (text):        delay 0
+    //   streams 1..8 (user):    delays [0,1,1,1,1,1,1,1]  (cb 0 semantic, cb 1-7 acoustic)
+    //   streams 9..16 (agent):  delays [0,1,1,1,1,1,1,1]
+    // At step t, stream s reads its token from frame t-1-delays[s]. We carry a
+    // 2-frame ring buffer per stream (the largest delay is 1, plus 1 for the
+    // most-recent prediction). For warm-up frames we feed zero (the model's
+    // initial/PAD token semantics).
+    constexpr int kDelayBufSize = 2;
+    std::vector<std::array<int64_t, kDelayBufSize>> user_audio_hist(8);
+    std::vector<std::array<int64_t, kDelayBufSize>> agent_audio_hist(8);
+    std::array<int64_t, kDelayBufSize> text_hist{0, 0};
+    for (auto& h : user_audio_hist) h.fill(0);
+    for (auto& h : agent_audio_hist) h.fill(0);
+
+    // Delay layout from PERSONAPLEX_DELAYS in speech-models/convert.py
+    static constexpr int kUserDelays[8]  = {0, 1, 1, 1, 1, 1, 1, 1};
+    static constexpr int kAgentDelays[8] = {0, 1, 1, 1, 1, 1, 1, 1};
 
     int n_frames = std::min<int>(static_cast<int>(T_frames), max_frames_);
     int chunk_start = 0;
 
+    auto hist_read = [&](const std::array<int64_t, kDelayBufSize>& h, int delay) -> int64_t {
+        // h[0] = oldest (frame t-2), h[1] = newest (frame t-1)
+        // delay=0 -> newest (t-1), delay=1 -> oldest (t-2)
+        int idx = kDelayBufSize - 1 - delay;
+        if (idx < 0) idx = 0;
+        return h[idx];
+    };
+    auto hist_push = [&](std::array<int64_t, kDelayBufSize>& h, int64_t v) {
+        for (int i = 0; i + 1 < kDelayBufSize; ++i) h[i] = h[i+1];
+        h[kDelayBufSize - 1] = v;
+    };
+
     for (int t = 0; t < n_frames && !cancelled_.load(); ++t) {
-        // Build the 16-stream audio input: first 8 are user (from mimi tokens),
-        // next 8 are agent (from previous-frame depformer output, delay pattern
-        // applied via prev_agent_tokens vector layout).
+        // Push user audio for this frame into history before the read.
+        // We mimi-encoded all frames up front; pull frame t's 8 user codebooks
+        // (first 8 of Mimi's 32 RVQ output — the semantic + 7 acoustic).
+        for (int cb = 0; cb < 8; ++cb) {
+            int64_t tok = user_tokens_all[
+                static_cast<size_t>(cb) * static_cast<size_t>(T_frames) + t];
+            hist_push(user_audio_hist[cb], tok);
+        }
+
+        // Build the 17 LM input streams for this temporal step. Read with the
+        // per-stream delay applied.
+        int64_t text_tok_in = hist_read(text_hist, 0);  // text delay=0
         std::vector<int64_t> audio_stream_16(kAudioCodebooks);
         for (int cb = 0; cb < 8; ++cb) {
-            audio_stream_16[cb] = user_tokens_all[
-                static_cast<size_t>(cb) * static_cast<size_t>(T_frames) + t];
-        }
-        for (int cb = 0; cb < 8; ++cb) {
-            audio_stream_16[8 + cb] = prev_agent_tokens[8 + cb];
+            audio_stream_16[cb]     = hist_read(user_audio_hist[cb], kUserDelays[cb]);
+            audio_stream_16[8 + cb] = hist_read(agent_audio_hist[cb], kAgentDelays[cb]);
         }
 
         std::vector<uint16_t> hidden;
-        temporal_forward(prev_text_token, audio_stream_16, hidden);
+        temporal_forward(text_tok_in, audio_stream_16, hidden);
 
-        // Inner loop: 16 depformer steps to emit text + 8 agent audio tokens.
-        // Step 0 is text token; steps 1..8 are agent audio cb 0..7.
-        // (PR 5b refines the exact step <-> codebook mapping per delay pattern.)
+        // Inner depformer loop: 16 steps. Step 0 predicts text; steps 1..8 predict
+        // agent audio cb 0..7. Steps 9..15 are unused for PersonaPlex audio output
+        // but the depformer runs them anyway (model is trained for full 16-step
+        // dependency). We emit a sampled token at every step to advance the cache.
         int64_t new_text = 0;
-        std::vector<int64_t> new_agent(kAudioCodebooks, 0);
-        int64_t prev_step_token = prev_text_token;
+        std::array<int64_t, 8> new_agent{};
+        int64_t prev_step_token = text_tok_in;
         for (int k = 0; k < kDepQ; ++k) {
             std::vector<float> logits;
             depformer_step(hidden, prev_step_token, k, logits);
-            int tok = sample_token(logits, 0.8f, 250);
+            // Per speech-swift docs: audio temp=0.8/top_k=250, text temp=0.7/top_k=25.
+            const float temp  = (k == 0) ? 0.7f : 0.8f;
+            const int   top_k = (k == 0) ? 25   : 250;
+            int tok = sample_token(logits, temp, top_k);
             if (k == 0) {
                 new_text = tok;
             } else if (k <= 8) {
-                new_agent[8 + (k - 1)] = tok;  // agent audio codebooks
+                new_agent[k - 1] = tok;  // agent audio cb (k-1) at step k
             }
             prev_step_token = tok;
         }
-        prev_text_token = new_text;
-        prev_agent_tokens = new_agent;
+        hist_push(text_hist, new_text);
+        for (int cb = 0; cb < 8; ++cb) hist_push(agent_audio_hist[cb], new_agent[cb]);
 
-        // Log agent codebooks for later Mimi decode (use first 16 as Mimi input)
+        // Accumulate agent codebooks for later Mimi decode. Mimi takes 32-RVQ
+        // tokens but PersonaPlex only drives the first 8 (semantic + 7 acoustic);
+        // we zero-pad the remaining 24 RVQ slots.
         for (int cb = 0; cb < kMimiCodebooks; ++cb) {
-            // For Mimi, we use codebooks 8..15 (agent slot) -> Mimi indices 0..7,
-            // and zero-pad the remaining 24 Mimi slots that the LM doesn't drive.
-            int64_t tok = (cb < 8) ? new_agent[8 + cb] : 0;
-            agent_token_log.push_back(tok);
+            agent_token_log.push_back(cb < 8 ? new_agent[cb] : 0);
         }
         ++frames_generated_;
 
