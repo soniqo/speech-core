@@ -131,9 +131,17 @@ private:
     std::vector<uint16_t> temporal_v_;
     int                   temporal_t_past_ = 0;
 
-    // Voice embedding (loaded from voices/<name>.bin). PersonaPlex voices are
-    // 50-frame x 8-codebook embeddings replayed as the prefill prefix.
-    std::vector<int64_t> voice_tokens_;
+    // Voice prompt (loaded from voices/<name>.bin via voices_to_bin.py).
+    // Format: magic + version + num_streams=17 + history=4 + cache[17*4] int64
+    //         + num_emb_frames + emb_dim=4096 + embeddings[F * 4096] fp32
+    // We currently consume cache[] to pre-populate the delay history. The
+    // embeddings would prefill temporal hidden but require an alternate
+    // graph signature — deferred follow-up.
+    std::vector<int64_t> voice_cache_;          // 17*4 cache tokens
+    int                  voice_history_size_ = 0;  // typically 4
+    std::vector<float>   voice_embeddings_;     // [F*4096] fp32
+    int                  voice_embedding_frames_ = 0;
+    std::string          voices_dir_;
     std::string          current_voice_;
 
     // SentencePiece model (raw bytes; we vendor a minimal decoder; the full

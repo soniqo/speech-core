@@ -118,8 +118,7 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
     // Default delay pattern per PersonaPlex spec
     delays_ = {0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1};
 
-    // voices_dir presence check — actual voice load happens on set_voice
-    (void)voices_dir;
+    voices_dir_ = voices_dir;
 
     reset_session();
 }
@@ -145,12 +144,26 @@ void OnnxPersonaPlex::cancel() {
 
 void OnnxPersonaPlex::set_voice(const std::string& voice_name) {
     current_voice_ = voice_name;
-    voice_tokens_.clear();
-    // Full voice-prompt loading from voices/<name>.bin is PR 5b. For now we
-    // just remember the requested name; respond_stream proceeds without
-    // voice conditioning, which produces uninflected but coherent output
-    // (per speech-swift docs, voice embeddings are a quality enhancer not
-    // a hard requirement).
+    voice_cache_.clear();
+    voice_embeddings_.clear();
+    voice_history_size_ = 0;
+    voice_embedding_frames_ = 0;
+    if (voices_dir_.empty()) return;
+    const std::string path = voices_dir_ + "/" + voice_name + ".bin";
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return;  // silently ignore missing voice file
+    auto read = [&](void* p, size_t n) { f.read(reinterpret_cast<char*>(p), n); };
+    uint32_t magic = 0, version = 0, num_streams = 0, history = 0;
+    read(&magic, 4); read(&version, 4); read(&num_streams, 4); read(&history, 4);
+    if (magic != 0x50506558u || version != 1u) return;
+    voice_cache_.resize(static_cast<size_t>(num_streams) * history);
+    read(voice_cache_.data(), voice_cache_.size() * sizeof(int64_t));
+    voice_history_size_ = static_cast<int>(history);
+    uint32_t F = 0, D = 0;
+    read(&F, 4); read(&D, 4);
+    voice_embeddings_.resize(static_cast<size_t>(F) * D);
+    read(voice_embeddings_.data(), voice_embeddings_.size() * sizeof(float));
+    voice_embedding_frames_ = static_cast<int>(F);
 }
 
 void OnnxPersonaPlex::set_system_prompt(const std::string& prompt) {
@@ -484,6 +497,25 @@ void OnnxPersonaPlex::respond_stream(const float* user_audio, size_t length,
     std::array<int64_t, kDelayBufSize> text_hist{0, 0};
     for (auto& h : user_audio_hist) h.fill(0);
     for (auto& h : agent_audio_hist) h.fill(0);
+
+    // If a voice is set and the .bin loaded, seed the delay history with the
+    // voice's cached tail (4 tokens × 17 streams). We take the LAST kDelayBufSize
+    // tokens from the voice cache for each stream. Layout: voice_cache_ is
+    // [num_streams * voice_history_size_], stream s at index s * h + ...
+    if (!voice_cache_.empty() && voice_history_size_ > 0) {
+        const int H = voice_history_size_;
+        auto seed = [&](std::array<int64_t, kDelayBufSize>& dst, int stream_idx) {
+            for (int i = 0; i < kDelayBufSize; ++i) {
+                int src_pos = H - kDelayBufSize + i;
+                if (src_pos < 0) src_pos = 0;
+                dst[i] = voice_cache_[
+                    static_cast<size_t>(stream_idx) * H + src_pos];
+            }
+        };
+        seed(text_hist, 0);
+        for (int cb = 0; cb < 8; ++cb) seed(user_audio_hist[cb], 1 + cb);
+        for (int cb = 0; cb < 8; ++cb) seed(agent_audio_hist[cb], 9 + cb);
+    }
 
     // Delay layout from PERSONAPLEX_DELAYS in speech-models/convert.py
     static constexpr int kUserDelays[8]  = {0, 1, 1, 1, 1, 1, 1, 1};
