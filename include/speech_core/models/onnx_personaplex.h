@@ -146,6 +146,13 @@ private:
     OrtValue*            past_k_value_ = nullptr;  // GPU-resident path only
     OrtValue*            past_v_value_ = nullptr;
     bool                 gpu_kv_enabled_ = false;
+    // IoBinding state for temporal_step. With BindOutputToDevice we let ORT
+    // allocate the output buffers on the CUDA device on its own; no host
+    // staging at Run boundaries. Falls back to the simpler GPU-resident
+    // OrtValue handoff when this isn't available.
+    OrtMemoryInfo*       cuda_mem_info_ = nullptr;
+    OrtIoBinding*        temporal_binding_ = nullptr;
+    bool                 iobind_enabled_ = false;
     int                  temporal_kv_onnx_type_ = 10;  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 default
     size_t               temporal_kv_elem_size_ = 2;   // bytes per element
     // Depformer dtype tracked independently so a mixed-precision bundle

@@ -178,6 +178,28 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
     if (OnnxEngine::get().gpu_provider() != OrtGpuProvider::None) {
         const char* off = std::getenv("SPEECH_CORE_PP_GPU_KV");
         gpu_kv_enabled_ = (!off || std::strcmp(off, "0") != 0);
+
+        // Try to set up a CUDA memory info + IoBinding. With BindOutputToDevice
+        // ORT allocates the dynamic-shape outputs directly on the device, no
+        // host staging at Run boundaries. OPT-IN via SPEECH_CORE_PP_IOBIND=1
+        // (default off — the IOBinding path currently segfaults on first
+        // RunWithBinding with our growing-shape KV cache; under investigation).
+        if (gpu_kv_enabled_) {
+            const char* iob_on = std::getenv("SPEECH_CORE_PP_IOBIND");
+            const bool want_iob = iob_on && std::strcmp(iob_on, "0") != 0 &&
+                                  std::strcmp(iob_on, "") != 0;
+            if (want_iob) {
+                OrtStatus* s = api_->CreateMemoryInfo(
+                    "Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault, &cuda_mem_info_);
+                if (s != nullptr) {
+                    api_->ReleaseStatus(s);
+                    cuda_mem_info_ = nullptr;
+                } else if (api_->CreateIoBinding(
+                                temporal_step_session_, &temporal_binding_) == nullptr) {
+                    iobind_enabled_ = true;
+                }
+            }
+        }
     }
 
     // Load SentencePiece blob (PR 5b will use it for text encoding/decoding;
@@ -226,6 +248,8 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
 OnnxPersonaPlex::~OnnxPersonaPlex() {
     if (past_k_value_) api_->ReleaseValue(past_k_value_);
     if (past_v_value_) api_->ReleaseValue(past_v_value_);
+    if (temporal_binding_) api_->ReleaseIoBinding(temporal_binding_);
+    if (cuda_mem_info_)    api_->ReleaseMemoryInfo(cuda_mem_info_);
     if (mimi_encoder_session_)   api_->ReleaseSession(mimi_encoder_session_);
     if (mimi_decoder_session_)   api_->ReleaseSession(mimi_decoder_session_);
     if (temporal_step_session_)  api_->ReleaseSession(temporal_step_session_);
@@ -505,10 +529,42 @@ void OnnxPersonaPlex::temporal_forward(int64_t text_token,
 
     OrtValue* inputs[4] = {text_val, audio_val, k_val, v_val};
     OrtValue* outputs[3] = {nullptr, nullptr, nullptr};
-    ort_check_local(api_, api_->Run(
-        temporal_step_session_, nullptr,
-        temporal_io_.in_names.data(), inputs, 4,
-        temporal_io_.out_names.data(), 3, outputs));
+
+    if (iobind_enabled_) {
+        // BindOutputToDevice path: ORT allocates the dynamic-shape outputs
+        // directly on the CUDA device. ClearBoundInputs at the end so the
+        // input OrtValues we own can be released without affecting next step.
+        ort_check_local(api_, api_->BindInput(temporal_binding_, temporal_io_.in_names[0], text_val));
+        ort_check_local(api_, api_->BindInput(temporal_binding_, temporal_io_.in_names[1], audio_val));
+        ort_check_local(api_, api_->BindInput(temporal_binding_, temporal_io_.in_names[2], k_val));
+        ort_check_local(api_, api_->BindInput(temporal_binding_, temporal_io_.in_names[3], v_val));
+        ort_check_local(api_, api_->BindOutputToDevice(temporal_binding_, temporal_io_.out_names[0], cuda_mem_info_));
+        ort_check_local(api_, api_->BindOutputToDevice(temporal_binding_, temporal_io_.out_names[1], cuda_mem_info_));
+        ort_check_local(api_, api_->BindOutputToDevice(temporal_binding_, temporal_io_.out_names[2], cuda_mem_info_));
+        ort_check_local(api_, api_->RunWithBinding(
+            temporal_step_session_, nullptr, temporal_binding_));
+        // Retrieve the bound outputs. The allocator is just for the OrtValue
+        // array; the underlying device tensors stay device-resident.
+        OrtAllocator* host_alloc = nullptr;
+        ort_check_local(api_, api_->GetAllocatorWithDefaultOptions(&host_alloc));
+        OrtValue** bound = nullptr;
+        size_t bound_count = 0;
+        ort_check_local(api_, api_->GetBoundOutputValues(
+            temporal_binding_, host_alloc, &bound, &bound_count));
+        if (bound_count == 3) {
+            outputs[0] = bound[0];
+            outputs[1] = bound[1];
+            outputs[2] = bound[2];
+        }
+        if (bound) host_alloc->Free(host_alloc, bound);
+        api_->ClearBoundInputs(temporal_binding_);
+        api_->ClearBoundOutputs(temporal_binding_);
+    } else {
+        ort_check_local(api_, api_->Run(
+            temporal_step_session_, nullptr,
+            temporal_io_.in_names.data(), inputs, 4,
+            temporal_io_.out_names.data(), 3, outputs));
+    }
 
     // outputs: hidden [1,1,dim=4096] fp16; new_k_all, new_v_all
     {
