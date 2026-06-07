@@ -4,12 +4,15 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 
 ### ONNX Runtime backend (`SPEECH_CORE_WITH_ONNX`)
 
-| Model | Interface | Header |
-|---|---|---|
-| `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` |
-| `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` |
-| `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` |
-| `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` |
+| Model | Interface | Header | Status |
+|---|---|---|---|
+| `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` | full |
+| `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
+| `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
+| `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
+| `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
+| `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
+| `OnnxPersonaPlex` | `FullDuplexSpeechInterface` (planned) | `speech_core/models/onnx_personaplex.h` (planned) | **planned** — see [PersonaPlex (planned)](#onnxpersonaplex-planned) |
 
 ### LiteRT backend (`SPEECH_CORE_WITH_LITERT`)
 
@@ -225,6 +228,74 @@ auto final   = stt.end_stream();
 - Nemotron Speech Streaming 0.6B — **true** cache-aware streaming RNN-T (three graphs: encoder-with-cache, decoder LSTM, joint). `push_chunk` drains fixed ~80 ms windows, advancing the encoder cache + decoder state across calls and greedily decoding the first encoder frame. One instance == one stream.
 - Config defaults match the export; vocab size auto-derives from `vocab.json`.
 - Model files: [soniqo/Nemotron-Speech-Streaming-LiteRT](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) — `nemotron-streaming-{encoder,decoder,joint}.tflite`, `vocab.json`, `config.json`
+
+## OnnxPersonaPlex (planned)
+
+> **Status: planned, not implemented.** Tracking work is split across PRs landing in this order — see also the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md).
+
+NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Moshi architecture. Listens and speaks simultaneously at 12.5 Hz, conditioned on a voice preset and text system prompt. Already shipped in [speech-swift](https://github.com/) as native Swift/MLX (8-bit / 4-bit). This ONNX path targets CUDA on Linux/Windows servers via `SPEECH_CORE_WITH_ONNX=ON`.
+
+### Architecture (from the upstream model)
+
+```
+[User audio 24 kHz]
+        ↓
+[Mimi encoder: SEANet conv + 8L transformer + RVQ] → 16 codebooks @ 12.5 Hz
+        ↓
+17 streams summed: text (vocab 32001) + 8 user audio + 8 agent audio (vocab 2049)
+        ↓
+[Temporal transformer: 32L, dim=4096, 7B params, RoPE, RMSNorm, SwiGLU, KV-cache ctx=3000]
+        ↓
+[Depformer: 6L, dim=1024, MultiLinear ×16 codebook steps] → 16 agent audio tokens
+        ↓
+[Mimi decoder] → 24 kHz agent audio
+```
+
+### Roadmap (one PR per row)
+
+| # | PR | Lands in |
+|---|---|---|
+| 1 | PyTorch reference (Kyutai-moshi-derived, loading `nvidia/personaplex-7b-v1` weights) + Mimi encoder/decoder ONNX export | speech-models |
+| 2 | `temporal_step` ONNX export — single-step graph with explicit KV-cache in/out (mirrors VoxCPM2 `token_step`) | speech-models |
+| 3 | `depformer` ONNX export — 6-layer MultiLinear with per-codebook step weights + output `linears[k]` | speech-models |
+| 4 | `FullDuplexSpeechInterface` in `interfaces.h` — streaming push-user-audio / on-agent-audio contract, voice + system-prompt config | speech-core |
+| 5 | `OnnxPersonaPlex` wrapper — orchestrates `mimi_encode → temporal_step ×N → depformer ×16 → mimi_decode`, manages KV-cache, 17-stream embedding sum, 16-codebook delay pattern, voice prompt prefill, SentencePiece text tokenizer | speech-core |
+| 6 | CUDA EP + IOBinding (KV-cache GPU-resident across steps) + optional CUDA Graph capture on `temporal_step` | speech-core |
+| 7 | `test_personaplex` + RTF/step-latency bench vs MLX baseline + full docs section replacing this stub | speech-core |
+
+### Why a new interface
+
+The existing interfaces don't fit:
+
+- `STTInterface` — audio → text. PersonaPlex emits audio + text concurrently.
+- `TTSInterface` — text → audio. PersonaPlex takes streaming user audio, not just text.
+- `LLMInterface` — text → text. No audio at all.
+
+PR #4 will introduce `FullDuplexSpeechInterface` (name not final) modeled on the streaming contract speech-swift already exposes via `PersonaPlexModel.respondStream()`: caller pushes user PCM in real time, an `on_chunk` callback receives interleaved agent audio + text tokens. The Apple-side MLX backend and this ONNX/CUDA backend will satisfy the same conceptual contract — same pattern as `STTInterface` today across ORT + LiteRT + CoreML.
+
+### Model files (when shipped)
+
+- `soniqo/PersonaPlex-7B-ONNX` (planned) — `personaplex-mimi-encoder.onnx`, `personaplex-mimi-decoder.onnx`, `personaplex-temporal-step.onnx` (+ external weights data), `personaplex-depformer.onnx`, `personaplex-config.json`, `personaplex-voices/*.bin`, `tokenizer_spm_32k_3.model`
+- Total bundle: ~8 GB FP16 / ~4 GB INT8 — same order as VoxCPM2; CUDA EP for serving, CPU possible but slow
+
+### Validation strategy
+
+Same pattern as VoxCPM2 (task #39 / #41): **generate speech, transcribe with Parakeet STT, assert content words**. Every export quantization variant (FP16 baseline → INT8 → INT4 MatMulNBits) runs the same fixture and is compared against the MLX 8-bit reference (the upstream-recommended quality bar).
+
+Per-graph numeric parity tests (token-level + audio MSE against the PyTorch reference) gate PRs #1-3. End-to-end round-trip — fixed user audio + system prompt → ONNX agent audio → Parakeet STT → content-word overlap vs MLX baseline transcript — gates PRs #5-7.
+
+Fixture set (planned, in `tests/data/personaplex/`):
+
+| Prompt | Expected content | Voice | System |
+|---|---|---|---|
+| "Can you guarantee the replacement will ship tomorrow?" | accepts/denies ship-tomorrow constraint | NATM0 | helpful-assistant |
+| "Recommend a book about machine learning." | names a recognisable ML book | NATF0 | helpful-assistant |
+| "What's the capital of France?" | mentions Paris | NATM1 | helpful-assistant |
+
+Per-quantization gate (rough — finalised in PR #7):
+- FP16: agent transcript ≥ 70% content-word overlap with MLX 8-bit baseline transcript on each fixture
+- INT8: ≥ 60% (some drift acceptable)
+- INT4: best-effort, no merge gate (MLX docs flag INT4 as "incoherent" — we expect the same and don't ship it as the default)
 
 ## DiarizationPipeline
 
