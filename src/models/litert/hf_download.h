@@ -43,6 +43,19 @@ void download_bundle(const std::string& repo,
 /// Whether this build has libcurl-backed download support compiled in.
 bool download_supported();
 
+// --- Pure decision helpers (no network/IO; unit-tested in test_hf_download) ---
+
+// An already-present final file is trusted as complete when the remote size is
+// unknown (0) or matches it — files are only renamed into place once whole.
+bool final_is_complete(uint64_t final_size, uint64_t remote_size);
+
+enum class FetchAction { Complete, Resume, Restart };
+
+// Decide what to do with a partial download given the bytes already on disk
+// (`part_size`) and the known remote size (`remote_size`; 0 = unknown). Sets
+// *resume_from to the byte offset to continue from (0 on Restart).
+FetchAction plan_part_fetch(uint64_t part_size, uint64_t remote_size, uint64_t* resume_from);
+
 }  // namespace speech_core::hf
 
 #endif  // SPEECH_CORE_LITERT_HF_DOWNLOAD_H
