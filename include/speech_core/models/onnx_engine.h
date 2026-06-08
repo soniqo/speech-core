@@ -183,7 +183,61 @@ public:
         OrtPathStr ort_path = to_ort_path(path);
         OrtStatus* create_status = api_->CreateSession(env_, ort_path.c_str(), opts, &session);
 
-        // If session creation fails with a hardware EP (NNAPI/QNN/GPU), retry CPU-only.
+        // If session creation fails with a hardware EP (NNAPI/QNN/GPU), retry.
+        //
+        // Three-tier fallback:
+        //   (1) GPU + graph capture (current path)  — fastest when ORT can
+        //       partition every node to the CUDAExecutionProvider.
+        //   (2) GPU without graph capture           — happens when some op
+        //       in the graph isn't CUDA-partitionable (Memcpy nodes appear
+        //       at the GPU↔CPU boundary). The session still runs on GPU
+        //       for the supported ops, just without the single-launch win.
+        //   (3) CPU-only                            — last resort.
+        //
+        // Pre-fix we jumped straight from (1) to (3), which silently moved
+        // the autoregressive token_step loop entirely off the GPU and made
+        // RTF worse than a non-graph GPU run. The graph-capture failure has
+        // a specific ORT error string we can detect to fork between (2)
+        // and (3).
+        bool graph_capture_failure = false;
+        if (create_status != nullptr && gpu_attempted && enable_cuda_graph) {
+            const char* msg = api_->GetErrorMessage(create_status);
+            if (msg && std::strstr(msg, "graph capture")) {
+                graph_capture_failure = true;
+            }
+        }
+
+        if (create_status != nullptr && graph_capture_failure) {
+            const char* msg = api_->GetErrorMessage(create_status);
+            LOGI("CUDA Graph capture rejected by ORT (%s); retrying GPU EP "
+                 "without graph capture", msg);
+            api_->ReleaseStatus(create_status);
+            api_->ReleaseSessionOptions(opts);
+
+            opts = nullptr;
+            ort_check(api_, api_->CreateSessionOptions(&opts));
+            api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
+            api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_env_allocators", "1"));
+            if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {
+                if (skip[0] != '\0') {
+                    ort_check(api_, api_->AddSessionConfigEntry(
+                        opts, "session.disable_specific_optimizers", skip));
+                }
+            }
+            // Append GPU EP again, this time with enable_cuda_graph=false.
+            if (!try_append_gpu(opts, path, /*enable_cuda_graph=*/false)) {
+                // GPU append still failed for a non-graph reason — fall
+                // through to CPU-only below.
+                create_status = api_->CreateSession(env_, ort_path.c_str(),
+                                                    opts, &session);
+            } else {
+                create_status = api_->CreateSession(env_, ort_path.c_str(),
+                                                    opts, &session);
+            }
+        }
+
         if (create_status != nullptr && nnapi) {
             const char* msg = api_->GetErrorMessage(create_status);
             LOGI("Hardware-EP session failed (%s), retrying CPU-only", msg);
