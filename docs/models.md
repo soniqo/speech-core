@@ -359,6 +359,21 @@ The mixed bundle produces the textbook customer-service phrasing. **FP16 has dra
 
 Recommendation: ship the **INT4 bundle** for users wanting both small disk AND reasonable host RAM (8.1 GB disk, 9.4 GB RAM). Ship FP16 only if you specifically need <6 GB host RAM and have 17 GB of disk to spare.
 
+### Multi-voice quality across the bundles (50 frames, real WAV input)
+
+Same fixture ("Can you guarantee the replacement will be shipped tomorrow?"), prompts `helpful`/`direct`, sampled across voices:
+
+| Bundle | Topical responses | Sample transcript |
+|---|---|---|
+| FP16 | partial — 2-3 voices produce English | "We can do" |
+| Mixed | **best** — 5-6 voices produce topical English | **"We're concerned about it." (VARF2)** |
+| INT4 | partial — 5-6 voices produce English (less topical than Mixed) | "I like it." (VARM0+direct) |
+
+**Selection guide:**
+- **Production quality** → Mixed (best topical, 15.7 GB RAM cost)
+- **Lowest RAM** → FP16 (5.4 GB, accept partial topical hit)
+- **Smallest disk + balanced** → INT4 (8.1 GB disk, 9.4 GB RAM, "good enough" quality)
+
 | Optimize for | Ship |
 |---|---|
 | **Lowest host RAM** | **FP16 bundle (5.9 GB RAM, 17 GB disk)** — the only sub-15-GB-RAM option |
