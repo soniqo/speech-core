@@ -346,13 +346,25 @@ End-to-end results with embedding prefix at scale 10, single user utterance ("Ca
 
 The mixed bundle produces the textbook customer-service phrasing. **FP16 has dramatically lower host RAM** because ORT-CUDA on INT8 dynamic-quantized weights keeps CPU shadow buffers for the dequantize path; we measured that this is **not** ORT-optimization-driven (lowering `SPEECH_CORE_ORT_OPT_LEVEL` to `disable_all`/`basic`/`extended` all hit the same ~15.9 GB).
 
-**Disk-vs-RAM guidance:**
+**Disk-vs-RAM guidance (measured, four bundles):**
 
-| You optimize for | Ship |
+| Bundle | Disk | Host RAM | Load | RTF | Transcript |
+|---|---|---|---|---|---|
+| **FP16** | 17 GB | **5.9 GB** | 16 s | 5.3× | "We can do" |
+| INT8 | 13 GB | 15.7 GB | 11 s | 12.8× | "No, I think that's a fascinating." |
+| Mixed | 11 GB | 15.9 GB | 17 s | 3.5× | **"We're concerned about it."** |
+| **INT4 MatMulNBits** | **8.1 GB** | 15.0 GB | **11.6 s** | 3.6× | "I'm gonna function." |
+
+| Optimize for | Ship |
 |---|---|
-| **Lowest host RAM** | **FP16 bundle (5.9 GB RSS, 17 GB disk)** |
-| Lowest disk + still coherent | Mixed bundle (15.9 GB RSS, 11 GB disk) — accept the host-RAM cost |
-| Smallest possible (future) | INT4 MatMulNBits — dequantize-in-kernel, no CPU shadow buffer (~5 GB bundle, ~5-7 GB RAM projected) |
+| **Lowest host RAM** | **FP16 bundle (5.9 GB RAM, 17 GB disk)** — the only sub-15-GB-RAM option |
+| **Smallest disk** | **INT4 bundle (8.1 GB disk)** — accept the 15 GB host RAM ceiling |
+| Best topical responses | Mixed (15.9 GB RAM, 11 GB disk) — measured per-voice quality |
+
+**Empirical finding: the ~15 GB host RAM is intrinsic to ORT-CUDA 1.26's handling of quantized models, regardless of bit-width (INT8 or INT4) or optimization level (`disable_all` / `basic` / `extended` / `all` all measured equal).** INT4's MatMulNBits operator was hoped to dequantize inside the GPU kernel and skip CPU shadow buffers, but in ORT 1.26 it still allocates similar host buffers. To go below 15 GB host RAM on a quantized bundle, either:
+- Use the FP16 bundle (best practical path today)
+- Wait for ORT version with INT4 host-mirror-free dequant path
+- Engineer full TensorRT static-shape engine (10-15 hr; we measured TRT regressed all axes on dynamic shapes, see below)
 
 ### What we tried for memory — and why TensorRT didn't help
 
