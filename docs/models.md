@@ -352,7 +352,20 @@ The mixed bundle produces the textbook customer-service phrasing. **FP16 has dra
 |---|---|
 | **Lowest host RAM** | **FP16 bundle (5.9 GB RSS, 17 GB disk)** |
 | Lowest disk + still coherent | Mixed bundle (15.9 GB RSS, 11 GB disk) — accept the host-RAM cost |
-| Smallest possible (future) | INT4 MatMulNBits or TensorRT static INT8 (separate effort; no CPU shadow buffer) |
+| Smallest possible (future) | INT4 MatMulNBits — dequantize-in-kernel, no CPU shadow buffer (~5 GB bundle, ~5-7 GB RAM projected) |
+
+### What we tried for memory — and why TensorRT didn't help
+
+TensorRT EP looked promising on paper (compiles INT8 to native GPU kernels, no CPU dequantize staging). Measured against the mixed bundle on RTX 5090:
+
+| Metric | CUDA EP | TensorRT EP |
+|---|---|---|
+| Load time | 17 s | **392 s** (per-shape engine compilation storm) |
+| Peak host RAM | 15.9 GB | **24.3 GB** (worse — engines cached on host + ORT staging) |
+| RTF (50 frames) | 3.5× | **265.9×** (TRT rebuilds engines for each T_past) |
+| Output | "We're concerned about it." | **""** (broken — TRT can't reconcile Q/DQ with dynamic shapes) |
+
+Net: TRT EP regressed all three axes. Making it work requires shape profiles (min/opt/max on the dynamic axis), an INT8 calibration table, validated op support, and pre-allocated max-shape KV buffers — together ~10-15 hours of dedicated engineering. Not a quick win. INT4 MatMulNBits is the cleaner path for the "small bundle + small RAM" target because dequantization happens inside the GPU kernel, never to a host-resident shadow buffer.
 
 Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable the embedding prefix and reclaim ~5 GB of host RAM at the cost of less topical responses (but still coherent — "I'm talking about it." rather than "We're concerned about it.").
 
