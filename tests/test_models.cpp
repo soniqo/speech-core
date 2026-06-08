@@ -20,6 +20,7 @@
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
+#include "speech_core/models/onnx_personaplex.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/nemotron_multilingual_stt.h"
 #include "speech_core/models/silero_vad.h"
@@ -885,6 +886,58 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// PersonaPlex 7B — load + structural smoke. Bundle (~16 GB FP16) is large so
+// this test only loads sessions and confirms the IO names match the contract.
+// End-to-end audio generation comes online when the bundle is uploaded to HF
+// and the wrapper's deferred refinements (SentencePiece, voice prompt, delay
+// pattern) are landed. See docs/models.md §"OnnxPersonaPlex".
+// ---------------------------------------------------------------------------
+
+void test_onnx_personaplex_load(const std::string& dir) {
+    // Bundle layout matches download_personaplex_onnx.sh / upload_to_hf.sh.
+    // The bundle root contains the raw ONNX graphs (no 'personaplex-' prefix)
+    // alongside system_prompts.bin and a voices/ subdir.
+    std::string enc = dir + "/mimi_encoder.onnx";
+    std::string dec = dir + "/mimi_decoder.onnx";
+    std::string tmp = dir + "/temporal_step.onnx";
+    std::string dep = dir + "/depformer_step.onnx";
+    std::string spm = dir + "/tokenizer_spm_32k_3.model";
+    std::string voices = dir + "/voices";
+    if (!file_exists(enc) || !file_exists(dec) || !file_exists(tmp)
+        || !file_exists(dep) || !file_exists(spm)) {
+        std::printf("  [skip] PersonaPlex bundle not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_onnx_personaplex_load ... ");
+
+    speech_core::OnnxPersonaPlex pp(enc, dec, tmp, dep, spm, voices, /*hw_accel=*/false);
+    REQUIRE(pp.output_sample_rate() == 24000);
+    pp.set_voice("VARF2");
+    pp.set_system_prompt("helpful");  // matches a key in system_prompts.bin
+    pp.set_max_frames(4);  // tiny budget — just exercises the loop once
+    pp.reset_session();
+
+    // Feed 4 frames of silence at 24 kHz. With max_frames=4 and chunk_frames
+    // default 25, we should get exactly one final chunk back.
+    const size_t total_samples = static_cast<size_t>(1920) * 4;
+    std::vector<float> silence(total_samples, 0.0f);
+    int chunks = 0;
+    bool got_final = false;
+    size_t total_emitted = 0;
+    pp.respond_stream(silence.data(), silence.size(), 24000,
+        [&](const speech_core::FullDuplexChunk& c) {
+            ++chunks;
+            total_emitted += c.length;
+            if (c.is_final) got_final = true;
+        });
+    REQUIRE(chunks > 0);
+    REQUIRE(got_final);
+    REQUIRE(total_emitted > 0);
+    std::printf("ok (chunks=%d frames_generated=%d emitted=%zu)\n",
+                chunks, pp.frames_generated(), total_emitted);
+}
+
+// ---------------------------------------------------------------------------
 
 }  // namespace
 
@@ -925,6 +978,7 @@ int main() {
     RUN(test_onnx_voxcpm2_load);
     RUN(test_onnx_voxcpm2_parakeet_roundtrip);
     RUN(test_onnx_voxcpm2_wer_corpus);
+    RUN(test_onnx_personaplex_load);
     #undef RUN
 
     if (failures > 0) {

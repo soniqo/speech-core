@@ -115,6 +115,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/deepfilter/deepfilter.cpp
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
+        src/models/personaplex/onnx_personaplex.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
     # avoid duplicate symbols when a downstream binary links both targets, we
@@ -310,6 +311,14 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_models COMMAND test_models)
+
+        # PersonaPlex standalone CLI smoke harness — load the wrapper against
+        # an on-disk bundle and run respond_stream. Not a ctest (interactive
+        # tool); built alongside test_models when the .cpp is present.
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_personaplex.cpp)
+            add_executable(run_personaplex tests/run_personaplex.cpp)
+            target_link_libraries(run_personaplex PRIVATE speech_core_models)
+        endif()
 
         # ORT micro-benchmark (perf tool, not registered as a ctest). Picks
         # CPU vs CUDA via SPEECH_CORE_ORT_PROVIDER at runtime, so the same

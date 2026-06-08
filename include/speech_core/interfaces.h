@@ -333,4 +333,77 @@ public:
         const DiarizerConfig& config) = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Full-duplex speech-to-speech (PersonaPlex / Moshi-style)
+// ---------------------------------------------------------------------------
+
+/// One ~80 ms (12.5 Hz) output chunk emitted by a FullDuplexSpeechInterface.
+/// Mirrors the streaming contract speech-swift exposes via
+/// PersonaPlexModel.respondStream — agent audio plus the text tokens that were
+/// generated during the same frame window.
+struct FullDuplexChunk {
+    const float* samples;       ///< 24 kHz Float32 mono PCM (callee-owned, valid until next call)
+    size_t length;              ///< Number of samples
+    int sample_rate;            ///< Typically 24000
+    std::vector<int> text_tokens;  ///< SentencePiece text tokens generated this chunk
+    bool is_final;              ///< True on the last chunk of the response
+};
+
+/// Called for each agent-audio chunk emitted during streaming generation.
+using FullDuplexChunkCallback = std::function<void(const FullDuplexChunk&)>;
+
+/// Full-duplex speech-to-speech: user audio in, agent audio + text out,
+/// running simultaneously at the model's frame rate (12.5 Hz for PersonaPlex).
+///
+/// Used for models that listen and speak at the same time, conditioned on a
+/// voice preset and an optional text system prompt. PersonaPlex / Moshi are
+/// the canonical example; speech-swift's `PersonaPlexModel` satisfies the same
+/// conceptual contract via its MLX backend.
+///
+/// Lifecycle:
+///   1. Construct (loads weights, voices, tokenizer).
+///   2. `set_voice("NATM0")`, optionally `set_system_prompt(...)`.
+///   3. `respond_stream(user_pcm, length, sample_rate, on_chunk)` — blocking
+///      streaming call. `on_chunk` is invoked for each ~2 s of generated
+///      agent audio plus the text tokens accumulated in that window.
+///   4. The session's KV cache persists across `respond_stream` calls so
+///      successive turns share conversation history; call `reset_session()`
+///      to clear it.
+class FullDuplexSpeechInterface {
+public:
+    virtual ~FullDuplexSpeechInterface() = default;
+
+    /// Stream agent audio + text in response to user audio. Blocks until the
+    /// model emits its end-of-response signal or hits its max-frame budget.
+    /// @param user_audio    PCM Float32 samples
+    /// @param length        Number of samples
+    /// @param sample_rate   Sample rate in Hz (24 kHz expected; resampled if not)
+    /// @param on_chunk      Called for each emitted audio + text chunk
+    virtual void respond_stream(
+        const float* user_audio, size_t length, int sample_rate,
+        FullDuplexChunkCallback on_chunk) = 0;
+
+    /// Select the voice preset (e.g. "NATM0", "VARF2"). Implementations
+    /// document the available names; PersonaPlex ships 18 presets.
+    virtual void set_voice(const std::string& voice_name) = 0;
+
+    /// Set a text system prompt that steers behaviour. Tokenised with the
+    /// model's SentencePiece tokenizer and prepended to the conversation.
+    virtual void set_system_prompt(const std::string& /*prompt*/) {}
+
+    /// Cap the number of generation frames per respond_stream call. Default
+    /// is the model's training-time max (typically 2000 frames = ~2.7 min).
+    virtual void set_max_frames(int /*max_frames*/) {}
+
+    /// Reset the conversation KV cache and the generation state. After this,
+    /// the next respond_stream starts fresh as if no history existed.
+    virtual void reset_session() = 0;
+
+    /// Cancel any in-progress generation. Thread-safe.
+    virtual void cancel() {}
+
+    /// Output sample rate (typically 24000 for PersonaPlex / Moshi).
+    virtual int output_sample_rate() const = 0;
+};
+
 }  // namespace speech_core

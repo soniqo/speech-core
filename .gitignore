@@ -22,6 +22,7 @@ compile_commands.json
 /scripts/models/
 /scripts/models-litert/
 /scripts/models-voxcpm2/
+/scripts/personaplex-*/
 /scripts/sherpa-models/
 /scripts/librispeech/
 /litert/
