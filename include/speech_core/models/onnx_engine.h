@@ -138,6 +138,35 @@ public:
         // tight (no 1.5x speculative bumps).
         ort_check(api_, api_->AddSessionConfigEntry(
             opts, "session.use_env_allocators", "1"));
+        // For quantized models on CUDA EP, ORT can otherwise stage the
+        // dequantized weights through a CPU buffer that never gets freed,
+        // pushing host RAM by 10+ GB for a 7-GB INT8 temporal model.
+        // session.use_device_allocator_for_initializers=1 tells ORT to
+        // allocate initializer buffers directly from the device allocator,
+        // skipping the CPU staging. Gated by env so non-CUDA sessions opt out.
+        // SPEECH_CORE_DEVICE_INITIALIZERS=0 disables, default on.
+        if (const char* d = std::getenv("SPEECH_CORE_DEVICE_INITIALIZERS")) {
+            if (d[0] != '0' && d[0] != '\0') {
+                ort_check(api_, api_->AddSessionConfigEntry(
+                    opts, "session.use_device_allocator_for_initializers", "1"));
+            }
+        } else {
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_device_allocator_for_initializers", "1"));
+        }
+        // Disable per-session memory arena + memory pattern to test whether
+        // they were pre-allocating the host shadow buffer. Off by default —
+        // SPEECH_CORE_DISABLE_MEM_ARENA=1 / SPEECH_CORE_DISABLE_MEM_PATTERN=1.
+        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_MEM_ARENA")) {
+            if (d[0] == '1') {
+                ort_check(api_, api_->DisableCpuMemArena(opts));
+            }
+        }
+        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_MEM_PATTERN")) {
+            if (d[0] == '1') {
+                ort_check(api_, api_->DisableMemPattern(opts));
+            }
+        }
         // EXPERIMENT: BF16 models route weights through a Cast(BF16->FP32)
         // node per initializer. ORT's ConstantFolding optimizer would
         // collapse each Cast into an FP32 constant at session-load time,
