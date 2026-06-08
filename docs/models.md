@@ -346,14 +346,18 @@ End-to-end results with embedding prefix at scale 10, single user utterance ("Ca
 
 The mixed bundle produces the textbook customer-service phrasing. **FP16 has dramatically lower host RAM** because ORT-CUDA on INT8 dynamic-quantized weights keeps CPU shadow buffers for the dequantize path; we measured that this is **not** ORT-optimization-driven (lowering `SPEECH_CORE_ORT_OPT_LEVEL` to `disable_all`/`basic`/`extended` all hit the same ~15.9 GB).
 
-**Disk-vs-RAM guidance (measured, four bundles):**
+**Disk-vs-RAM guidance (measured, four bundles, with `use_device_allocator_for_initializers=1` default-on):**
 
 | Bundle | Disk | Host RAM | Load | RTF | Transcript |
 |---|---|---|---|---|---|
-| **FP16** | 17 GB | **5.9 GB** | 16 s | 5.3× | "We can do" |
+| **FP16** | 17 GB | **5.4 GB** | 16 s | 5.3× | "We can do" |
 | INT8 | 13 GB | 15.7 GB | 11 s | 12.8× | "No, I think that's a fascinating." |
-| Mixed | 11 GB | 15.9 GB | 17 s | 3.5× | **"We're concerned about it."** |
-| **INT4 MatMulNBits** | **8.1 GB** | 15.0 GB | **11.6 s** | 3.6× | "I'm gonna function." |
+| Mixed | 11 GB | 15.7 GB | 17 s | 3.5× | **"We're concerned about it."** |
+| **INT4 MatMulNBits** | **8.1 GB** | **9.4 GB** | **11.6 s** | 3.6× | "I'm gonna function." |
+
+`session.use_device_allocator_for_initializers=1` (set by default in `OnnxEngine`) made the INT4 bundle drop from **15.0 GB → 9.4 GB host RAM** (-37%) — the dequantized weights stop staging through a host shadow buffer. The mixed/INT8 bundle didn't benefit as much because its INT8 Q/DQ + MatMul graph pattern still requires intermediate buffers ORT keeps host-resident. **INT4 MatMulNBits is the only quantized format that gets meaningful host-RAM reduction in ORT 1.26.**
+
+Recommendation: ship the **INT4 bundle** for users wanting both small disk AND reasonable host RAM (8.1 GB disk, 9.4 GB RAM). Ship FP16 only if you specifically need <6 GB host RAM and have 17 GB of disk to spare.
 
 | Optimize for | Ship |
 |---|---|
