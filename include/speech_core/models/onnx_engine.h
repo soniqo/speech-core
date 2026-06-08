@@ -112,7 +112,23 @@ public:
                      bool enable_cuda_graph = false) {
         OrtSessionOptions* opts = nullptr;
         ort_check(api_, api_->CreateSessionOptions(&opts));
-        api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
+        // Optimization level — default ORT_ENABLE_ALL, lowered via
+        // SPEECH_CORE_ORT_OPT_LEVEL=disable_all/basic/extended. For INT8
+        // dynamic-quantized models the heavier passes (DequantizeLinearFusion,
+        // ConstantFolding over Q/DQ pairs) can materialise FP32 weights
+        // host-side at session-load time, pushing peak RSS by several GB —
+        // dropping to ORT_DISABLE_ALL on those sessions keeps the INT8
+        // weights compact.
+        GraphOptimizationLevel opt_level = ORT_ENABLE_ALL;
+        if (const char* lvl = std::getenv("SPEECH_CORE_ORT_OPT_LEVEL")) {
+            std::string v(lvl);
+            for (auto& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (v == "disable_all" || v == "none" || v == "0") opt_level = ORT_DISABLE_ALL;
+            else if (v == "basic")     opt_level = ORT_ENABLE_BASIC;
+            else if (v == "extended")  opt_level = ORT_ENABLE_EXTENDED;
+            else if (v == "all")       opt_level = ORT_ENABLE_ALL;
+        }
+        api_->SetSessionGraphOptimizationLevel(opts, opt_level);
         api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
         // EXPERIMENT: share a single CPU arena across all sessions. Each
         // session.use_env_allocators=1 routes its CPU allocations through

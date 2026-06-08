@@ -89,6 +89,17 @@ size_t peak_rss_mb() {
     return 0;
 }
 
+// Current working-set size in MB. Used to detect transient load-time spikes.
+size_t current_rss_mb() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return pmc.WorkingSetSize / (1024 * 1024);
+    }
+#endif
+    return 0;
+}
+
 // Basic acoustic metrics on the agent audio. Speech should have non-trivial
 // variance and non-trivial dynamic range; silence has neither.
 struct AudioStats {
@@ -252,6 +263,9 @@ int main(int argc, char** argv) {
 
     if (size_t rss = peak_rss_mb()) {
         std::printf("  peak host RAM:    %zu MB\n", rss);
+    }
+    if (size_t rss = current_rss_mb()) {
+        std::printf("  steady host RAM:  %zu MB\n", rss);
     }
 
     // Audio integrity stats — silence has rms<1e-4; speech is rms>=0.01.
