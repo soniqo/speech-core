@@ -344,7 +344,17 @@ End-to-end results with embedding prefix at scale 10, single user utterance ("Ca
 | INT8 (13 GB) | 13 GB | 15.8 GB | "No, I think that's a fascinating." |
 | Mixed (11 GB) | 11 GB | 16.0 GB | **"We're concerned about it."** |
 
-The mixed bundle produces the textbook customer-service phrasing. FP16 has the lowest host RAM (because its KV mirror is FP16, not FP32). Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable the prefix and reclaim ~5 GB of host RAM at the cost of less topical responses.
+The mixed bundle produces the textbook customer-service phrasing. **FP16 has dramatically lower host RAM** because ORT-CUDA on INT8 dynamic-quantized weights keeps CPU shadow buffers for the dequantize path; we measured that this is **not** ORT-optimization-driven (lowering `SPEECH_CORE_ORT_OPT_LEVEL` to `disable_all`/`basic`/`extended` all hit the same ~15.9 GB).
+
+**Disk-vs-RAM guidance:**
+
+| You optimize for | Ship |
+|---|---|
+| **Lowest host RAM** | **FP16 bundle (5.9 GB RSS, 17 GB disk)** |
+| Lowest disk + still coherent | Mixed bundle (15.9 GB RSS, 11 GB disk) — accept the host-RAM cost |
+| Smallest possible (future) | INT4 MatMulNBits or TensorRT static INT8 (separate effort; no CPU shadow buffer) |
+
+Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable the embedding prefix and reclaim ~5 GB of host RAM at the cost of less topical responses (but still coherent — "I'm talking about it." rather than "We're concerned about it.").
 
 ### INT8 bundle end-to-end on CUDA — verified
 
