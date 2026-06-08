@@ -136,8 +136,39 @@ public:
         // VoxCPM2 bundle = 4 sessions; deduplicating arena overhead saves
         // ~0.5-1 GB. arena_extend_strategy=kSameAsRequested keeps growth
         // tight (no 1.5x speculative bumps).
-        ort_check(api_, api_->AddSessionConfigEntry(
-            opts, "session.use_env_allocators", "1"));
+        const char* env_alloc = std::getenv("SPEECH_CORE_USE_ENV_ALLOCATORS");
+        if (!env_alloc || env_alloc[0] != '0') {
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_env_allocators", "1"));
+        }
+        // EXPERIMENT: turn off prepacking (weights re-arranged for faster
+        // GEMM). For INT8 dynamic-quant models, prepacking allocates a CPU
+        // buffer holding the prepacked weights even after upload. Off by
+        // default — SPEECH_CORE_DISABLE_PREPACKING=1.
+        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_PREPACKING")) {
+            if (d[0] == '1') {
+                ort_check(api_, api_->AddSessionConfigEntry(
+                    opts, "session.disable_prepacking", "1"));
+            }
+        }
+        // EXPERIMENT: fuse DequantizeLinear + MatMul into MatMulNBits.
+        // The INT8 Q/DQ + MatMul graph keeps FP16 dequantized weights
+        // in CPU memory (~6 GB excess); MatMulNBits dequantizes inside
+        // the GPU kernel with no CPU shadow. SPEECH_CORE_DQ_MATMULNBITS=1.
+        if (const char* d = std::getenv("SPEECH_CORE_DQ_MATMULNBITS")) {
+            if (d[0] == '1') {
+                ort_check(api_, api_->AddSessionConfigEntry(
+                    opts, "session.enable_dq_matmulnbits_fusion", "1"));
+            }
+        }
+        // EXPERIMENT: disable QDQ constant folding so the dequantize step
+        // doesn't materialize FP16 weights at session-load time.
+        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_QDQ_FOLD")) {
+            if (d[0] == '1') {
+                ort_check(api_, api_->AddSessionConfigEntry(
+                    opts, "session.disable_qdq_constant_folding", "1"));
+            }
+        }
         // For quantized models on CUDA EP, ORT can otherwise stage the
         // dequantized weights through a CPU buffer that never gets freed,
         // pushing host RAM by 10+ GB for a 7-GB INT8 temporal model.
@@ -454,6 +485,47 @@ private:
                 api_->ReleaseStatus(us);
             } else {
                 LOGI("CUDA Graph capture enabled for: %s", fname);
+            }
+        }
+        // VRAM-saving CUDA EP knobs. All opt-in via env.
+        //   SPEECH_CORE_GPU_MEM_LIMIT_GB=12       -> hard cap on EP arena
+        //   SPEECH_CORE_CUDA_ARENA_STRATEGY=kSameAsRequested|kNextPowerOfTwo
+        //   SPEECH_CORE_CUDNN_NO_MAX_WS=1         -> conservative cuDNN workspace
+        //   SPEECH_CORE_CUDNN_HEURISTIC=1         -> heuristic conv algo (less workspace)
+        std::vector<const char*> ep_keys;
+        std::vector<const char*> ep_vals;
+        std::string mem_limit_str;
+        if (const char* gb = std::getenv("SPEECH_CORE_GPU_MEM_LIMIT_GB")) {
+            unsigned long long bytes = static_cast<unsigned long long>(std::atof(gb) * (1024ULL*1024ULL*1024ULL));
+            mem_limit_str = std::to_string(bytes);
+            ep_keys.push_back("gpu_mem_limit");
+            ep_vals.push_back(mem_limit_str.c_str());
+        }
+        if (const char* s = std::getenv("SPEECH_CORE_CUDA_ARENA_STRATEGY")) {
+            if (s[0] != '\0') {
+                ep_keys.push_back("arena_extend_strategy");
+                ep_vals.push_back(s);  // "kSameAsRequested" or "kNextPowerOfTwo"
+            }
+        }
+        if (const char* s = std::getenv("SPEECH_CORE_CUDNN_NO_MAX_WS")) {
+            if (s[0] == '1') {
+                ep_keys.push_back("cudnn_conv_use_max_workspace");
+                ep_vals.push_back("0");
+            }
+        }
+        if (const char* s = std::getenv("SPEECH_CORE_CUDNN_HEURISTIC")) {
+            if (s[0] == '1') {
+                ep_keys.push_back("cudnn_conv_algo_search");
+                ep_vals.push_back("HEURISTIC");
+            }
+        }
+        if (!ep_keys.empty()) {
+            OrtStatus* us = api_->UpdateCUDAProviderOptions(cuda, ep_keys.data(), ep_vals.data(), ep_keys.size());
+            if (us != nullptr) {
+                LOGI("CUDA EP options update failed (%s); using defaults", api_->GetErrorMessage(us));
+                api_->ReleaseStatus(us);
+            } else {
+                LOGI("Applied %zu CUDA EP option(s) on %s", ep_keys.size(), fname);
             }
         }
         OrtStatus* as = api_->SessionOptionsAppendExecutionProvider_CUDA_V2(opts, cuda);

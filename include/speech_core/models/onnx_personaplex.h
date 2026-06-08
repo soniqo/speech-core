@@ -155,6 +155,11 @@ private:
     bool                 iobind_enabled_ = false;
     int                  temporal_kv_onnx_type_ = 10;  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 default
     size_t               temporal_kv_elem_size_ = 2;   // bytes per element
+    // KV input/output dtype can differ from hidden output dtype on bundles
+    // where the temporal_step graph has Cast nodes wrapping the KV cache I/O
+    // (e.g. INT8-NB temporal with FP16 KV but FP32 hidden). Track separately.
+    int                  temporal_hidden_onnx_type_ = 10;
+    size_t               temporal_hidden_elem_size_ = 2;
     // Depformer dtype tracked independently so a mixed-precision bundle
     // (INT8 temporal with FP32 KV/hidden + FP16 depformer) is supported —
     // saves ~3 GB by shipping the FP16 depformer instead of FP32.

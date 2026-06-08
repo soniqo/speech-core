@@ -100,6 +100,68 @@ size_t current_rss_mb() {
     return 0;
 }
 
+// --- NVML dynamic-dispatch VRAM probe -----------------------------------
+// We avoid linking nvml.lib (build-system invasion) by resolving the two
+// functions we need from nvml.dll (always present on machines with the
+// NVIDIA driver) at runtime. Returns "used VRAM in MB by all CUDA contexts
+// on device 0", which on our single-process benchmark equals our usage.
+// Tracks peak across calls in a static.
+struct NvmlMemInfo { unsigned long long total, free, used; };
+typedef int (*NVML_INIT_FN)(void);
+typedef int (*NVML_SHUTDOWN_FN)(void);
+typedef int (*NVML_DEVICE_GET_HANDLE_FN)(unsigned int, void**);
+typedef int (*NVML_DEVICE_GET_MEMORY_FN)(void*, NvmlMemInfo*);
+
+#if defined(_WIN32)
+class NvmlProbe {
+public:
+    NvmlProbe() {
+        dll_ = LoadLibraryA("nvml.dll");
+        if (!dll_) return;
+        auto p_init = reinterpret_cast<NVML_INIT_FN>(GetProcAddress(dll_, "nvmlInit_v2"));
+        get_handle_ = reinterpret_cast<NVML_DEVICE_GET_HANDLE_FN>(GetProcAddress(dll_, "nvmlDeviceGetHandleByIndex_v2"));
+        get_mem_    = reinterpret_cast<NVML_DEVICE_GET_MEMORY_FN>(GetProcAddress(dll_, "nvmlDeviceGetMemoryInfo"));
+        shutdown_   = reinterpret_cast<NVML_SHUTDOWN_FN>(GetProcAddress(dll_, "nvmlShutdown"));
+        if (!p_init || !get_handle_ || !get_mem_) return;
+        if (p_init() != 0) return;
+        if (get_handle_(0, &device_) != 0) return;
+        ok_ = true;
+    }
+    ~NvmlProbe() {
+        if (ok_ && shutdown_) shutdown_();
+        if (dll_) FreeLibrary(dll_);
+    }
+    // Returns current VRAM "used" by device 0 in MB; updates peak_mb_.
+    size_t sample_mb(const char* label = nullptr) {
+        if (!ok_) return 0;
+        NvmlMemInfo mi{};
+        if (get_mem_(device_, &mi) != 0) return 0;
+        size_t used_mb = static_cast<size_t>(mi.used / (1024ULL * 1024ULL));
+        if (used_mb > peak_mb_) peak_mb_ = used_mb;
+        if (label) std::printf("    [vram] %-22s %zu MB used (%zu MB free)\n",
+                                label, used_mb, static_cast<size_t>(mi.free / (1024ULL*1024ULL)));
+        return used_mb;
+    }
+    size_t peak_mb() const { return peak_mb_; }
+    bool   available() const { return ok_; }
+private:
+    HMODULE dll_ = nullptr;
+    void*   device_ = nullptr;
+    bool    ok_ = false;
+    size_t  peak_mb_ = 0;
+    NVML_DEVICE_GET_HANDLE_FN  get_handle_ = nullptr;
+    NVML_DEVICE_GET_MEMORY_FN  get_mem_ = nullptr;
+    NVML_SHUTDOWN_FN           shutdown_ = nullptr;
+};
+#else
+class NvmlProbe {
+public:
+    size_t sample_mb(const char* = nullptr) { return 0; }
+    size_t peak_mb() const { return 0; }
+    bool   available() const { return false; }
+};
+#endif
+
 // Basic acoustic metrics on the agent audio. Speech should have non-trivial
 // variance and non-trivial dynamic range; silence has neither.
 struct AudioStats {
@@ -150,11 +212,20 @@ int main(int argc, char** argv) {
     const bool hw_accel = (std::getenv("SPEECH_CORE_DISABLE_HW") == nullptr);
     std::printf("PersonaPlex bundle: %s  (hw_accel=%d)\n", dir.c_str(), (int)hw_accel);
 
+    NvmlProbe nvml;
+    if (nvml.available()) {
+        std::printf("VRAM probe (NVML):\n");
+        nvml.sample_mb("baseline (pre-load)");
+    } else {
+        std::printf("VRAM probe (NVML): unavailable\n");
+    }
+
     auto t0 = std::chrono::steady_clock::now();
     speech_core::OnnxPersonaPlex pp(enc, dec, tmp, dep, spm, dir + "/voices", hw_accel);
     auto t1 = std::chrono::steady_clock::now();
     auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::printf("Load: %lld ms\n", static_cast<long long>(load_ms));
+    nvml.sample_mb("after session load");
 
     pp.set_voice(voice);
     // System prompt is matched by NAME against the pre-tokenized blob loaded
@@ -164,6 +235,7 @@ int main(int argc, char** argv) {
     pp.set_system_prompt(prompt_name ? prompt_name : "helpful");
     pp.set_max_frames(num_user_frames);
     pp.reset_session();
+    nvml.sample_mb("after reset_session");
 
     // User audio: either a real WAV (resampled to 24 kHz) or silence.
     const size_t samples_per_frame = 1920;
@@ -230,24 +302,46 @@ int main(int argc, char** argv) {
     }
     std::printf("Voice: %s\n", voice.c_str());
 
+    // SPEECH_CORE_PP_MULTITURN=N → run respond_stream N times in a row WITHOUT
+    // reset_session between them, simulating an N-turn dialogue. Used to probe
+    // whether the wrapper's KV cache survives across turns (and whether the
+    // model produces sensible follow-up responses given prior context).
+    int multiturn_n = 1;
+    if (const char* mt = std::getenv("SPEECH_CORE_PP_MULTITURN")) {
+        int n = std::atoi(mt);
+        multiturn_n = n > 1 ? n : 1;
+    }
+
     int chunks = 0;
     size_t total_emitted = 0;
     bool got_final = false;
     std::vector<float> all_audio;
-    auto t_run0 = std::chrono::steady_clock::now();
-    pp.respond_stream(user_pcm.data(), user_pcm.size(), 24000,
-        [&](const speech_core::FullDuplexChunk& c) {
-            ++chunks;
-            total_emitted += c.length;
-            all_audio.insert(all_audio.end(), c.samples, c.samples + c.length);
-            if (c.is_final) got_final = true;
-            std::printf("  chunk #%d: %zu samples (%.2fs), text_tokens=%zu, final=%d\n",
-                        chunks, c.length,
-                        static_cast<double>(c.length) / c.sample_rate,
-                        c.text_tokens.size(), (int)c.is_final);
-        });
-    auto t_run1 = std::chrono::steady_clock::now();
-    auto run_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_run1 - t_run0).count();
+    long long total_run_ms = 0;
+    int total_frames_gen = 0;
+    for (int turn = 1; turn <= multiturn_n; ++turn) {
+        std::printf("\n=== TURN %d/%d ===\n", turn, multiturn_n);
+        auto t_run0 = std::chrono::steady_clock::now();
+        pp.respond_stream(user_pcm.data(), user_pcm.size(), 24000,
+            [&](const speech_core::FullDuplexChunk& c) {
+                ++chunks;
+                total_emitted += c.length;
+                all_audio.insert(all_audio.end(), c.samples, c.samples + c.length);
+                if (c.is_final) got_final = true;
+                std::printf("  chunk #%d: %zu samples (%.2fs), text_tokens=%zu, final=%d\n",
+                            chunks, c.length,
+                            static_cast<double>(c.length) / c.sample_rate,
+                            c.text_tokens.size(), (int)c.is_final);
+            });
+        auto t_run1 = std::chrono::steady_clock::now();
+        auto turn_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_run1 - t_run0).count();
+        total_run_ms += turn_ms;
+        total_frames_gen = pp.frames_generated();
+        std::printf("  turn %d: %lld ms, frames=%d\n", turn, (long long)turn_ms, total_frames_gen);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "after turn %d", turn);
+        nvml.sample_mb(buf);
+    }
+    long long run_ms = total_run_ms;
 
     std::printf("\nrespond_stream: %lld ms\n", static_cast<long long>(run_ms));
     std::printf("  frames_generated: %d\n", pp.frames_generated());
@@ -266,6 +360,9 @@ int main(int argc, char** argv) {
     }
     if (size_t rss = current_rss_mb()) {
         std::printf("  steady host RAM:  %zu MB\n", rss);
+    }
+    if (nvml.available()) {
+        std::printf("  peak VRAM (NVML): %zu MB\n", nvml.peak_mb());
     }
 
     // Audio integrity stats — silence has rms<1e-4; speech is rms>=0.01.
