@@ -1,6 +1,6 @@
 # Speech Core
 
-**English** · **[简体中文](README.zh-CN.md)**
+**English** · [简体中文](README.zh-CN.md)
 
 Voice-agent pipeline engine in **C++17** — on-device speech for **Linux, Windows, and Android** (plus Apple via a [Swift sibling](https://github.com/soniqo/speech-swift)).
 
