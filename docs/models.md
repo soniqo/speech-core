@@ -231,7 +231,7 @@ auto final   = stt.end_stream();
 
 ## OnnxPersonaPlex
 
-> **Status: functional end-to-end with coherent conversational output.** All four ONNX graphs exported, parity-verified, per-channel INT8 quantized. Three production bundle variants (FP16 17 GB / INT8 13 GB / Mixed 11 GB) all run end-to-end on CUDA EP with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio. See the export plan in [`speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md`](../../speech-models/models/personaplex/export/ONNX_EXPORT_PLAN.md) and runtime notes in `NOTES.md` alongside it.
+> **Status: shipped on HuggingFace.** All four ONNX graphs exported, parity-verified, quantized through multiple recipes. Four production bundle variants live at [**soniqo/PersonaPlex-7B-ONNX**](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX): `fp16`, `mixed`, `int8-nb-dep_gint8` ⭐ (recommended ship default), and `int4-nb-dep_gint8`. All run end-to-end on CUDA EP with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio.
 
 ### Quick start — the customer-service round-trip
 
@@ -241,14 +241,17 @@ cmake -B build-ort -DSPEECH_CORE_WITH_ONNX=ON -DSPEECH_CORE_WITH_CUDA=ON \
     -DORT_DIR=path/to/onnxruntime-win-x64-gpu-1.26.0
 cmake --build build-ort --config Release --target run_personaplex
 
+# Download the recommended ship default bundle from HF (9.4 GB):
+scripts/download_personaplex_onnx.sh int8-nb-dep_gint8
+
 # Run on the speech-swift test fixture ("Can you guarantee the replacement
 # will be shipped tomorrow?"):
 SPEECH_CORE_PARAKEET_DIR=scripts/models \
 SPEECH_CORE_PP_PROMPT=helpful \
-run_personaplex.exe scripts/personaplex-mixed 50 \
+run_personaplex.exe scripts/personaplex-int8-nb-dep_gint8 50 \
     tests/data/test_audio.wav VARF2
 
-# Expected: Parakeet transcribes the agent audio as "We're concerned about it."
+# Expected: Parakeet transcribes the agent audio as coherent English.
 ```
 
 ### Configuration env vars
@@ -282,25 +285,44 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 
 | # | Piece | State | Where |
 |---|---|---|---|
-| 1 | PyTorch reference + Mimi encoder/decoder ONNX | **done**, per-graph PyTorch-vs-ORT MSE 1.46e-08 | speech-models `convert_onnx.py` `stage_mimi` |
-| 2 | `temporal_step` ONNX with externalized KV cache | **done**, min cos 0.999995 vs PyTorch over 4 frames | speech-models `convert_onnx.py` `stage_temporal` |
-| 3 | `depformer_step` ONNX with per-step weight Gather | **done**, min cos 0.999998 over 16 inner steps | speech-models `convert_onnx.py` `stage_depformer` |
-| 4 | `FullDuplexSpeechInterface` | **done** | `include/speech_core/interfaces.h` |
-| 5 | `OnnxPersonaPlex` wrapper structural skeleton | **done** | `include/speech_core/models/onnx_personaplex.h`, `src/models/personaplex/onnx_personaplex.cpp` |
-| 6 | CUDA EP routing | **done** (automatic via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture is follow-up |
-| 7 | Tests + bench + docs | **this section** + a smoke test fixture once the bundle is uploaded to HF |
+| 1 | PyTorch reference + Mimi encoder/decoder ONNX | ✅ shipped | `convert_onnx.py --stage mimi` |
+| 2 | `temporal_step` ONNX with externalized KV cache | ✅ shipped, multi-precision via `--stage temporal` (FP16/FP32) + `--stage quantize` (INT8 dynamic) + `--stage int8-matmulnbits` + `--stage int4` | `convert_onnx.py` |
+| 3 | `depformer_step` ONNX with per-step weight Gather | ✅ shipped, with custom 3D-Gather INT8 quant in `quantize_depformer_gather.py` | |
+| 4 | `FullDuplexSpeechInterface` | ✅ shipped | `include/speech_core/interfaces.h` |
+| 5 | `OnnxPersonaPlex` wrapper | ✅ shipped end-to-end, multi-turn KV cache, auto-detect dtypes, GPU-resident KV | `include/speech_core/models/onnx_personaplex.h`, `src/models/personaplex/onnx_personaplex.cpp` |
+| 6 | CUDA EP routing | ✅ shipped (via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture remain as opt-in scaffolding for follow-up | `include/speech_core/models/onnx_engine.h` |
+| 7 | 4 bundle variants on HuggingFace + downloader + tests | ✅ shipped | `soniqo/PersonaPlex-7B-ONNX`, `scripts/download_personaplex_onnx.sh`, `tests/test_models.cpp::test_onnx_personaplex_load` |
 
-### Mixed-precision bundle (11 GB) — INT8 temporal + FP16 depformer
+### Bundle variants on HuggingFace
 
-The C++ wrapper auto-detects KV dtype **per session** (temporal and depformer independently). When they differ, it casts the hidden state at the boundary (`hidden_to_depformer_dtype`). Three bundle layouts work end-to-end:
+The C++ wrapper auto-detects three dtypes independently at session load: temporal KV, temporal hidden, and depformer KV. This lets the same wrapper handle every shipped variant without code changes.
 
-| Bundle | mimi | temporal | depformer | Size | KV path |
-|---|---|---|---|---|---|
-| Pure FP16 | FP32 | FP16 | FP16 | **17 GB** | FP16 throughout |
-| Pure INT8 | FP32 | INT8 / FP32-KV | FP32 | **13 GB** | FP32 throughout |
-| **Mixed** | FP32 | INT8 / FP32-KV | FP16 | **11 GB** | FP32→FP16 cast at depformer boundary |
+All four variants on [soniqo/PersonaPlex-7B-ONNX](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX), measured on RTX 5090 with `SPEECH_CORE_USE_ENV_ALLOCATORS=0`:
 
-The mixed bundle is **35% smaller than FP16** with no quality regression — same coherent transcripts ("But I think all the things that I'm gonna do.", "I think that's hard after that.").
+| Variant | Disk | Host RAM | VRAM | RTF | hidden cos vs FP32 | Notes |
+|---|---|---|---|---|---|---|
+| [**`int8-nb-dep_gint8`**](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX/tree/main/int8-nb-dep_gint8) ⭐ | 9.4 GB | **1.4 GB** | 12.1 GB | **1.12×** | 0.998 | **Ship default** — INT8 MatMulNBits (b=128) temporal + custom INT8 depformer Gather quant + FP32 mimi |
+| [`mixed`](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX/tree/main/mixed) | 11 GB | 7.9 GB | **6.6 GB** | 3.5× | 0.990 | **Quality + VRAM Pareto winner** — INT8 dynamic temporal + FP16 depformer + FP32 mimi |
+| [`int4-nb-dep_gint8`](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX/tree/main/int4-nb-dep_gint8) | **7.6 GB** | 1.4 GB | **9.6 GB** | 1.12× | 0.877 | Smallest disk + lowest VRAM. Coherent but visibly degraded |
+| [`fp16`](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX/tree/main/fp16) | 17 GB | 1.5 GB | 18.3 GB | 5.3× | 0.9999 | Maximum quality, near-perfect parity |
+
+**RTF (real-time factor)** is per-frame latency / frame interval at 12.5 Hz. **1.0× = realtime**, < 1.0× = faster than realtime.
+
+#### Which variant to pick
+
+- **Most deployments → `int8-nb-dep_gint8`**: best balance. Sub-realtime RTF, low host RAM, excellent quality, fits comfortably in 16 GB VRAM.
+- **VRAM-constrained (≤8 GB GPU) → `mixed`**: only 6.6 GB VRAM. Trades host RAM and RTF for the lowest VRAM, with the best topical responses on our customer-service benchmark ("We're concerned about it.").
+- **Disk-constrained → `int4-nb-dep_gint8`**: smallest at 7.6 GB. Accept some quality drift.
+- **Maximum quality → `fp16`**: near-perfect parity vs the FP32 reference.
+
+#### Custom INT8 depformer (3D-Gather quant) — the `dep_gint8` suffix
+
+The depformer's bulk (5.46 GB of 5.59 GB FP32) lives in 24 large 3D tensors `[16, K, N]` accessed via `Gather(step_idx)` — these are per-step weight tables for the 16 codebook steps. `MatMulNBitsQuantizer` skips them because they're Gather inputs, not MatMul inputs. The `dep_gint8` variants use a custom Python pass (`quantize_depformer_gather.py`) that:
+
+1. Replaces each FP32 `[16, K, N]` weight with INT8 `[16, K, N]` + per-step per-output-channel FP32 scale `[16, N]`
+2. Inserts a `DequantizeLinear(axis=-1)` after the original `Gather` so the downstream `Squeeze → MatMul` chain still sees FP32
+
+Net: depformer disk drops **5.59 GB → 1.50 GB (-73%)** with single-frame parity cos = 0.9999 vs the FP32 reference.
 
 Memory protections on top:
 - **GPU-resident KV cache** (auto-on when CUDA EP resolves): the `temporal_step` output `OrtValue`s for K/V are kept alive across calls and passed directly as the next call's inputs. No host mirror, no per-frame `GetTensorMutableData`. Opt out with `SPEECH_CORE_PP_GPU_KV=0`.
@@ -313,7 +335,7 @@ The wrapper now mirrors speech-swift's MLX prefill layout end-to-end:
 
 1. **Voice prompt replay** — replays the voice `.bin`'s 4-token cache tail through `temporal_step` to populate KV with speaker-conditioned state
 2. **Silence spacer** — 6 frames (~0.5 s) of PAD text + zero audio, clean transition boundary
-3. **System prompt prefill** — N frames of pre-tokenized text (from `system_prompts.bin`, produced by `speech-models/.../tokenize_system_prompts.py` — avoids the SentencePiece C++ dep)
+3. **System prompt prefill** — N frames of pre-tokenized text (from `system_prompts.bin`, produced by `tokenize_system_prompts.py` — avoids the SentencePiece C++ dep)
 4. **Silence spacer** — another 6 frames
 5. **`respond_stream`** — user audio frames begin
 
@@ -332,60 +354,33 @@ INT8 bundle results on RTX 5090, real user audio: *"Can you guarantee the replac
 
 **Five voices produce semantically appropriate English responses.** Audio peaks mostly < 1.0 (no clipping). First PersonaPlex ONNX/CUDA INT8 implementation producing actual conversational responses end-to-end.
 
-### Voice embedding prefix (enabled by default, `SPEECH_CORE_PP_EMB_SCALE=10`)
+### Voice embedding prefix
 
-The voice `.bin`'s 50-frame embedding prefix IS used. Stored embeddings are at ~0.03 std but depformer was trained on temporal output at ~1.5 std — scaling 10× brings them into distribution. Empirically measured across NATM0/NATM1/VARM0/VARF2/VARF4 voices on the customer-service fixture.
+The voice `.bin`'s 50-frame embedding prefix IS used by default (`SPEECH_CORE_PP_EMB_SCALE=10`). Stored embeddings are at ~0.03 std but depformer was trained on temporal output at ~1.5 std — scaling 10× brings them into distribution. Empirically measured across NATM0 / NATM1 / VARM0 / VARF2 / VARF4 voices on the customer-service fixture. Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable (slightly less topical but still coherent).
 
-End-to-end results with embedding prefix at scale 10, single user utterance ("Can you guarantee the replacement will be shipped tomorrow?"), 50 frames = 4 s of agent audio:
+### Multi-voice quality across bundles
 
-| Bundle | Disk | Host RAM | Parakeet transcript |
-|---|---|---|---|
-| FP16 (17 GB) | 17 GB | **6.0 GB** | "We can do" |
-| INT8 (13 GB) | 13 GB | 15.8 GB | "No, I think that's a fascinating." |
-| Mixed (11 GB) | 11 GB | 16.0 GB | **"We're concerned about it."** |
+Same fixture *"Can you guarantee the replacement will be shipped tomorrow?"*, prompts `helpful` / `direct`, sampled across voices. Each bundle's Parakeet round-trip:
 
-The mixed bundle produces the textbook customer-service phrasing. **FP16 has dramatically lower host RAM** because ORT-CUDA on INT8 dynamic-quantized weights keeps CPU shadow buffers for the dequantize path; we measured that this is **not** ORT-optimization-driven (lowering `SPEECH_CORE_ORT_OPT_LEVEL` to `disable_all`/`basic`/`extended` all hit the same ~15.9 GB).
-
-**Disk-vs-RAM guidance (measured, four bundles, with `use_device_allocator_for_initializers=1` default-on):**
-
-| Bundle | Disk | Host RAM | Load | RTF | Transcript |
-|---|---|---|---|---|---|
-| **FP16** | 17 GB | **5.4 GB** | 16 s | 5.3× | "We can do" |
-| INT8 | 13 GB | 15.7 GB | 11 s | 12.8× | "No, I think that's a fascinating." |
-| Mixed | 11 GB | 15.7 GB | 17 s | 3.5× | **"We're concerned about it."** |
-| **INT4 MatMulNBits** | **8.1 GB** | **9.4 GB** | **11.6 s** | 3.6× | "I'm gonna function." |
-
-`session.use_device_allocator_for_initializers=1` (set by default in `OnnxEngine`) made the INT4 bundle drop from **15.0 GB → 9.4 GB host RAM** (-37%) — the dequantized weights stop staging through a host shadow buffer. The mixed/INT8 bundle didn't benefit as much because its INT8 Q/DQ + MatMul graph pattern still requires intermediate buffers ORT keeps host-resident. **INT4 MatMulNBits is the only quantized format that gets meaningful host-RAM reduction in ORT 1.26.**
-
-Recommendation: ship the **INT4 bundle** for users wanting both small disk AND reasonable host RAM (8.1 GB disk, 9.4 GB RAM). Ship FP16 only if you specifically need <6 GB host RAM and have 17 GB of disk to spare.
-
-### Multi-voice quality across the bundles (50 frames, real WAV input)
-
-Same fixture ("Can you guarantee the replacement will be shipped tomorrow?"), prompts `helpful`/`direct`, sampled across voices:
-
-| Bundle | Topical responses | Sample transcript |
-|---|---|---|
-| FP16 | partial — 2-3 voices produce English | "We can do" |
-| Mixed | **best** — 5-6 voices produce topical English | **"We're concerned about it." (VARF2)** |
-| INT4 | partial — 5-6 voices produce English (less topical than Mixed) | "I like it." (VARM0+direct) |
-
-**Selection guide:**
-- **Production quality** → Mixed (best topical, 15.7 GB RAM cost)
-- **Lowest RAM** → FP16 (5.4 GB, accept partial topical hit)
-- **Smallest disk + balanced** → INT4 (8.1 GB disk, 9.4 GB RAM, "good enough" quality)
-
-| Optimize for | Ship |
+| Bundle | Sample transcripts |
 |---|---|
-| **Lowest host RAM** | **FP16 bundle (5.9 GB RAM, 17 GB disk)** — the only sub-15-GB-RAM option |
-| **Smallest disk** | **INT4 bundle (8.1 GB disk)** — accept the 15 GB host RAM ceiling |
-| Best topical responses | Mixed (15.9 GB RAM, 11 GB disk) — measured per-voice quality |
+| `fp16` | "We can do" (VARF2) |
+| `mixed` | **"We're concerned about it." (VARF2)** — best topical match, most variants produce English |
+| `int8-nb-dep_gint8` | "I don't think I'm" (VARF2) |
+| `int4-nb-dep_gint8` | "I'm gonna function." (VARF2), "I like it." (VARM0/direct) |
 
-**Empirical finding: the ~15 GB host RAM is intrinsic to ORT-CUDA 1.26's handling of quantized models, regardless of bit-width (INT8 or INT4) or optimization level (`disable_all` / `basic` / `extended` / `all` all measured equal).** INT4's MatMulNBits operator was hoped to dequantize inside the GPU kernel and skip CPU shadow buffers, but in ORT 1.26 it still allocates similar host buffers. To go below 15 GB host RAM on a quantized bundle, either:
-- Use the FP16 bundle (best practical path today)
-- Wait for ORT version with INT4 host-mirror-free dequant path
-- Engineer full TensorRT static-shape engine (10-15 hr; we measured TRT regressed all axes on dynamic shapes, see below)
+### Memory tuning — `OnnxEngine` env knobs
 
-### What we tried for memory — and why TensorRT didn't help
+12 env knobs available for ORT session + CUDA EP memory tuning. The two with the largest measured impact:
+
+| Env | Effect |
+|---|---|
+| `SPEECH_CORE_USE_ENV_ALLOCATORS=0` | **Biggest win.** Disables ORT's shared CPU arena which was hoarding 6–13 GB of allocated-but-unused space across PersonaPlex's 4 sessions. Drops host RAM by 50–89% depending on bundle. Strongly recommended for PersonaPlex |
+| `SPEECH_CORE_DEVICE_INITIALIZERS=1` (default-on) | Sets `session.use_device_allocator_for_initializers=1` so quantized weights load directly from the device allocator without a CPU shadow buffer |
+
+Opt-in knobs (all measured but with smaller impact): `SPEECH_CORE_DISABLE_MEM_ARENA`, `SPEECH_CORE_DISABLE_MEM_PATTERN`, `SPEECH_CORE_DISABLE_PREPACKING`, `SPEECH_CORE_DQ_MATMULNBITS`, `SPEECH_CORE_DISABLE_QDQ_FOLD`, `SPEECH_CORE_ORT_OPT_LEVEL`, `SPEECH_CORE_GPU_MEM_LIMIT_GB`, `SPEECH_CORE_CUDA_ARENA_STRATEGY`, `SPEECH_CORE_CUDNN_NO_MAX_WS`, `SPEECH_CORE_CUDNN_HEURISTIC`. See `include/speech_core/models/onnx_engine.h` for the full inline documentation per knob.
+
+### TensorRT EP — measured and rejected
 
 TensorRT EP looked promising on paper (compiles INT8 to native GPU kernels, no CPU dequantize staging). Measured against the mixed bundle on RTX 5090:
 
@@ -396,108 +391,71 @@ TensorRT EP looked promising on paper (compiles INT8 to native GPU kernels, no C
 | RTF (50 frames) | 3.5× | **265.9×** (TRT rebuilds engines for each T_past) |
 | Output | "We're concerned about it." | **""** (broken — TRT can't reconcile Q/DQ with dynamic shapes) |
 
-Net: TRT EP regressed all three axes. Making it work requires shape profiles (min/opt/max on the dynamic axis), an INT8 calibration table, validated op support, and pre-allocated max-shape KV buffers — together ~10-15 hours of dedicated engineering. Not a quick win. INT4 MatMulNBits is the cleaner path for the "small bundle + small RAM" target because dequantization happens inside the GPU kernel, never to a host-resident shadow buffer.
+Making it work would need shape profiles (min/opt/max on the dynamic KV axis), an INT8 calibration table, validated op support, and pre-allocated max-shape KV buffers — together ~10-15 hours of dedicated engineering. The shipping `int8-nb-dep_gint8` variant achieves the "small disk + small host RAM" target without TRT — `MatMulNBits` is a single fused op running entirely on the GPU.
 
-Set `SPEECH_CORE_PP_EMB_SCALE=0` to disable the embedding prefix and reclaim ~5 GB of host RAM at the cost of less topical responses (but still coherent — "I'm talking about it." rather than "We're concerned about it.").
+### Per-frame parity vs FP32 reference
 
-### INT8 bundle end-to-end on CUDA — verified
+Measured by `compare_bundle_quality.py` on a single temporal_step forward call with empty KV (CPU EP):
 
-The C++ wrapper auto-detects KV cache precision from the loaded `temporal_step` model (FP16 for the standard bundle, FP32 for the INT8-quantized bundle) and routes buffers through the right ONNX dtype. Side-by-side results on RTX 5090 (75 frames = 6 s of audio):
+| Recipe | hidden cos |
+|---|---|
+| FP16 export | 0.999999 |
+| INT8-NB-b32 | 0.998901 |
+| INT8-NB-b128 (ship `int8-nb-dep_gint8`) | 0.997706 |
+| INT8 dynamic per-channel (mixed) | 0.990448 |
+| INT4-NB-b32 | 0.877393 |
 
-| | FP16 bundle | INT8 bundle |
-|---|---|---|
-| Size | 17 GB | **13 GB (-24%)** |
-| Load | 16 s | 11 s |
-| Per-frame | 492 ms | 939 ms |
-| RTF | 6.2× | 11.7× |
-| Audio RMS | 0.088 | 0.095 |
-| Audio peak | 0.96 | **0.64** |
-| Parakeet transcript | "" | **"I have one."** |
+### PyTorch CUDA reference (upper-bound target)
 
-INT8 is ~2× slower per frame (Q/DQ overhead from naive dynamic quantization; static INT8 with TensorRT or INT4 MatMulNBits would invert this). But the INT8 output is **functionally better for transcription** — lower clip peaks plus the first coherent English phrase round-tripping through Parakeet. **First end-to-end PersonaPlex → Mimi → Parakeet validation that returns real text.**
+PyTorch FP16 reference benchmarked via `bench_pytorch_cuda.py` on the same RTX 5090:
 
-### Quantization (per-channel INT8 dynamic)
+| Dtype | Load | VRAM | Per-frame | RTF |
+|---|---|---|---|---|
+| **FP16** | 84 s | 17.6 GB | 3.75 ms (batched 50 frames) | 0.047× |
+| BF16 | 58 s | 17.6 GB | 92 ms | 1.15× (no fast BF16 kernels on RTX 5090) |
+| FP32 | 95 s | 34.4 GB | 712 ms | 8.9× |
 
-Re-running `convert_onnx.py --stage temporal/depformer --dtype float32` then `--stage quantize` with `per_channel=True` produces a meaningfully compressed bundle without serious quality loss:
+PyTorch FP16's 3.75 ms/frame is the **batched** LM forward (50 frames at once); our ONNX wrapper runs **autoregressive** streaming, so the per-call ORT dispatch overhead dominates. The wrapper's autoregressive RTF for `int8-nb-dep_gint8` is 1.12× — within 24× of the batched PyTorch baseline, with 5 GB less VRAM.
 
-| Variant | hidden cos vs FP32 | KV cos | Size |
-|---|---|---|---|
-| FP32 reference | 1.000 | 1.000 | 27.4 GB temporal + 5.6 GB depformer |
-| FP16 export | 0.99999 | 0.99999 | 13.7 GB temporal + 2.8 GB depformer = **17 GB bundle** |
-| INT8 dynamic per-channel | 0.990 | 0.999 | **7.6 GB temporal** + 5.6 GB depformer |
-| INT8 dynamic per-tensor (old, abandoned) | 0.807 | 0.972 | 15.3 GB temporal (worse than FP16!) |
+`bench_pytorch_cuda.py --dump-logits` writes per-frame text + audio logits to a `.npz` for downstream comparison via `compare_bundle_quality.py`.
 
-Mixed-precision recommended ship: **INT8 temporal + FP16 depformer + FP32 Mimi = ~11 GB** (35% smaller than FP16-only). Depformer doesn't compress because its main weights are accessed via `Gather` from stacked per-step tensors rather than as static MatMul initializers (documented in NOTES.md).
+### Multi-turn dialogue
 
-### Verified end-to-end on the actual bundle (FP16, 17 GB)
+`SPEECH_CORE_PP_MULTITURN=N` (in `tests/run_personaplex.cpp`) runs `respond_stream` N times **without** `reset_session` between calls, validating that the KV cache survives across turns. Measured 5-turn dialogue continuation:
 
-`tests/run_personaplex.cpp` is a standalone CLI that loads the wrapper, feeds N frames of silence, and reports per-frame latency. Measured on an RTX 5090 (Blackwell, sm_120) with ORT 1.26 GPU + CUDA 12.8 toolkit + cuDNN 9:
+| Turn | Time | Per-frame | RTF | Cumulative frames |
+|---|---|---|---|---|
+| 1 | 4.4 s | 87.6 ms | 1.10× | 50 |
+| 2 | 4.7 s | 93.3 ms | 1.17× | 100 |
+| 3 | 5.0 s | 100.7 ms | 1.26× | 150 |
+| 4 | 5.5 s | 110.4 ms | 1.38× | 200 |
+| 5 | 5.8 s | 116.9 ms | 1.46× | 250 |
 
-| EP | Load | Per-frame | RTF (12.5 Hz = 80 ms/frame) |
-|---|---|---|---|
-| CPU | 29 s | 1935 ms | 24.2× slower than realtime |
-| CUDA (5090) | 11.3 s | 473 ms | **5.9× slower than realtime** |
+Cumulative transcript: "I want to in my land. It's been a good one." (coherent across 5 turns). RTF degrades linearly with cumulative T_past — expected attention scaling.
 
-The CUDA path runs through all four graphs end-to-end (mimi_encode → temporal_step → 16 depformer_step → mimi_decode) and the `FullDuplexChunk` callback fires with the correct sample count. ORT logs `16 Memcpy nodes added to the graph` — KV-cache marshalling host↔device per frame eats most of the perf. IOBinding + GPU-resident cache (mirror of VoxCPM2 task #44) would close most of it.
+### Files in each bundle
 
-Run-to-run variance is wide (1.2× — 5.9×) depending on session warmth and GPU thermal/clocking state; the 1.22× figure was the best observation under stable warm load.
+Each variant at [soniqo/PersonaPlex-7B-ONNX](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) ships:
 
-**Audio integrity** measured on the 4 s emit (RMS / peak / non-zero fraction):
+| File | Purpose |
+|---|---|
+| `mimi_encoder.onnx`(+`.data`) | 24 kHz PCM → 16 audio codebooks @ 12.5 Hz |
+| `mimi_decoder.onnx`(+`.data`) | 16 audio codebooks @ 12.5 Hz → 24 kHz PCM |
+| `temporal_step.onnx`(+`.data`) | One frame of the 32-layer 7B temporal transformer, explicit KV-cache I/O |
+| `depformer_step.onnx`(+`.data`) | One inner step of the 6-layer depformer, 16 codebook steps per frame |
+| `tokenizer_spm_32k_3.model` | SentencePiece text tokenizer |
+| `voices/<name>.bin` | 18 voice prompts (NATF0-3, NATM0-3, VARF0-4, VARM0-4) |
+| `system_prompts.bin` | Pre-tokenized "helpful" / "expert" / "warm" / "direct" prompts |
+| `config.json` | Architecture + precision + measured metrics per bundle |
+| `README.md` | Per-variant model card |
 
-| Metric | Value | Reference |
-|---|---|---|
-| RMS | 0.089 | silence ≈ 0.0, speech ≈ 0.05-0.20 |
-| Peak \|x\| | 0.77-0.96 | clipping at 1.0 |
-| Non-zero | 100% | (silence would be 0%) |
+Total per variant: 30 files. Repo root also has a top-level model card with the variant matrix.
 
-The model is **producing speech-shaped acoustic signal** — not silence, not noise. Parakeet round-trip returns an empty transcript because the wrapper currently ships without SentencePiece text decode and without full voice/system-prompt prefill (the 4-token cache tail seeds the delay history but the 50-frame embedding prefix that would actually condition the model on a specific speaker requires injecting hidden states upstream of the depformer — that's the next graph-shape change).
+### Validation pattern
 
-`tests/run_personaplex.cpp` writes the emitted PCM to `<bundle_dir>/personaplex_out.wav` so the audio can be listened to / piped through other ASR backends.
+End-to-end: **generate speech, transcribe with Parakeet STT, assert content words**. The wrapper's per-frame parity is gated by `compare_bundle_quality.py` (single-frame cosine similarity vs the FP32 reference). The PyTorch reference is gated by `bench_pytorch_cuda.py`.
 
-### Follow-up refinements (tracked outside this initial drop)
-
-- **SentencePiece encode/decode** — wrapper loads the tokenizer blob but doesn't tokenize text yet; encode/decode needed for the system prompt and the text_tokens field of `FullDuplexChunk`
-- **Voice prompt prefill** — `set_voice()` records the name; the 50-frame ~4 s replay prefix needs to load `voices/<name>.bin` and prepend to the temporal KV cache
-- **System prompt prefill** — `set_system_prompt()` records the text; tokenize and inject between silence spacers per the speech-swift cookbook
-- **Top-k + temperature + repetition penalty** sampling (greedy argmax shipping today, fine for smoke tests)
-- **Per-stream delay pattern** — PersonaPlex's `[0,0,1,1,1,1,1,1,1, 0,1,1,1,1,1,1,1]` per-stream delays not yet applied; current implementation feeds contemporaneous tokens
-- **Resampling** for non-24 kHz input
-- **IOBinding** + **CUDA Graph capture** on `temporal_step` (mirrors VoxCPM2 task #44)
-- **Bundle upload** to `soniqo/PersonaPlex-7B-ONNX` once the FP16 bundle (~16 GB total) is signed off
-
-### Why a new interface
-
-The existing interfaces don't fit:
-
-- `STTInterface` — audio → text. PersonaPlex emits audio + text concurrently.
-- `TTSInterface` — text → audio. PersonaPlex takes streaming user audio, not just text.
-- `LLMInterface` — text → text. No audio at all.
-
-PR #4 will introduce `FullDuplexSpeechInterface` (name not final) modeled on the streaming contract speech-swift already exposes via `PersonaPlexModel.respondStream()`: caller pushes user PCM in real time, an `on_chunk` callback receives interleaved agent audio + text tokens. The Apple-side MLX backend and this ONNX/CUDA backend will satisfy the same conceptual contract — same pattern as `STTInterface` today across ORT + LiteRT + CoreML.
-
-### Model files (when shipped)
-
-- `soniqo/PersonaPlex-7B-ONNX` (planned) — `personaplex-mimi-encoder.onnx`, `personaplex-mimi-decoder.onnx`, `personaplex-temporal-step.onnx` (+ external weights data), `personaplex-depformer.onnx`, `personaplex-config.json`, `personaplex-voices/*.bin`, `tokenizer_spm_32k_3.model`
-- Total bundle: ~8 GB FP16 / ~4 GB INT8 — same order as VoxCPM2; CUDA EP for serving, CPU possible but slow
-
-### Validation strategy
-
-Same pattern as VoxCPM2 (task #39 / #41): **generate speech, transcribe with Parakeet STT, assert content words**. Every export quantization variant (FP16 baseline → INT8 → INT4 MatMulNBits) runs the same fixture and is compared against the MLX 8-bit reference (the upstream-recommended quality bar).
-
-Per-graph numeric parity tests (token-level + audio MSE against the PyTorch reference) gate PRs #1-3. End-to-end round-trip — fixed user audio + system prompt → ONNX agent audio → Parakeet STT → content-word overlap vs MLX baseline transcript — gates PRs #5-7.
-
-Fixture set (planned, in `tests/data/personaplex/`):
-
-| Prompt | Expected content | Voice | System |
-|---|---|---|---|
-| "Can you guarantee the replacement will ship tomorrow?" | accepts/denies ship-tomorrow constraint | NATM0 | helpful-assistant |
-| "Recommend a book about machine learning." | names a recognisable ML book | NATF0 | helpful-assistant |
-| "What's the capital of France?" | mentions Paris | NATM1 | helpful-assistant |
-
-Per-quantization gate (rough — finalised in PR #7):
-- FP16: agent transcript ≥ 70% content-word overlap with MLX 8-bit baseline transcript on each fixture
-- INT8: ≥ 60% (some drift acceptable)
-- INT4: best-effort, no merge gate (MLX docs flag INT4 as "incoherent" — we expect the same and don't ship it as the default)
+The ctest `test_onnx_personaplex_load` exercises the full prefill + 4-frame generation loop on whatever bundle is at `SPEECH_MODEL_DIR`, asserting `chunks > 0`, `got_final`, `total_emitted > 0`. Validated against all four HF bundles end-to-end.
 
 ## DiarizationPipeline
 

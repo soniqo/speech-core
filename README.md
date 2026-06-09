@@ -17,7 +17,7 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3.
+- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
 - **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
@@ -36,6 +36,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-LiteRT) | Text-to-speech (48 kHz, voice cloning) | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
+| [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) | Full-duplex speech-to-speech (CUDA) — 4 variants from 7.6 GB → 17 GB | ✓ | — |
 
 Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embedder into speaker-labelled segments — no ML-runtime dependency of its own.
 
