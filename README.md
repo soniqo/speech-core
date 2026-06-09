@@ -1,5 +1,7 @@
 # Speech Core
 
+**English** · **[简体中文](README.zh-CN.md)**
+
 Voice-agent pipeline engine in **C++17** — on-device speech for **Linux, Windows, and Android** (plus Apple via a [Swift sibling](https://github.com/soniqo/speech-swift)).
 
 On-device voice activity detection, speech-to-text (batch **and** real-time streaming), speaker diarization, and text-to-speech. Runs locally on CPU — no cloud, no Python at inference, no data leaves the machine.
