@@ -285,9 +285,9 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 
 | # | Piece | State | Where |
 |---|---|---|---|
-| 1 | PyTorch reference + Mimi encoder/decoder ONNX | ✅ shipped | speech-models `convert_onnx.py --stage mimi` |
-| 2 | `temporal_step` ONNX with externalized KV cache | ✅ shipped, multi-precision via `--stage temporal` (FP16/FP32) + `--stage quantize` (INT8 dynamic) + `--stage int8-matmulnbits` + `--stage int4` | speech-models `convert_onnx.py` |
-| 3 | `depformer_step` ONNX with per-step weight Gather | ✅ shipped, with custom 3D-Gather INT8 quant in `quantize_depformer_gather.py` | speech-models |
+| 1 | PyTorch reference + Mimi encoder/decoder ONNX | ✅ shipped | `convert_onnx.py --stage mimi` |
+| 2 | `temporal_step` ONNX with externalized KV cache | ✅ shipped, multi-precision via `--stage temporal` (FP16/FP32) + `--stage quantize` (INT8 dynamic) + `--stage int8-matmulnbits` + `--stage int4` | `convert_onnx.py` |
+| 3 | `depformer_step` ONNX with per-step weight Gather | ✅ shipped, with custom 3D-Gather INT8 quant in `quantize_depformer_gather.py` | |
 | 4 | `FullDuplexSpeechInterface` | ✅ shipped | `include/speech_core/interfaces.h` |
 | 5 | `OnnxPersonaPlex` wrapper | ✅ shipped end-to-end, multi-turn KV cache, auto-detect dtypes, GPU-resident KV | `include/speech_core/models/onnx_personaplex.h`, `src/models/personaplex/onnx_personaplex.cpp` |
 | 6 | CUDA EP routing | ✅ shipped (via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture remain as opt-in scaffolding for follow-up | `include/speech_core/models/onnx_engine.h` |
@@ -317,7 +317,7 @@ All four variants on [soniqo/PersonaPlex-7B-ONNX](https://huggingface.co/soniqo/
 
 #### Custom INT8 depformer (3D-Gather quant) — the `dep_gint8` suffix
 
-The depformer's bulk (5.46 GB of 5.59 GB FP32) lives in 24 large 3D tensors `[16, K, N]` accessed via `Gather(step_idx)` — these are per-step weight tables for the 16 codebook steps. `MatMulNBitsQuantizer` skips them because they're Gather inputs, not MatMul inputs. The `dep_gint8` variants use a custom Python pass (`quantize_depformer_gather.py` in speech-models) that:
+The depformer's bulk (5.46 GB of 5.59 GB FP32) lives in 24 large 3D tensors `[16, K, N]` accessed via `Gather(step_idx)` — these are per-step weight tables for the 16 codebook steps. `MatMulNBitsQuantizer` skips them because they're Gather inputs, not MatMul inputs. The `dep_gint8` variants use a custom Python pass (`quantize_depformer_gather.py`) that:
 
 1. Replaces each FP32 `[16, K, N]` weight with INT8 `[16, K, N]` + per-step per-output-channel FP32 scale `[16, N]`
 2. Inserts a `DequantizeLinear(axis=-1)` after the original `Gather` so the downstream `Squeeze → MatMul` chain still sees FP32
@@ -335,7 +335,7 @@ The wrapper now mirrors speech-swift's MLX prefill layout end-to-end:
 
 1. **Voice prompt replay** — replays the voice `.bin`'s 4-token cache tail through `temporal_step` to populate KV with speaker-conditioned state
 2. **Silence spacer** — 6 frames (~0.5 s) of PAD text + zero audio, clean transition boundary
-3. **System prompt prefill** — N frames of pre-tokenized text (from `system_prompts.bin`, produced by `speech-models/.../tokenize_system_prompts.py` — avoids the SentencePiece C++ dep)
+3. **System prompt prefill** — N frames of pre-tokenized text (from `system_prompts.bin`, produced by `tokenize_system_prompts.py` — avoids the SentencePiece C++ dep)
 4. **Silence spacer** — another 6 frames
 5. **`respond_stream`** — user audio frames begin
 
@@ -395,7 +395,7 @@ Making it work would need shape profiles (min/opt/max on the dynamic KV axis), a
 
 ### Per-frame parity vs FP32 reference
 
-Measured by `speech-models/.../compare_bundle_quality.py` on a single temporal_step forward call with empty KV (CPU EP):
+Measured by `compare_bundle_quality.py` on a single temporal_step forward call with empty KV (CPU EP):
 
 | Recipe | hidden cos |
 |---|---|
@@ -407,7 +407,7 @@ Measured by `speech-models/.../compare_bundle_quality.py` on a single temporal_s
 
 ### PyTorch CUDA reference (upper-bound target)
 
-PyTorch FP16 reference benchmarked via `speech-models/.../bench_pytorch_cuda.py` on the same RTX 5090:
+PyTorch FP16 reference benchmarked via `bench_pytorch_cuda.py` on the same RTX 5090:
 
 | Dtype | Load | VRAM | Per-frame | RTF |
 |---|---|---|---|---|
@@ -417,7 +417,7 @@ PyTorch FP16 reference benchmarked via `speech-models/.../bench_pytorch_cuda.py`
 
 PyTorch FP16's 3.75 ms/frame is the **batched** LM forward (50 frames at once); our ONNX wrapper runs **autoregressive** streaming, so the per-call ORT dispatch overhead dominates. The wrapper's autoregressive RTF for `int8-nb-dep_gint8` is 1.12× — within 24× of the batched PyTorch baseline, with 5 GB less VRAM.
 
-`speech-models/.../bench_pytorch_cuda.py --dump-logits` writes per-frame text + audio logits to a `.npz` for downstream comparison via `compare_bundle_quality.py`.
+`bench_pytorch_cuda.py --dump-logits` writes per-frame text + audio logits to a `.npz` for downstream comparison via `compare_bundle_quality.py`.
 
 ### Multi-turn dialogue
 
@@ -453,7 +453,7 @@ Total per variant: 30 files. Repo root also has a top-level model card with the 
 
 ### Validation pattern
 
-End-to-end: **generate speech, transcribe with Parakeet STT, assert content words**. The wrapper's per-frame parity is gated by `speech-models/.../compare_bundle_quality.py` (single-frame cosine similarity vs the FP32 reference). The PyTorch reference is gated by `bench_pytorch_cuda.py`.
+End-to-end: **generate speech, transcribe with Parakeet STT, assert content words**. The wrapper's per-frame parity is gated by `compare_bundle_quality.py` (single-frame cosine similarity vs the FP32 reference). The PyTorch reference is gated by `bench_pytorch_cuda.py`.
 
 The ctest `test_onnx_personaplex_load` exercises the full prefill + 4-frame generation loop on whatever bundle is at `SPEECH_MODEL_DIR`, asserting `chunks > 0`, `got_final`, `total_emitted > 0`. Validated against all four HF bundles end-to-end.
 

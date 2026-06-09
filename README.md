@@ -4,7 +4,7 @@ Voice-agent pipeline engine in **C++17** — on-device speech for **Linux, Windo
 
 On-device voice activity detection, speech-to-text (batch **and** real-time streaming), speaker diarization, and text-to-speech. Runs locally on CPU — no cloud, no Python at inference, no data leaves the machine.
 
-**[📖 Docs](docs/)** · **[🤗 Models](https://huggingface.co/soniqo)** · **[🏗️ Export tooling](https://github.com/soniqo/speech-models)** · **[🍎 Apple (Swift)](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
+**[📖 Docs](docs/)** · **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple (Swift)](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Demo
 
@@ -39,8 +39,6 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) | Full-duplex speech-to-speech (CUDA) — 4 variants from 7.6 GB → 17 GB | ✓ | — |
 
 Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embedder into speaker-labelled segments — no ML-runtime dependency of its own.
-
-PersonaPlex bundles are produced from the FP32 PyTorch reference by [soniqo/speech-models](https://github.com/soniqo/speech-models)' export pipeline (`convert_onnx.py` + per-bundle quantization recipes including `quantize_depformer_gather.py` for the custom 3D-Gather INT8 quant).
 
 ## Platforms & backends
 
