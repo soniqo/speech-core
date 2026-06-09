@@ -1,23 +1,38 @@
 #!/usr/bin/env bash
-# Download a PersonaPlex ONNX bundle for OnnxPersonaPlex. Three layouts:
-#   fp16   17 GB  -- temporal FP16 + depformer FP16  (best for low host RAM)
-#   int8   13 GB  -- temporal INT8/FP32-KV + depformer FP32  (best for disk)
-#   mixed  11 GB  -- temporal INT8/FP32-KV + depformer FP16  (smallest)
+# Download a PersonaPlex ONNX bundle for OnnxPersonaPlex from
+# soniqo/PersonaPlex-7B-ONNX. Four variants are available; pick the
+# one that matches your memory budget and quality target:
 #
-# Variant is selected by env PERSONAPLEX_VARIANT or first arg (default 'mixed').
-# Destination is scripts/personaplex-<variant>/.
+#   int8-nb-dep_gint8   9.4 GB  RECOMMENDED SHIP DEFAULT
+#                               - INT8 MatMulNBits temporal + custom INT8 depformer
+#                               - 1.4 GB host RAM, 12.1 GB VRAM, RTF 1.12x
+#                               - cos 0.998 vs FP32, excellent quality
 #
-# This script assumes the bundle has been uploaded to
-# `soniqo/PersonaPlex-7B-ONNX` under tag <variant>/. Until that upload exists,
-# use the local conversion path documented in
-# speech-models/models/personaplex/export/NOTES.md.
+#   int4-nb-dep_gint8   7.6 GB  Smallest disk
+#                               - INT4 MatMulNBits temporal + custom INT8 depformer
+#                               - 1.4 GB host RAM, 9.6 GB VRAM, RTF 1.12x
+#                               - cos 0.877 vs FP32, visibly degraded but coherent
+#
+#   mixed              11 GB    Quality+VRAM Pareto winner
+#                               - INT8 dynamic temporal + FP16 depformer
+#                               - 7.9 GB host RAM, 6.6 GB VRAM, RTF 3.5x
+#                               - cos 0.990 vs FP32, lowest VRAM
+#                               - Topical responses ("We're concerned about it.")
+#
+#   fp16               17 GB    Maximum quality
+#                               - FP16 temporal + FP16 depformer + FP32 mimi
+#                               - 1.5 GB host RAM, 18.3 GB VRAM, RTF 5.3x
+#                               - cos 0.9999 vs FP32, near-perfect
+#
+# Variant is selected by env PERSONAPLEX_VARIANT or first arg (default
+# 'int8-nb-dep_gint8'). Destination is scripts/personaplex-<variant>/.
 
 set -euo pipefail
 
-VARIANT="${1:-${PERSONAPLEX_VARIANT:-mixed}}"
+VARIANT="${1:-${PERSONAPLEX_VARIANT:-int8-nb-dep_gint8}}"
 case "$VARIANT" in
-    fp16|int8|mixed) ;;
-    *) echo "unknown variant '$VARIANT' (expected fp16, int8, or mixed)" >&2; exit 2 ;;
+    fp16|mixed|int8-nb-dep_gint8|int4-nb-dep_gint8) ;;
+    *) echo "unknown variant '$VARIANT' (expected fp16, mixed, int8-nb-dep_gint8, or int4-nb-dep_gint8)" >&2; exit 2 ;;
 esac
 
 REPO="${PERSONAPLEX_HF_REPO:-soniqo/PersonaPlex-7B-ONNX}"
@@ -32,39 +47,35 @@ if ! command -v hf >/dev/null 2>&1; then
 fi
 
 echo "Downloading PersonaPlex bundle variant '$VARIANT' from $REPO -> $DEST"
-
-# Each ONNX graph is split graph + .onnx.data sidecar. We list explicit files
-# rather than --include="*" so users can see what arrives.
-COMMON=(
-    mimi_encoder.onnx mimi_encoder.onnx.data
-    mimi_decoder.onnx mimi_decoder.onnx.data
-    depformer_step.onnx depformer_step.onnx.data
-    tokenizer_spm_32k_3.model
-    system_prompts.bin
-    config.json
-)
-
-case "$VARIANT" in
-    fp16|int8|mixed)
-        TEMPORAL_FILES=(temporal_step.onnx temporal_step.onnx.data)
-        ;;
-esac
-
-for f in "${COMMON[@]}" "${TEMPORAL_FILES[@]}"; do
-    hf download "$REPO" "${VARIANT}/$f" --revision main \
-        --local-dir "$DEST" --local-dir-use-symlinks False
-done
-
-# Voices live in a per-bundle subdir
-hf download "$REPO" --include "${VARIANT}/voices/*" --revision main \
-    --local-dir "$DEST" --local-dir-use-symlinks False
+hf download "$REPO" --include "${VARIANT}/*" \
+    --local-dir "$DEST" --revision main
 
 # Flatten <variant>/ into the destination root (HF preserves the prefix)
 if [ -d "$DEST/$VARIANT" ]; then
-    cp -r "$DEST/$VARIANT"/* "$DEST/"
+    # Use rsync if available for atomic move; otherwise mv + cp
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a "$DEST/$VARIANT/" "$DEST/"
+    else
+        cp -r "$DEST/$VARIANT"/* "$DEST/"
+        # voices/ is a subdir; cp -r handles it
+        if [ -d "$DEST/$VARIANT/voices" ]; then
+            mkdir -p "$DEST/voices"
+            cp -r "$DEST/$VARIANT/voices"/* "$DEST/voices/" 2>/dev/null || true
+        fi
+    fi
     rm -rf "$DEST/$VARIANT"
 fi
 
 echo
-echo "Done. Bundle at $DEST. Use:"
-echo "  run_personaplex \"$DEST\" 50 tests/data/test_audio.wav VARF2"
+echo "Done. Bundle at $DEST"
+echo "Use:"
+echo "  build/Release/run_personaplex \"$DEST\" 50 tests/data/test_audio.wav VARF2"
+echo
+echo "Or in C++:"
+echo "  OnnxPersonaPlex pp("
+echo "      \"$DEST/mimi_encoder.onnx\","
+echo "      \"$DEST/mimi_decoder.onnx\","
+echo "      \"$DEST/temporal_step.onnx\","
+echo "      \"$DEST/depformer_step.onnx\","
+echo "      \"$DEST/tokenizer_spm_32k_3.model\","
+echo "      \"$DEST/voices\");"
