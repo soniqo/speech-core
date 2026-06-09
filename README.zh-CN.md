@@ -1,6 +1,6 @@
 # Speech Core
 
-**[English](README.md)** · **简体中文**
+[English](README.md) · **简体中文**
 
 **C++17** 编写的语音 Agent 流水线引擎 —— 面向 **Linux、Windows 和 Android** 的设备端语音（Apple 平台见 [Swift 姊妹仓库](https://github.com/soniqo/speech-swift)）。
 
