@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -68,6 +69,17 @@ std::string test_audio_path() {
     return std::string(SPEECH_CORE_TEST_DATA_DIR) + "/test_audio.wav";
 #else
     return "tests/data/test_audio.wav";
+#endif
+}
+
+/// Reference voice for the Hindi cloning test. Prefer the studio-pipeline
+/// reference if a user has dropped it into tests/data as test_hindi_ref.wav;
+/// fall back to the generic English fixture otherwise.
+std::string test_hindi_ref_path() {
+#ifdef SPEECH_CORE_TEST_DATA_DIR
+    return std::string(SPEECH_CORE_TEST_DATA_DIR) + "/test_hindi_ref.wav";
+#else
+    return "tests/data/test_hindi_ref.wav";
 #endif
 }
 
@@ -1159,6 +1171,164 @@ void test_litert_nemotron_multilingual_stt(const std::string& dir) {
     std::printf("final=\"%.50s\" ok\n", result.text.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// VoxCPM2 Hindi cloning — Windows artifact repro harness. Mirrors the studio
+// voice-cloning flow exactly (set_reference + per-phrase seed + bounded
+// max_steps) over 5 Hindi phrases. Dumps each synthesized 48 kHz PCM16 WAV to
+// $SPEECH_VOXCPM2_WAV_DUMP/voxcpm2_hindi_NN.wav for offline spectral analysis,
+// and roundtrips each through Nemotron multilingual STT for a hyp transcript.
+// Skipped when any model file is missing or set_reference is rejected.
+// ---------------------------------------------------------------------------
+
+// UTF-8-aware tokenizer for Devanagari; splits on ASCII whitespace/punct AND
+// Devanagari danda (U+0964) / double-danda (U+0965). The repo's standard
+// tokenize_lower() drops Devanagari because std::isalnum is ASCII-only.
+std::vector<std::string> tokenize_unicode_words(const std::string& s) {
+    std::vector<std::string> toks; std::string cur;
+    auto flush = [&]() { if (!cur.empty()) { toks.push_back(std::move(cur)); cur.clear(); } };
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]); int len = 1;
+        if      ((c & 0x80) == 0x00) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        if (i + static_cast<size_t>(len) > s.size()) break;
+        bool sep = false;
+        if (len == 1) {
+            if (c <= 0x20) sep = true;
+            else switch (c) {
+                case '!': case '?': case '.': case ',': case ':': case ';':
+                case '"': case '\'': case '(': case ')': case '[': case ']':
+                case '{': case '}': case '/': case '\\': case '-':
+                case '_': case '*': case '=': sep = true; break;
+                default: break;
+            }
+        } else if (len == 3) {
+            unsigned char b1 = static_cast<unsigned char>(s[i+1]);
+            unsigned char b2 = static_cast<unsigned char>(s[i+2]);
+            if (c == 0xE0 && b1 == 0xA5 && (b2 == 0xA4 || b2 == 0xA5)) sep = true;
+        }
+        if (sep) flush(); else cur.append(s, i, len);
+        i += len;
+    }
+    flush();
+    return toks;
+}
+
+void test_litert_voxcpm2_hindi_cloning(const std::string& dir) {
+    std::string pref = dir + "/voxcpm2-text-prefill.tflite";
+    std::string step = dir + "/voxcpm2-token-step.tflite";
+    std::string venc = dir + "/voxcpm2-audio-encoder.tflite";
+    std::string vdec = dir + "/voxcpm2-audio-decoder.tflite";
+    std::string vtok = dir + "/tokenizer.json";
+    std::string nenc = dir + "/nemotron-multilingual-encoder.tflite";
+    std::string ndec = dir + "/nemotron-multilingual-decoder.tflite";
+    std::string njnt = dir + "/nemotron-multilingual-joint.tflite";
+    std::string nvoc = dir + "/nemotron-multilingual-vocab.json";
+    std::string nlng = dir + "/nemotron-multilingual-languages.json";
+    // Prefer the studio-pipeline reference voice (Ruuchi mono) at
+    // tests/data/test_hindi_ref.wav when present; fall back to the generic
+    // English test fixture so the test still runs in CI without the bundle.
+    std::string ref_path = test_hindi_ref_path();
+    auto wav = load_wav_mono_pcm16(ref_path);
+    bool used_hindi_ref = !wav.samples.empty();
+    if (!used_hindi_ref) {
+        ref_path = test_audio_path();
+        wav = load_wav_mono_pcm16(ref_path);
+    }
+    if (!file_exists(pref) || !file_exists(step) || !file_exists(venc)
+        || !file_exists(vdec) || !file_exists(vtok) || wav.samples.empty()) {
+        std::printf("  [skip] hindi cloning VoxCPM2 files/fixture missing in %s\n", dir.c_str());
+        return;
+    }
+    const bool have_stt = file_exists(nenc) && file_exists(ndec) && file_exists(njnt)
+        && file_exists(nvoc) && file_exists(nlng);
+    std::printf("  test_litert_voxcpm2_hindi_cloning ... (stt=%s)\n",
+                have_stt ? "on" : "off");
+
+    speech_core::LiteRTVoxCPM2Tts tts(pref, step, venc, vdec, vtok, /*hw_accel=*/false);
+    if (tts.max_text_tokens() < 256) {
+        std::printf("  [skip] hindi cloning needs production VoxCPM2 (max_text=%d)\n",
+                    tts.max_text_tokens());
+        return;
+    }
+    std::unique_ptr<speech_core::LiteRTNemotronMultilingualStt> stt_ptr;
+    const char* res = "(skipped)";
+    if (have_stt) {
+        stt_ptr = std::make_unique<speech_core::LiteRTNemotronMultilingualStt>(
+            nenc, ndec, njnt, nvoc, nlng, /*hw_accel=*/false);
+        const char* locs[] = {"hi-IN", "hi", "hi-HI"};
+        for (const char* l : locs) if (stt_ptr->set_language(l)) { res = l; break; }
+        if (std::string(res) == "(skipped)") {
+            std::printf("    [warn] no Hindi slot in nemotron — running without STT\n");
+            stt_ptr.reset();
+            res = "(no-hi-slot)";
+        }
+    }
+
+    tts.set_reference(wav.samples.data(), wav.samples.size(), wav.sample_rate);
+    if (!tts.has_reference()) { std::printf("  [skip] set_reference rejected clip\n"); return; }
+    // Log the reference RMS — useful when chasing a "cloned voice is too
+    // quiet" report; loudness can collapse if the reference clip itself is
+    // quiet and the model preserves its level too literally.
+    double ref_rms_sq = 0.0;
+    for (float s : wav.samples) ref_rms_sq += static_cast<double>(s) * s;
+    double ref_rms = std::sqrt(ref_rms_sq / std::max<size_t>(wav.samples.size(), 1));
+    std::printf("    [stt-lang=%s reference=%s ref_rms=%.4f ref_dur=%.2fs sr=%d]\n",
+                res, used_hindi_ref ? "test_hindi_ref" : "test_audio",
+                ref_rms, double(wav.samples.size()) / wav.sample_rate, wav.sample_rate);
+
+    tts.set_instruction("");
+    const std::vector<std::string> phrases = {
+        "इसे कहाँ रखें: गियर साइडबार खोलें। इसके अंदर, हॉटकीज़ ब्लॉक और नीचे के टेक्स्ट के बीच में एक हॉरिजॉन्टल लाइन जोड़ें।",
+        "मेरा नाम राहुल है।",
+        "आज मौसम बहुत अच्छा है।",
+        "मुझे संगीत सुनना पसंद है।",
+        "क्या आप मेरी मदद कर सकते हैं?",
+    };
+    const char* dump = std::getenv("SPEECH_VOXCPM2_WAV_DUMP");
+    for (size_t i = 0; i < phrases.size(); ++i) {
+        const auto& p = phrases[i];
+        int wc = static_cast<int>(tokenize_unicode_words(p).size());
+        int ms = std::clamp(wc * 12 + 40, 60, 240);
+        tts.set_max_steps(ms);
+        tts.set_seed(static_cast<unsigned>(1000 + i));
+
+        std::vector<float> a48; bool fin = false;
+        tts.synthesize(p, "hi", [&](const float* s, size_t n, bool isf) {
+            if (s && n) a48.insert(a48.end(), s, s + n);
+            if (isf) fin = true;
+        });
+        if (!fin || a48.empty()) { std::printf("    [%zu] EMPTY\n", i); continue; }
+        if (dump) {
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s/voxcpm2_hindi_%02zu.wav", dump, i);
+            dump_wav48k_mono(path, a48);
+        }
+        std::string hyp = "(stt-off)";
+        if (stt_ptr) {
+            auto a16 = speech_core::Resampler::resample(a48.data(), a48.size(), 48000, 16000);
+            stt_ptr->begin_stream(16000);
+            constexpr size_t kFeed = 1600;  // 100 ms @ 16 kHz
+            for (size_t off = 0; off < a16.size(); off += kFeed) {
+                size_t len = std::min(kFeed, a16.size() - off);
+                stt_ptr->push_chunk(a16.data() + off, len);
+            }
+            hyp = stt_ptr->end_stream().text;
+        }
+        double sq = 0.0; float pk = 0.0f;
+        for (float s : a48) { sq += static_cast<double>(s) * s; pk = std::max(pk, std::abs(s)); }
+        double rms = std::sqrt(sq / std::max<size_t>(a48.size(), 1));
+        std::printf("    [%zu] tokens=%d dur=%.2fs rms=%.4f peak=%.4f  ref=\"%s\"  hyp=\"%s\"\n",
+                    i, tts.tokens_generated(),
+                    double(a48.size()) / 48000.0, rms, pk,
+                    p.c_str(), hyp.c_str());
+        std::fflush(stdout);
+    }
+    std::printf("  ok (WAVs in %s)\n", dump ? dump : "(no dump dir)");
+}
+
 }  // namespace
 
 int main() {
@@ -1212,6 +1382,7 @@ int main() {
     RUN(test_voxcpm2_c_api);
     RUN(test_litert_voxcpm2_parakeet_roundtrip);
     RUN(test_litert_voxcpm2_clone_parakeet_roundtrip);
+    RUN(test_litert_voxcpm2_hindi_cloning);
     #undef RUN
 
     if (failures > 0) {
