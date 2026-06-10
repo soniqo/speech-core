@@ -13,6 +13,8 @@ option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with 
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
+option(SPEECH_CORE_PACKAGE "Add install rules for the CLI tools + bundled runtime libraries and configure CPack (Linux .deb / .tar.gz). Linux-only; see the Packaging section at the bottom of this file." OFF)
+set(SPEECH_CORE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into binary packages. The release workflow passes the git tag (e.g. 0.0.8); local builds default to the project version.")
 
 if(SPEECH_CORE_WITH_CUDA AND NOT SPEECH_CORE_WITH_ONNX)
     message(FATAL_ERROR "SPEECH_CORE_WITH_CUDA=ON requires SPEECH_CORE_WITH_ONNX=ON "
@@ -555,26 +557,31 @@ endif()
 # Install
 # ---------------------------------------------------------------------------
 
-set(_install_targets speech_core)
-if(SPEECH_CORE_WITH_ONNX)
-    list(APPEND _install_targets speech_core_models)
-endif()
-if(SPEECH_CORE_WITH_LITERT)
-    list(APPEND _install_targets speech_core_models_litert)
-endif()
-if(SPEECH_CORE_WITH_OLLAMA)
-    list(APPEND _install_targets speech_core_llm_ollama)
-endif()
+# Dev install rules (static libs + headers) — skipped when building the
+# end-user CLI package (SPEECH_CORE_PACKAGE=ON), which would otherwise drop
+# tens of MB of .a files and the header tree into /usr.
+if(NOT SPEECH_CORE_PACKAGE)
+    set(_install_targets speech_core)
+    if(SPEECH_CORE_WITH_ONNX)
+        list(APPEND _install_targets speech_core_models)
+    endif()
+    if(SPEECH_CORE_WITH_LITERT)
+        list(APPEND _install_targets speech_core_models_litert)
+    endif()
+    if(SPEECH_CORE_WITH_OLLAMA)
+        list(APPEND _install_targets speech_core_llm_ollama)
+    endif()
 
-install(TARGETS ${_install_targets}
-    EXPORT speech_core-targets
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-)
+    install(TARGETS ${_install_targets}
+        EXPORT speech_core-targets
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+    )
 
-install(DIRECTORY include/speech_core
-    DESTINATION include
-)
+    install(DIRECTORY include/speech_core
+        DESTINATION include
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Examples (optional)
@@ -587,4 +594,117 @@ if(SPEECH_CORE_BUILD_EXAMPLES)
             " (the examples consume speech_core_models)")
     endif()
     add_subdirectory(examples/linux)
+endif()
+
+# ---------------------------------------------------------------------------
+# Packaging (optional) — Linux .deb / .tar.gz with the CLI tools
+#
+# Adds RUNTIME install rules for whichever CLI executables the enabled options
+# produced, bundles the runtime shared libraries that no distro packages
+# (libonnxruntime.so, libLiteRt.so) into a private lib/speech-core/ dir wired
+# up via $ORIGIN RPATHs, and configures CPack DEB+TGZ generators. Models are
+# never packaged — they are fetched at runtime from HuggingFace (see
+# scripts/download_models*.sh and docs/models.md).
+#
+# Driven by .github/workflows/release.yml on v* tags; for a local package:
+#   cmake -B build-pkg -DCMAKE_BUILD_TYPE=Release \
+#       -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=ort-linux \
+#       -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=litert-linux \
+#       -DSPEECH_CORE_BUILD_EXAMPLES=ON -DSPEECH_CORE_BUILD_TESTS=OFF \
+#       -DSPEECH_CORE_PACKAGE=ON
+#   cmake --build build-pkg --parallel && (cd build-pkg && cpack -B ../dist)
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_PACKAGE)
+    if(NOT UNIX OR APPLE OR ANDROID)
+        message(FATAL_ERROR "SPEECH_CORE_PACKAGE=ON currently targets Linux only")
+    endif()
+
+    # Collect whichever CLI targets this configuration actually built.
+    set(_pkg_cli_targets "")
+    foreach(_t speech_demo speech_transcribe speech_synthesize speech_phonemize
+               speech_voxcpm2_clone)
+        if(TARGET ${_t})
+            list(APPEND _pkg_cli_targets ${_t})
+        endif()
+    endforeach()
+    if(NOT _pkg_cli_targets)
+        message(FATAL_ERROR
+            "SPEECH_CORE_PACKAGE=ON but no CLI executables are enabled — turn on"
+            " SPEECH_CORE_BUILD_EXAMPLES (ONNX tools) and/or SPEECH_CORE_WITH_LITERT"
+            " (speech_voxcpm2_clone)")
+    endif()
+
+    # Executables install to bin/, bundled runtimes to lib/speech/, the
+    # example C ABI lib (libspeech.so) to lib/. $ORIGIN RPATHs make the package
+    # self-contained without ld.so.conf entries.
+    set_target_properties(${_pkg_cli_targets} PROPERTIES
+        INSTALL_RPATH "\$ORIGIN/../lib;\$ORIGIN/../lib/speech")
+    install(TARGETS ${_pkg_cli_targets} RUNTIME DESTINATION bin)
+
+    if(TARGET speech)
+        set_target_properties(speech PROPERTIES
+            INSTALL_RPATH "\$ORIGIN;\$ORIGIN/speech")
+        install(TARGETS speech LIBRARY DESTINATION lib)
+    endif()
+
+    # Runtime shared libraries that no distro packages. setup_linux.sh keeps
+    # the libonnxruntime.so -> .so.X.Y.Z symlink chain (cp -RP); the glob picks
+    # up every name and install(PROGRAMS) preserves symlinks, so the SONAME
+    # chain stays intact in lib/speech without duplicate payload.
+    if(SPEECH_CORE_WITH_ONNX)
+        file(GLOB _pkg_ort_libs "${ORT_DIR}/lib/libonnxruntime.so*")
+        if(NOT _pkg_ort_libs)
+            message(FATAL_ERROR "SPEECH_CORE_PACKAGE: no libonnxruntime.so* under ${ORT_DIR}/lib")
+        endif()
+        install(PROGRAMS ${_pkg_ort_libs} DESTINATION lib/speech)
+    endif()
+    if(SPEECH_CORE_WITH_LITERT)
+        install(PROGRAMS "${LITERT_DIR}/libLiteRt.so" DESTINATION lib/speech)
+    endif()
+
+    install(FILES LICENSE THIRD-PARTY-NOTICES.md DESTINATION share/doc/speech)
+
+    # Model fetchers, renamed into the speech_ command namespace. When run
+    # from the read-only install location they default to the per-user cache
+    # dir (~/.cache/speech-core/models*) — the same place the CLIs look when
+    # invoked without a model_dir argument.
+    install(PROGRAMS scripts/download_models.sh
+        DESTINATION bin RENAME speech_download_models)
+    if(SPEECH_CORE_WITH_LITERT)
+        install(PROGRAMS scripts/download_models_litert.sh
+            DESTINATION bin RENAME speech_download_models_litert)
+    endif()
+
+    # --- CPack ---
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(_pkg_arch "arm64")
+    else()
+        set(_pkg_arch "amd64")
+    endif()
+
+    set(CPACK_GENERATOR "DEB;TGZ")
+    set(CPACK_PACKAGE_NAME "speech")
+    set(CPACK_PACKAGE_VERSION "${SPEECH_CORE_PACKAGE_VERSION}")
+    set(CPACK_PACKAGE_CONTACT "ivan-digital <ivan.aufkl@gmail.com>")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "speech — voice agent CLI tools (STT, TTS, phonemizer, voice cloning)")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/soniqo/speech-core")
+    set(CPACK_PACKAGE_FILE_NAME "speech-${SPEECH_CORE_PACKAGE_VERSION}-linux-${_pkg_arch}")
+    set(CPACK_STRIP_FILES ON)
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${_pkg_arch}")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/soniqo/speech-core")
+    # Hand-written Depends (dpkg-shlibdeps can't resolve our private
+    # lib/speech-core dir). Built on ubuntu-22.04 → needs glibc ≥ 2.35.
+    # libasound2t64 is the 24.04 time64 rename; the alternation covers 22.04.
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.35), libstdc++6 (>= 11)")
+    if(TARGET speech_demo)
+        string(APPEND CPACK_DEBIAN_PACKAGE_DEPENDS ", libasound2t64 | libasound2")
+    endif()
+
+    include(CPack)
 endif()

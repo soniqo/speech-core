@@ -1,0 +1,55 @@
+# Third-party notices
+
+Binary distributions of the `speech` package (the `.deb` / `.tar.gz` packages published
+on GitHub Releases) bundle the following third-party runtime libraries. The
+speech-core source tree itself has no third-party code beyond the vendored
+LiteRT C API headers noted below.
+
+## ONNX Runtime
+
+- **Files:** `lib/speech/libonnxruntime.so*`
+- **Source:** https://github.com/microsoft/onnxruntime (prebuilt release binaries)
+- **License:** MIT — https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+- Copyright (c) Microsoft Corporation
+
+## LiteRT (`libLiteRt.so`)
+
+- **Files:** `lib/speech/libLiteRt.so`
+- **Source:** extracted from Google's [`ai-edge-litert`](https://pypi.org/project/ai-edge-litert/)
+  PyPI package (see `scripts/fetch_litert.sh`); upstream repository
+  https://github.com/google-ai-edge/LiteRT
+- **License:** Apache License 2.0 —
+  https://github.com/google-ai-edge/LiteRT/blob/main/LICENSE
+- Copyright Google LLC. This product includes software developed at Google
+  as part of the LiteRT / TensorFlow Lite projects. Use of this library does
+  not imply endorsement by Google.
+
+The LiteRT shared library statically incorporates the following components,
+each under its own permissive license:
+
+| Component | License |
+|---|---|
+| TensorFlow / TensorFlow Lite | Apache-2.0 |
+| XNNPACK | BSD-3-Clause |
+| Eigen | MPL-2.0 |
+| FlatBuffers | Apache-2.0 |
+| ruy | Apache-2.0 |
+| farmhash | MIT |
+| FP16 / pthreadpool / cpuinfo | BSD-2/3-Clause |
+| Abseil | Apache-2.0 |
+
+Refer to the upstream LiteRT repository's `LICENSE` and third-party notices
+for the complete texts.
+
+## Vendored headers (source tree)
+
+- **Files:** `third_party/litert/` (~44 LiteRT C API headers)
+- **License:** Apache License 2.0 (same as LiteRT above)
+
+## Models
+
+No machine-learning models are included in any speech-core package. Models
+are downloaded separately by the user at runtime (see
+`scripts/download_models.sh`, `scripts/download_models_litert.sh`, and
+`docs/models.md`) and are governed by their own licenses as published on
+their respective HuggingFace repositories.

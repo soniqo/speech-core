@@ -9,7 +9,11 @@
 set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo"
-OUT="${1:-$(dirname "$0")/models-litert}"
+DEFAULT_OUT="$(dirname "$0")/models-litert"
+if [ ! -w "$(dirname "$0")" ]; then
+    DEFAULT_OUT="${XDG_CACHE_HOME:-$HOME/.cache}/speech-core/models-litert"
+fi
+OUT="${1:-${SPEECH_LITERT_MODEL_DIR:-$DEFAULT_OUT}}"
 mkdir -p "$OUT"
 
 # The soniqo/* model repos are public — anonymous fetch works out of the box,

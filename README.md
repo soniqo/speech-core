@@ -208,6 +208,29 @@ LiteRT headers are vendored in `third_party/litert/` (no setup). `LITERT_DIR` po
 
 **On-device model download (optional).** Add `-DSPEECH_CORE_WITH_HF_DOWNLOAD=ON` to fetch model bundles from Hugging Face on first use instead of provisioning them by hand. It links libcurl (`find_package(CURL)` — system libcurl on Linux/macOS, vcpkg on Windows) and adds `sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", …)` to the [VoxCPM2 C ABI](include/speech_core/voxcpm2_c.h): a resumable, retrying download (HTTP Range, atomic rename) that tolerates network interruptions and caches under the OS cache dir (`SPEECH_CORE_CACHE_DIR` to override; `HF_ENDPOINT` for a mirror). Off by default so embedded/offline builds carry no HTTP/TLS dependency. The `hf_fetch` debug CLI exercises it directly.
 
+### Install on Linux (prebuilt `speech` package)
+
+Each release ships `.deb` and `.tar.gz` packages with the CLI tools
+(`speech_transcribe`, `speech_synthesize`, `speech_phonemize`, `speech_demo`,
+and on amd64 the `speech_voxcpm2_clone` voice-cloning CLI), with
+`libonnxruntime.so` / `libLiteRt.so` bundled under `/usr/lib/speech/` — no
+extra runtime setup:
+
+```bash
+# amd64 (arm64: speech_VERSION_arm64.deb — transcribe/synthesize/phonemize only)
+curl -LO https://github.com/soniqo/speech-core/releases/latest/download/speech_VERSION_amd64.deb
+sudo apt install ./speech_VERSION_amd64.deb
+
+speech_download_models           # ONNX set → ~/.cache/speech-core/models (~1.2 GB)
+speech_transcribe input.wav      # tools find the cache dir automatically
+```
+
+Models are never inside the package. The tools look in `$SPEECH_MODEL_DIR`
+(LiteRT: `$SPEECH_LITERT_MODEL_DIR`), falling back to the per-user cache dir
+that `speech_download_models` / `speech_download_models_litert` populate; an
+explicit model-dir argument always wins. Ubuntu 22.04+ / Debian 12+
+(glibc ≥ 2.35).
+
 ## Testing & CI
 
 ```bash

@@ -4,11 +4,14 @@
 // synthesizes the given text in that voice — writing a 48 kHz mono WAV.
 //
 // Usage:
-//   speech_voxcpm2_clone <bundle_dir> <ref.wav> "<text>" <out.wav> \
+//   speech_voxcpm2_clone [bundle_dir] <ref.wav> "<text>" <out.wav> \
 //       [instruction] [max_steps]
 //
 //   bundle_dir  : directory holding voxcpm2-{text-prefill,token-step,
 //                 audio-encoder,audio-decoder}.tflite + tokenizer.json
+//                 (default: $SPEECH_LITERT_MODEL_DIR, else the per-user cache
+//                 dir where sc_voxcpm2_create_from_pretrained downloads the
+//                 bundle — ~/.cache/speech-core/soniqo__VoxCPM2-LiteRT)
 //   ref.wav     : reference speaker clip (mono/stereo PCM-16 WAV, any rate;
 //                 resampled to 16 kHz and trimmed/padded to 6.4 s internally)
 //   instruction : optional style prefix, e.g. "calm, clear delivery"
@@ -24,6 +27,7 @@
 #include <speech_core/models/litert_voxcpm2_tts.h>
 
 #include "../common/utf8_args.h"
+#include "../common/default_model_dir.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -136,22 +140,39 @@ int main(int argc, char** argv) {
     // behind this was a Hindi clone where the model was literally asked to
     // speak fourteen question marks.
     const std::vector<std::string> args = speech_examples::utf8_args(argc, argv);
-    if (args.size() < 5) {
+    if (args.size() < 4) {
         std::fprintf(stderr,
-            "usage: %s <bundle_dir> <ref.wav> \"<text>\" <out.wav> "
+            "usage: %s [bundle_dir] <ref.wav> \"<text>\" <out.wav> "
+            "[instruction] [max_steps] [seed]\n"
+            "  bundle_dir : VoxCPM2 LiteRT bundle (default: $SPEECH_LITERT_MODEL_DIR,\n"
+            "               else %s)\n",
+            args.empty() ? "speech_voxcpm2_clone" : args[0].c_str(),
+            speech_example_voxcpm2_dir().c_str());
+        return 2;
+    }
+    // bundle_dir is optional. Old form starts with the bundle directory; the
+    // new form starts with ref.wav (a file, or the literal "none") —
+    // disambiguate by whether args[1] is an existing directory. (The old
+    // argc-threshold heuristic is gone: the optional [seed] arg makes a full
+    // new-form call reach the same count as a short old-form one.)
+    const bool has_dir = std::filesystem::is_directory(args[1]);
+    const int base = has_dir ? 2 : 1;
+    if (static_cast<int>(args.size()) < base + 3) {
+        std::fprintf(stderr,
+            "usage: %s [bundle_dir] <ref.wav> \"<text>\" <out.wav> "
             "[instruction] [max_steps] [seed]\n",
             args.empty() ? "speech_voxcpm2_clone" : args[0].c_str());
         return 2;
     }
-    const std::string bundle      = args[1];
-    const std::string ref_wav     = args[2];
-    const std::string text        = args[3];
-    const std::string out_wav     = args[4];
+    const std::string bundle      = has_dir ? args[1] : speech_example_voxcpm2_dir();
+    const std::string ref_wav     = args[base];
+    const std::string text        = args[base + 1];
+    const std::string out_wav     = args[base + 2];
     // No default style instruction: conditioning on an (English) style line
     // measurably shifts a non-English clone away from the reference voice.
-    const std::string instruction = (args.size() >= 6) ? args[5] : "";
-    const int         max_steps   = (args.size() >= 7) ? std::atoi(args[6].c_str()) : 256;
-    const long        seed        = (args.size() >= 8) ? std::atol(args[7].c_str()) : 0;
+    const std::string instruction = (static_cast<int>(args.size()) >= base + 4) ? args[base + 3] : "";
+    const int         max_steps   = (static_cast<int>(args.size()) >= base + 5) ? std::atoi(args[base + 4].c_str()) : 256;
+    const long        seed        = (static_cast<int>(args.size()) >= base + 6) ? std::atol(args[base + 5].c_str()) : 0;
 
     const bool no_ref = (ref_wav == "none");
     std::vector<float> ref;

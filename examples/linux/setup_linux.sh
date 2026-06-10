@@ -48,7 +48,10 @@ if [ ! -f "${ORT_DIR}/include/onnxruntime_c_api.h" ]; then
 
     mkdir -p "${ORT_DIR}/include" "${ORT_DIR}/lib"
     cp "${ORT_EXTRACTED}"/include/*.h "${ORT_DIR}/include/"
-    cp "${ORT_EXTRACTED}"/lib/${ORT_LIB_GLOB} "${ORT_DIR}/lib/"
+    # -RP: preserve the libonnxruntime.so -> .so.X.Y.Z symlink chain instead of
+    # dereferencing into duplicate ~16 MB copies (packaging installs this dir
+    # verbatim; -P alone doesn't suppress dereference on BSD cp without -R).
+    cp -RP "${ORT_EXTRACTED}"/lib/${ORT_LIB_GLOB} "${ORT_DIR}/lib/"
 
     rm -rf "${TMP_DIR}"
     echo "ONNX Runtime installed to ${ORT_DIR}"

@@ -1,6 +1,7 @@
 // Tiny CLI that runs Parakeet STT on a WAV file and prints what it heard.
 //
-// Usage: speech_transcribe <model_dir> <input.wav>
+// Usage: speech_transcribe [model_dir] <input.wav>
+//        (model_dir defaults to $SPEECH_MODEL_DIR, else ~/.cache/speech-core/models)
 //
 // Reads PCM Float32 / Int16 / Int24 mono or stereo at any sample rate, then
 // resamples + downmixes to 16 kHz mono Float32 and feeds it through the
@@ -10,6 +11,8 @@
 // No external deps beyond libspeech.
 
 #include "speech.h"
+
+#include "../../common/default_model_dir.h"
 
 #include <atomic>
 #include <chrono>
@@ -196,16 +199,17 @@ static void on_event(const speech_event_t* event, void* ctx) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
+    if (argc != 2 && argc != 3) {
         std::fprintf(stderr,
-            "usage: %s <model_dir> <input.wav>\n"
+            "usage: %s [model_dir] <input.wav>\n"
             "  model_dir : directory holding parakeet-* + silero-vad.onnx\n"
+            "              (default: $SPEECH_MODEL_DIR, else %s)\n"
             "  input.wav : audio to transcribe (mono or stereo, 16-bit/24-bit/float)\n",
-            argv[0]);
+            argv[0], speech_example_model_dir().c_str());
         return 2;
     }
-    const std::string model_dir = argv[1];
-    const std::string wav_path  = argv[2];
+    const std::string model_dir = (argc == 3) ? argv[1] : speech_example_model_dir();
+    const std::string wav_path  = (argc == 3) ? argv[2] : argv[1];
 
     WavData wav;
     std::string err;
