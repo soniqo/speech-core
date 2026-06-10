@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — they execute on Linux/macOS (CI, containers,
+# the .deb's installed speech_download_models*) even when the repo is checked
+# out on Windows with core.autocrlf=true.
+*.sh text eol=lf
