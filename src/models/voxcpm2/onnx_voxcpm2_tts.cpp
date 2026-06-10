@@ -198,6 +198,28 @@ void OnnxVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample_r
         }
     }
 
+    // Rescue quiet reference clips (same recipe as the LiteRT variant). See
+    // litert_voxcpm2_tts.cpp set_reference() for the full rationale.
+    {
+        double ss = 0.0;
+        float peak = 0.0f;
+        for (float v : mono) {
+            ss += double(v) * v;
+            peak = std::max(peak, std::abs(v));
+        }
+        if (!mono.empty() && peak > 1e-6f) {
+            const double rms = std::sqrt(ss / mono.size());
+            const float kQuietThreshold = 0.04f;
+            const float kTargetRms      = 0.08f;
+            const float kPeakCap        = 0.95f;
+            if (rms < kQuietThreshold) {
+                float scale = static_cast<float>(kTargetRms / rms);
+                if (peak * scale > kPeakCap) scale = kPeakCap / peak;
+                for (float& v : mono) v *= scale;
+            }
+        }
+    }
+
     const size_t real_samples = std::min<size_t>(mono.size(), kRefAudioSamples);
     int real_frames = static_cast<int>((real_samples + kRefFrameStride - 1) / kRefFrameStride);
     real_frames = std::clamp(real_frames, 1, kMaxRefFrames);

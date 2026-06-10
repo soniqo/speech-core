@@ -228,6 +228,36 @@ void LiteRTVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample
         }
     }
 
+    // Rescue quiet reference clips. VoxCPM2's audio_encoder conditions on
+    // both timbre AND amplitude — a reference at RMS ~0.002 (e.g. an
+    // unmastered phone-mic capture) clones at sub-audible level, because
+    // output amplitude tracks reference amplitude within ±10%. The upstream
+    // openbmb VoxCPM2 Python (src/voxcpm/model/voxcpm2.py:_encode_wav)
+    // similarly does no amplitude normalization — it relies on callers
+    // passing already-loudness-normalized reference clips. We do the same for
+    // any clip already in a healthy range (RMS ≥ kQuietThreshold), but
+    // rescue obviously-quiet inputs by scaling them to ~kTargetRms with a
+    // peak cap. Pure scalar gain; no compression / EQ.
+    {
+        double ss = 0.0;
+        float peak = 0.0f;
+        for (float v : mono) {
+            ss += double(v) * v;
+            peak = std::max(peak, std::abs(v));
+        }
+        if (!mono.empty() && peak > 1e-6f) {
+            const double rms = std::sqrt(ss / mono.size());
+            const float kQuietThreshold = 0.04f;   // upstream-healthy refs are above this
+            const float kTargetRms      = 0.08f;
+            const float kPeakCap        = 0.95f;
+            if (rms < kQuietThreshold) {
+                float scale = static_cast<float>(kTargetRms / rms);
+                if (peak * scale > kPeakCap) scale = kPeakCap / peak;
+                for (float& v : mono) v *= scale;
+            }
+        }
+    }
+
     // Frames backed by *real* (pre-pad) audio. The encoder always emits
     // kMaxRefFrames, but trailing frames over zero-padding carry silence — we
     // condition only on the real ones (matches the MLX dynamic-length path).
