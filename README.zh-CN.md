@@ -221,9 +221,13 @@ amd64 还包含声音克隆 CLI `speech_voxcpm2_clone`），并将
 curl -LO https://github.com/soniqo/speech-core/releases/latest/download/speech_VERSION_amd64.deb
 sudo apt install ./speech_VERSION_amd64.deb
 
-speech_download_models           # ONNX 模型集 → ~/.cache/speech-core/models（约 1.2 GB）
-speech_transcribe input.wav      # 工具会自动找到缓存目录
+speech download-models           # ONNX 模型集 → ~/.cache/speech-core/models（约 1.2 GB）
+speech transcribe input.wav      # 与 speech-swift 的 `brew install speech` 相同的子命令式 CLI
+speech speak "Hello world"
 ```
+
+`speech` 命令会分发到独立的 `speech_<command>` 可执行文件
+（`speech_transcribe`、`speech_synthesize` 等），后者提供更多选项。
 
 软件包不含任何模型。工具按 `$SPEECH_MODEL_DIR`（LiteRT 为
 `$SPEECH_LITERT_MODEL_DIR`）查找模型，未设置时回退到

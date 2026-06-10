@@ -676,6 +676,12 @@ if(SPEECH_CORE_PACKAGE)
             DESTINATION bin RENAME speech_download_models_litert)
     endif()
 
+    # `speech` multiplexer — verb-style front-end (speech transcribe …,
+    # speech speak …) matching speech-swift's CLI on macOS
+    # (brew install soniqo/tap/speech), so cross-platform docs share one
+    # command surface. Dispatches to the sibling speech_* binaries.
+    install(PROGRAMS scripts/speech-dispatch.sh DESTINATION bin RENAME speech)
+
     # --- CPack ---
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         set(_pkg_arch "arm64")

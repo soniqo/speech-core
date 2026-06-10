@@ -221,9 +221,13 @@ extra runtime setup:
 curl -LO https://github.com/soniqo/speech-core/releases/latest/download/speech_VERSION_amd64.deb
 sudo apt install ./speech_VERSION_amd64.deb
 
-speech_download_models           # ONNX set → ~/.cache/speech-core/models (~1.2 GB)
-speech_transcribe input.wav      # tools find the cache dir automatically
+speech download-models           # ONNX set → ~/.cache/speech-core/models (~1.2 GB)
+speech transcribe input.wav      # same verb-style CLI as speech-swift's `brew install speech`
+speech speak "Hello world"
 ```
+
+The `speech` command dispatches to standalone `speech_<command>` binaries
+(`speech_transcribe`, `speech_synthesize`, …) which expose extra options.
 
 Models are never inside the package. The tools look in `$SPEECH_MODEL_DIR`
 (LiteRT: `$SPEECH_LITERT_MODEL_DIR`), falling back to the per-user cache dir

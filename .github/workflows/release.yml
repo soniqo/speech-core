@@ -111,9 +111,13 @@ jobs:
                   echo "UNRESOLVED LIBS in $exe"; exit 1
                 fi
               done
-              for sh in speech_download_models speech_download_models_litert; do
+              for sh in speech_download_models speech_download_models_litert speech; do
                 test -x "/usr/bin/$sh" || { echo "MISSING $sh"; exit 1; }
               done
+              # Multiplexer dispatch must reach the real binaries.
+              /usr/bin/speech --help | grep -q transcribe
+              out=$(/usr/bin/speech phonemize 2>&1 | head -2 || true)
+              [ -n "$out" ] || { echo "speech phonemize dispatch failed"; exit 1; }
               # Usage exits are non-zero by design; assert the binaries load
               # far enough to print *something* (a crash prints nothing).
               out=$(/usr/bin/speech_phonemize 2>&1 | head -2 || true)
