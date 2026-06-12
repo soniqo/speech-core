@@ -406,7 +406,16 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
         static_cast<int64_t>(cfg_.decoder_hidden)
     };
 
-    int64_t prev_token = static_cast<int64_t>(cfg_.blank_id);
+    // The Parakeet-TDT-0.6B-ONNX v3 decoder/joint expects INT32 for both
+    // `targets` (previous token) and `prednet_lengths_orig` (target len).
+    // An earlier export used INT64; the current published model on
+    // soniqo/Parakeet-TDT-0.6B-ONNX is INT32, so the runtime would die
+    // at decoder_joint with:
+    //   ORT: Unexpected input data type. Actual: (tensor(int64)) ,
+    //        expected: (tensor(int32))
+    // Encoder length tensors (further up) intentionally stay INT64 —
+    // those inputs DID stay INT64 in the re-export.
+    int32_t prev_token = static_cast<int32_t>(cfg_.blank_id);
     int64_t t = 0;
 
     while (t < enc_len) {
@@ -422,20 +431,20 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
             mem, enc_frame.data(), enc_frame.size() * sizeof(float),
             enc_frame_shape, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_enc));
 
-        // Target: previous token [1, 1]
+        // Target: previous token [1, 1] — INT32 for Parakeet-TDT v3 decoder.
         const int64_t tok_shape[] = {1, 1};
         OrtValue* t_tok = nullptr;
         ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-            mem, &prev_token, sizeof(int64_t),
-            tok_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_tok));
+            mem, &prev_token, sizeof(int32_t),
+            tok_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32, &t_tok));
 
-        // Target length: [1] = 1
-        int64_t tgt_len = 1;
+        // Target length: [1] = 1 — INT32 (was target_length INT64 in v2).
+        int32_t tgt_len = 1;
         const int64_t tgt_len_shape[] = {1};
         OrtValue* t_tgt_len = nullptr;
         ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-            mem, &tgt_len, sizeof(int64_t),
-            tgt_len_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_tgt_len));
+            mem, &tgt_len, sizeof(int32_t),
+            tgt_len_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32, &t_tgt_len));
 
         // LSTM states
         OrtValue* t_h = nullptr;
@@ -448,8 +457,16 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
             mem, c_state.data(), c_state.size() * sizeof(float),
             lstm_shape, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_c));
 
-        // Run decoder_joint (v3 uses "prednet_lengths_orig" instead of "target_length")
-        const char* in_names[]  = {"encoder_outputs", "targets", "prednet_lengths_orig",
+        // Run decoder_joint. Inputs verified against the published
+        // soniqo/Parakeet-TDT-0.6B-ONNX model graph (`onnx.load` +
+        // m.graph.input):
+        //   encoder_outputs (float), targets (int32), target_length (int32),
+        //   input_states_1 (float), input_states_2 (float).
+        // The earlier comment claimed v3 renamed `target_length` to
+        // `prednet_lengths_orig`; the model did NOT. The dtype DID change
+        // from int64 -> int32 (handled above). Output side legitimately
+        // has `prednet_lengths` — that name is on the OUTPUT, not input.
+        const char* in_names[]  = {"encoder_outputs", "targets", "target_length",
                                    "input_states_1", "input_states_2"};
         const char* out_names[] = {"outputs", "prednet_lengths",
                                    "output_states_1", "output_states_2"};
