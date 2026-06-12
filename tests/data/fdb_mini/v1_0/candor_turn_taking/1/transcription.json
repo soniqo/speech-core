@@ -1,0 +1,28 @@
+[
+  {
+    "speaker": 0,
+    "item": [
+      {
+        "text": "how",
+        "timestamp": [
+          0.0,
+          0.2
+        ]
+      },
+      {
+        "text": "are",
+        "timestamp": [
+          0.3,
+          0.5
+        ]
+      },
+      {
+        "text": "you",
+        "timestamp": [
+          0.6,
+          0.8
+        ]
+      }
+    ]
+  }
+]

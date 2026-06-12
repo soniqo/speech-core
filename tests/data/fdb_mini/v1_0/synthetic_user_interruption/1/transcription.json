@@ -1,0 +1,42 @@
+[
+  {
+    "speaker": 0,
+    "item": [
+      {
+        "text": "tell",
+        "timestamp": [
+          0.0,
+          0.2
+        ]
+      },
+      {
+        "text": "me",
+        "timestamp": [
+          0.3,
+          0.5
+        ]
+      },
+      {
+        "text": "a",
+        "timestamp": [
+          0.6,
+          0.8
+        ]
+      },
+      {
+        "text": "long",
+        "timestamp": [
+          0.9,
+          1.1
+        ]
+      },
+      {
+        "text": "story",
+        "timestamp": [
+          1.2,
+          1.4
+        ]
+      }
+    ]
+  }
+]

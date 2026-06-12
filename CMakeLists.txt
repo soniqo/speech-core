@@ -321,7 +321,8 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_ollama_llm"
-           OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e")
+           OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
+           OR TEST_NAME STREQUAL "test_fdb_bench_smoke")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -451,6 +452,61 @@ if(SPEECH_CORE_BUILD_TESTS)
             target_link_libraries(test_pipeline_ollama_e2e PRIVATE ws2_32)
         endif()
         add_test(NAME test_pipeline_ollama_e2e COMMAND test_pipeline_ollama_e2e)
+    endif()
+
+    # FDB v1.0 per-sample driver — corpus iterator + WAV I/O + driver
+    # skeleton (M1). Default backends are mock STT + mock TTS so the
+    # binary builds and runs without ORT or model files. --stt parakeet
+    # / --tts kokoro switch to real backends when SPEECH_CORE_WITH_ONNX
+    # is also ON (compile flag SPEECH_CORE_FDB_WITH_ONNX gates the
+    # branch inside fdb_bench.cpp). The LLM is always OllamaLLM.
+    if(SPEECH_CORE_WITH_OLLAMA AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench/fdb_bench.cpp)
+        add_executable(fdb_bench
+            examples/fdb_bench/fdb_bench.cpp
+            examples/fdb_bench/fdb_corpus.cpp
+            examples/fdb_bench/wav_io.cpp
+        )
+        target_include_directories(fdb_bench PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench)
+        target_link_libraries(fdb_bench PRIVATE
+            speech_core speech_core_llm_ollama)
+        if(SPEECH_CORE_WITH_ONNX)
+            target_link_libraries(fdb_bench PRIVATE speech_core_models)
+            target_compile_definitions(fdb_bench PRIVATE SPEECH_CORE_FDB_WITH_ONNX)
+        endif()
+        if(MSVC)
+            target_compile_definitions(fdb_bench PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+        endif()
+        if(WIN32)
+            target_link_libraries(fdb_bench PRIVATE ws2_32)
+        endif()
+
+        # Smoke test — runs the driver's per-sample loop against the
+        # tiny tests/data/fdb_mini fixture with mock STT/TTS + an
+        # in-process MockOllama. No model files, no live network.
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fdb_bench_smoke.cpp)
+            add_executable(test_fdb_bench_smoke
+                tests/test_fdb_bench_smoke.cpp
+                examples/fdb_bench/fdb_corpus.cpp
+                examples/fdb_bench/wav_io.cpp)
+            target_include_directories(test_fdb_bench_smoke PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+            target_link_libraries(test_fdb_bench_smoke
+                PRIVATE speech_core speech_core_llm_ollama)
+            target_compile_definitions(test_fdb_bench_smoke PRIVATE
+                SPEECH_CORE_FDB_MINI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/fdb_mini/v1_0")
+            if(MSVC)
+                target_compile_definitions(test_fdb_bench_smoke PRIVATE
+                    _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+            endif()
+            if(WIN32)
+                target_link_libraries(test_fdb_bench_smoke PRIVATE ws2_32)
+            endif()
+            add_test(NAME test_fdb_bench_smoke COMMAND test_fdb_bench_smoke)
+        endif()
     endif()
 endif()
 

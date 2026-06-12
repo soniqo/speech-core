@@ -1,0 +1,21 @@
+[
+  {
+    "speaker": 0,
+    "item": [
+      {
+        "text": "hello",
+        "timestamp": [
+          0.0,
+          0.2
+        ]
+      },
+      {
+        "text": "world",
+        "timestamp": [
+          0.3,
+          0.5
+        ]
+      }
+    ]
+  }
+]
