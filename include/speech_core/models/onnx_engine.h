@@ -496,9 +496,51 @@ private:
 #else
                 std::string cache = std::string(tmp ? tmp : "/tmp") + "/speech_core_trt_cache";
 #endif
-                const char* keys[] = {"trt_engine_cache_enable", "trt_engine_cache_path"};
-                const char* vals[] = {"1", cache.c_str()};
-                OrtStatus* us = api_->UpdateTensorRTProviderOptions(trt, keys, vals, 2);
+                // Base options: engine cache always on; tuning knobs opt-in.
+                std::vector<const char*> keys = {
+                    "trt_engine_cache_enable", "trt_engine_cache_path"};
+                std::vector<const char*> vals = {"1", cache.c_str()};
+
+                // SPEECH_CORE_TRT_MAX_WORKSPACE_MB — per-tactic build
+                // workspace ceiling (bytes). Default: unbounded (TRT picks).
+                // TRT's tactic-search engine build materializes candidate
+                // engines into this workspace and runs throughput micro-
+                // benchmarks. For large transformers (e.g. VoxCPM2 prefill
+                // ~0.6B params, ~hundreds of MatMul/QDQ nodes), the search
+                // space is huge and peak host RAM during compile can exceed
+                // 30 GiB — Salad's 16 GiB pod SIGKILLs the worker mid-build.
+                // Capping the workspace to 2048 MB keeps build memory in
+                // budget at the cost of TRT possibly picking suboptimal
+                // tactics. Empirically VoxCPM2 prefill fits its 16 GiB pod
+                // at 2048 MB; tune up if the engine choice regresses RTF.
+                std::string ws_str;
+                if (const char* ws = std::getenv("SPEECH_CORE_TRT_MAX_WORKSPACE_MB")) {
+                    long long mb = std::atoll(ws);
+                    if (mb > 0) {
+                        unsigned long long bytes =
+                            static_cast<unsigned long long>(mb) * 1024ULL * 1024ULL;
+                        ws_str = std::to_string(bytes);
+                        keys.push_back("trt_max_workspace_size");
+                        vals.push_back(ws_str.c_str());
+                    }
+                }
+
+                // SPEECH_CORE_TRT_BUILDER_OPT_LEVEL — TRT tactic search
+                // depth, 0 (cheapest) to 5 (deepest). Default 3. Lower =
+                // faster engine build, less memory, possibly suboptimal
+                // kernel choices. 0-1 for memory-constrained one-shot
+                // builds (CI, first cold-start); 2-3 for warm production
+                // where build time isn't on the critical path. Combine
+                // with TRT_MAX_WORKSPACE_MB for tight memory envelopes.
+                if (const char* lvl = std::getenv("SPEECH_CORE_TRT_BUILDER_OPT_LEVEL")) {
+                    if (lvl[0] != '\0') {
+                        keys.push_back("trt_builder_optimization_level");
+                        vals.push_back(lvl);
+                    }
+                }
+
+                OrtStatus* us = api_->UpdateTensorRTProviderOptions(
+                    trt, keys.data(), vals.data(), keys.size());
                 if (us != nullptr) api_->ReleaseStatus(us);  // non-fatal: keep defaults
                 OrtStatus* as = api_->SessionOptionsAppendExecutionProvider_TensorRT_V2(opts, trt);
                 api_->ReleaseTensorRTProviderOptions(trt);
