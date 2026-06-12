@@ -482,6 +482,15 @@ std::string VoicePipeline::call_llm_with_tools() {
             }
         }
 
+        // Don't fire the follow-up chat() if the user interrupted during
+        // tool execution. Without this check, the second chat() runs to
+        // completion and its response would race with the now-cancelled
+        // turn. process_utterance does check state_ post-return but only
+        // AFTER the second chat() has already consumed an LLM call.
+        if (state_.load() != State::Thinking) {
+            return std::string();
+        }
+
         // Call LLM again with tool results in context
         accumulated.clear();
         response = llm_->chat(context_.messages(),
@@ -524,6 +533,13 @@ void VoicePipeline::speak(const std::string& text, const std::string& language,
             [this, speech_id, &total_samples, max_samples,
              tts_start, stt_duration_ms, llm_duration_ms](
                 const float* samples, size_t length, bool is_final) {
+                // Drop chunks if we've left Speaking (interruption, stop()).
+                // Some TTS impls don't honor cancel() promptly between chunks;
+                // without this guard, ResponseAudioDelta events keep firing
+                // after ResponseInterrupted, and AEC reference is fed audio
+                // the speaker never actually played.
+                if (state_.load() != State::Speaking) return;
+
                 // Enforce max response duration to prevent TTS hallucination
                 size_t emit_length = length;
                 bool force_final = false;

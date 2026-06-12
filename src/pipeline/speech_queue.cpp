@@ -33,8 +33,13 @@ void SpeechQueue::mark_done(uint64_t id) {
             break;
         }
     }
-    // Clean up completed items from the front
-    while (!items_.empty() && items_.front().state == SpeechItem::State::Done) {
+    // Clean up terminal items from the front. Drain Cancelled too — without
+    // this, a Cancelled head blocks all Done cleanup behind it, leaving
+    // ghost items in the queue indefinitely (cancel_all + mark_done(later)
+    // pattern leaked items_).
+    while (!items_.empty() &&
+           (items_.front().state == SpeechItem::State::Done ||
+            items_.front().state == SpeechItem::State::Cancelled)) {
         items_.erase(items_.begin());
     }
 }
@@ -82,6 +87,11 @@ void SpeechQueue::cancel_all() {
             if (on_state_change_) on_state_change_(item.id, item.state);
         }
     }
+    // Drain — these items are terminal. Without this, the TTS callback
+    // for an interrupted item never reaches is_final (the speak() lambda
+    // early-returns once state != Speaking), so mark_done is never called
+    // and Cancelled entries accumulate in items_ indefinitely.
+    items_.clear();
 }
 
 size_t SpeechQueue::size() const {
