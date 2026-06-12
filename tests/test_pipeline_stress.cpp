@@ -568,12 +568,21 @@ void scenario_audio_thread_cancel_coupling(Outcome& out) {
     out.note("push_audio (with Interruption) returned in " +
              std::to_string(elapsed_ms) + " ms (cancel_block=150ms)");
 
-    // The audio thread is stalled by the slow cancel. Budget = cancel_block + slack.
-    // If the orchestration is changed to dispatch cancels off-thread, this
-    // budget can tighten dramatically.
-    constexpr int kBudgetMs = 400;
+    // The cancel dispatcher (cancel_thread_) decouples push_audio from
+    // tts_.cancel() / llm_->cancel(). On-thread work in the Interruption
+    // path is now just: speech_queue_.cancel_all, set_agent_speaking,
+    // state_.store, brief cancel_mutex_ + cv.notify, on_event_. The
+    // 150ms cancel block runs off-thread.
+    //
+    // 50ms gives 8x headroom over the on-thread observed cost while
+    // catching any regression that re-couples cancel to the audio
+    // thread. If this assertion regresses, look for a new call site
+    // that synchronously cancels TTS or LLM inside on_turn_event or
+    // push_audio.
+    constexpr int kBudgetMs = 50;
     CHECK(out, elapsed_ms < kBudgetMs,
-          "push_audio stalled > " + std::to_string(kBudgetMs) + " ms (= cancel coupling)");
+          "push_audio stalled > " + std::to_string(kBudgetMs) + " ms "
+          "(cancel coupling — dispatcher not decoupling correctly)");
 
     pipe.stop();
 }
@@ -963,6 +972,83 @@ void scenario_speech_queue_leak(Outcome& out) {
 }
 
 // ===========================================================================
+// SCENARIO 8: stop() during pending cancel dispatch — no deadlock, no UAF
+// ---------------------------------------------------------------------------
+// With cancel() dispatched off the audio thread, lifecycle safety hinges on
+// stop() joining the dispatcher AFTER its in-flight cancel call returns.
+// Fire an Interruption with a deliberately slow TTS cancel (200 ms), then
+// immediately call stop(). Asserts stop() returns within the cancel-block
+// budget + slack, and the pipeline cleanly shuts down (no crash, no hang).
+//
+// This is the key safety test for the off-thread dispatcher: if stop()
+// reordered the join to happen BEFORE the in-flight cancel completes, the
+// dispatcher thread would access tts_ / llm_ AFTER they may be destructed
+// (the references go dangling once their owners outlive the pipeline).
+// ===========================================================================
+
+void scenario_stop_during_pending_cancel(Outcome& out) {
+    StressSTT stt;
+    StressTTS tts;
+    tts.num_chunks = 50;
+    tts.chunk_interval = 5ms;
+    tts.cancel_block = 200ms;             // dispatcher will sit inside cancel()
+    StressVAD vad;
+
+    auto cfg = default_stress_config();
+    cfg.mode = AgentConfig::Mode::Echo;
+    cfg.vad.min_speech_duration = 0.064f;
+    cfg.min_interruption_duration = 0.0f;
+
+    SyncBarrier barrier;
+    tts.barrier = &barrier;
+
+    SequencedEventLog log;
+    VoicePipeline pipe(stt, tts, nullptr, vad, cfg,
+                       [&log](const PipelineEvent& e) { log.on_event(e); });
+    pipe.start();
+
+    // Trigger first utterance → enter Speaking.
+    vad.probs = concat(silence_probs(1), speech_probs(10), silence_probs(6));
+    vad.prob_index.store(0);
+    push_n_chunks(pipe, vad.probs.size());
+
+    if (!barrier.wait_for_count("tts:chunk_emitted", 1, 3000ms)) {
+        out.fail("tts never started");
+        pipe.stop();
+        return;
+    }
+
+    // Fire interrupting speech → posts cancel to dispatcher → dispatcher
+    // calls tts.cancel() which sleeps 200ms.
+    vad.probs = speech_probs(6);
+    vad.prob_index.store(0);
+    auto interrupt_audio = make_audio_for_chunks(6);
+    pipe.push_audio(interrupt_audio.data(), interrupt_audio.size());
+
+    // Give the dispatcher a moment to start the cancel.
+    if (!barrier.wait_for_count("tts:cancel_called", 1, 1000ms)) {
+        out.fail("dispatcher never called tts.cancel()");
+        pipe.stop();
+        return;
+    }
+
+    // stop() now — dispatcher is inside the 200ms sleep. stop() must
+    // join cleanly after the cancel finishes.
+    auto t0 = std::chrono::steady_clock::now();
+    pipe.stop();
+    auto elapsed = std::chrono::steady_clock::now() - t0;
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+    out.note("stop() during in-flight cancel returned in " +
+             std::to_string(elapsed_ms) + " ms");
+
+    // stop() budget: in-flight cancel (200ms) + stop's own synchronous
+    // cancel calls + join overhead. 600ms is generous for CI jitter.
+    CHECK(out, elapsed_ms < 600, "stop() during dispatched cancel exceeded budget");
+    CHECK(out, !pipe.is_running(), "pipeline running flag should be false after stop()");
+}
+
+// ===========================================================================
 // Test runner
 // ===========================================================================
 
@@ -979,6 +1065,7 @@ const Scenario kScenarios[] = {
     {"no_second_chat_after_interrupt_in_tool_loop", scenario_no_second_chat_after_interrupt_in_tool_loop},
     {"concurrent_push_audio_with_interrupts",      scenario_concurrent_push_audio_with_interrupts},
     {"speech_queue_leak",                          scenario_speech_queue_leak},
+    {"stop_during_pending_cancel",                 scenario_stop_during_pending_cancel},
 };
 
 }  // namespace

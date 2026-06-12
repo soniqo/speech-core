@@ -38,7 +38,22 @@ void VoicePipeline::start() {
         state_.store(State::Idle);
         if (echo_canceller_) echo_canceller_->reset();
     }
+    // Reset dispatcher flags BEFORE spawning so a previous stop() cycle
+    // doesn't leave shutdown=true (which would make the new dispatcher
+    // exit immediately, silently dropping every Interruption).
+    {
+        std::lock_guard<std::mutex> clk(cancel_mutex_);
+        cancel_shutdown_ = false;
+        cancel_pending_ = false;
+    }
+    // Defensive: a prior stop() always joins the dispatcher, so the
+    // thread object should be non-joinable here. Joining belt-and-
+    // suspenders rather than std::terminate'ing if some path skipped
+    // stop().
+    if (cancel_thread_.joinable()) cancel_thread_.join();
+    if (worker_thread_.joinable()) worker_thread_.join();
     worker_thread_ = std::thread(&VoicePipeline::worker_loop, this);
+    cancel_thread_ = std::thread(&VoicePipeline::cancel_loop, this);
 }
 
 void VoicePipeline::stop() {
@@ -65,6 +80,20 @@ void VoicePipeline::stop() {
     worker_idle_cv_.notify_all();
     if (worker_thread_.joinable()) {
         worker_thread_.join();
+    }
+    // Tear down the cancel dispatcher AFTER the worker so the worker's
+    // force_final speak() path (which calls tts_.cancel() on the worker
+    // thread) cannot race with the dispatcher's own cancel call. Same
+    // store-under-mutex pattern as the worker shutdown above so the
+    // dispatcher's cv predicate (cancel_pending_ || cancel_shutdown_)
+    // observes the shutdown flag before it sleeps.
+    {
+        std::lock_guard<std::mutex> clk(cancel_mutex_);
+        cancel_shutdown_ = true;
+    }
+    cancel_cv_.notify_all();
+    if (cancel_thread_.joinable()) {
+        cancel_thread_.join();
     }
 }
 
@@ -352,15 +381,38 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
     }
 
     case TurnEvent::Interruption: {
-        // Cancel current TTS, LLM, and clear queue.
-        // LLM cancel is needed when user speaks during Thinking state —
-        // the worker thread is blocked in llm_->chat() and won't pick up
-        // new utterances until the current call returns.
-        tts_.cancel();
-        if (llm_) llm_->cancel();
+        // Audio thread (push_audio holds mutex_). Keep this path cheap.
+        //
+        // Synchronous, in-process work — bounded, microseconds:
+        //   - queue drain   : speech_queue_.cancel_all() must run before
+        //                     on_event_(ResponseInterrupted) so consumers
+        //                     that re-enter from the callback observe an
+        //                     empty queue.
+        //   - turn detector : set_agent_speaking(false), already under
+        //                     the mutex_ held by push_audio.
+        //   - state flip    : the per-chunk speak() lambda guard drops
+        //                     any further TTS chunks emitted before the
+        //                     dispatched cancel actually takes effect.
+        //
+        // Deferred, potentially slow work — posted to cancel_thread_:
+        //   - tts_.cancel(), llm_->cancel(): may block ~150ms on Ollama
+        //     HTTP socket close, WebSocket TTS, etc. Running them inline
+        //     here would stall mic frame delivery (push_audio holds
+        //     mutex_). The dispatcher runs them with no pipeline locks.
+        //
+        // Coalescing: cancel_pending_ is a bool, not a queue. Back-to-
+        // back Interruptions collapse to at most one in-flight cancel +
+        // one pending re-run; cancel() is documented thread-safe and
+        // idempotent on every shipped implementation.
         speech_queue_.cancel_all();
         turn_detector_.set_agent_speaking(false);
         state_.store(State::Listening);
+
+        {
+            std::lock_guard<std::mutex> clk(cancel_mutex_);
+            cancel_pending_ = true;
+        }
+        cancel_cv_.notify_one();
 
         PipelineEvent interrupted;
         interrupted.type = EventType::ResponseInterrupted;
@@ -597,6 +649,32 @@ void VoicePipeline::emit_error(const std::string& message) {
     error.type = EventType::Error;
     error.text = message;
     on_event_(error);
+}
+
+void VoicePipeline::cancel_loop() {
+    // Long-lived dispatcher for off-thread cancel() calls. Owns no
+    // pipeline locks across the third-party calls — that is the entire
+    // point. Order: LLM first, then TTS. LLM cancel is the user-visible
+    // latency driver because it unblocks the worker inside llm_->chat()
+    // so process_utterance can observe state_ != Thinking and return.
+    // TTS cancel is best-effort follow-up; the per-chunk state guard in
+    // speak()'s lambda already prevents stale chunks from reaching the
+    // platform. Exceptions out of cancel() are not contractually
+    // defined, but we must keep the loop alive — swallow and continue.
+    for (;;) {
+        std::unique_lock<std::mutex> lock(cancel_mutex_);
+        cancel_cv_.wait(lock, [this] {
+            return cancel_pending_ || cancel_shutdown_;
+        });
+        if (cancel_shutdown_) return;
+        cancel_pending_ = false;
+        lock.unlock();
+
+        if (llm_) {
+            try { llm_->cancel(); } catch (...) {}
+        }
+        try { tts_.cancel(); } catch (...) {}
+    }
 }
 
 }  // namespace speech_core
