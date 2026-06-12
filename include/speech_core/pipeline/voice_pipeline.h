@@ -29,7 +29,12 @@ namespace speech_core {
 ///
 /// Thread model:
 ///   - push_audio() called from mic/input thread
-///   - Events emitted on the calling thread (platform dispatches as needed)
+///   - on_event_ callbacks fire from EITHER the push_audio thread (VAD-driven
+///     events such as SpeechStarted and ResponseInterrupted) OR the internal
+///     worker thread (STT/LLM/TTS-driven events such as SpeechEnded,
+///     TranscriptionCompleted, ResponseCreated, ResponseAudioDelta,
+///     ResponseDone, ToolCall*). Consumers that read shared state from the
+///     callback must serialize that access themselves.
 ///   - Internal state protected by pipeline mutex
 class VoicePipeline {
 public:
