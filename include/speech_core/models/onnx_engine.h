@@ -539,6 +539,29 @@ private:
                     }
                 }
 
+                // SPEECH_CORE_TRT_OP_TYPES_TO_EXCLUDE — comma-separated
+                // list of ONNX op types the partitioner should NEVER
+                // attempt. Default: empty (try all).
+                //
+                // Why: TRT's ONNX importer probes every op type and
+                // raises UNSUPPORTED_NODE_ATTR for ones it can't handle
+                // (e.g. ScatterND with `reduction=` attribute, opset 16,
+                // used in VoxCPM2's KV-cache write path). ORT correctly
+                // falls those nodes back to CUDA EP, but each rejected
+                // import allocates + tears down a parser context first.
+                // For graphs with dozens of such nodes the cumulative
+                // host RAM trips the kernel OOM-killer before serving.
+                //
+                // Listing them up front routes those nodes straight to
+                // CUDA from the first analysis pass — smaller TRT
+                // subgraphs, less compile memory, no error spam.
+                if (const char* exc = std::getenv("SPEECH_CORE_TRT_OP_TYPES_TO_EXCLUDE")) {
+                    if (exc[0] != '\0') {
+                        keys.push_back("trt_op_types_to_exclude");
+                        vals.push_back(exc);
+                    }
+                }
+
                 OrtStatus* us = api_->UpdateTensorRTProviderOptions(
                     trt, keys.data(), vals.data(), keys.size());
                 if (us != nullptr) api_->ReleaseStatus(us);  // non-fatal: keep defaults
