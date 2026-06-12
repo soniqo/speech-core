@@ -147,7 +147,21 @@ private:
     std::atomic<bool> worker_busy_{false};
     std::atomic<bool> eager_invalidated_{false};  // set when SpeechResumed discards an eager utterance
 
+    // Cancel dispatcher — keeps tts_.cancel() / llm_->cancel() off the
+    // audio thread so push_audio is not stalled by slow third-party
+    // cancel impls (Ollama HTTP socket close etc.). cancel_pending_ is
+    // a coalesced bool, not a queue: rapid barge-in collapses to at most
+    // one in-flight cancel + one pending re-run. cancel_loop never holds
+    // mutex_ or worker_mutex_ — only cancel_mutex_ — so slow cancels
+    // cannot block any other pipeline path on a lock.
+    std::thread cancel_thread_;
+    std::mutex cancel_mutex_;
+    std::condition_variable cancel_cv_;
+    bool cancel_pending_ = false;
+    bool cancel_shutdown_ = false;
+
     void worker_loop();
+    void cancel_loop();
     void on_turn_event(const TurnEvent& event);
     void process_utterance(const std::string& transcript, const std::string& language = "",
                            float stt_duration_ms = 0.0f);
