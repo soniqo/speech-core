@@ -320,7 +320,8 @@ if(SPEECH_CORE_BUILD_TESTS)
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
-           OR TEST_NAME STREQUAL "test_ollama_llm")
+           OR TEST_NAME STREQUAL "test_ollama_llm"
+           OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -427,6 +428,29 @@ if(SPEECH_CORE_BUILD_TESTS)
             target_link_libraries(test_ollama_llm PRIVATE ws2_32)
         endif()
         add_test(NAME test_ollama_llm COMMAND test_ollama_llm)
+    endif()
+
+    # End-to-end test that wires the real OllamaLLM adapter into
+    # VoicePipeline against an in-process httplib mock server. Proves the
+    # full STT -> LLM -> TTS path (including barge-in cancel + tool-loop)
+    # works with the real Ollama adapter rather than only the MockLLM in
+    # test_pipeline_e2e. Links both speech_core (pipeline) and
+    # speech_core_llm_ollama (LLM adapter). Same gate as test_ollama_llm.
+    if(SPEECH_CORE_WITH_OLLAMA AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pipeline_ollama_e2e.cpp)
+        add_executable(test_pipeline_ollama_e2e tests/test_pipeline_ollama_e2e.cpp)
+        target_link_libraries(test_pipeline_ollama_e2e
+            PRIVATE speech_core speech_core_llm_ollama)
+        target_include_directories(test_pipeline_ollama_e2e PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        if(MSVC)
+            target_compile_definitions(test_pipeline_ollama_e2e PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+        endif()
+        if(WIN32)
+            target_link_libraries(test_pipeline_ollama_e2e PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_pipeline_ollama_e2e COMMAND test_pipeline_ollama_e2e)
     endif()
 endif()
 

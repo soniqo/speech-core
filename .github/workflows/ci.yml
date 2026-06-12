@@ -31,6 +31,42 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
 
+  # ASAN+UBSAN lane — clang-instrumented build of the default orchestration-only
+  # configuration (no ORT, no LiteRT, no Ollama). Catches memory errors and
+  # undefined behaviour in speech_core and the always-built unit tests.
+  # Independent of the unit-tests matrix above — runs in parallel like the
+  # other lanes below. ASAN and TSAN can't coexist in one build; ASAN+UBSAN
+  # is the combination with the best signal-to-noise for this codebase.
+  unit-tests-sanitizers:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              clang cmake ninja-build
+
+      - name: Configure (ASAN+UBSAN)
+        env:
+          CC: clang
+          CXX: clang++
+          CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all -O1 -g -fno-omit-frame-pointer
+          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all -O1 -g -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=address,undefined
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (with sanitizers)
+        env:
+          ASAN_OPTIONS: halt_on_error=1:detect_leaks=1:abort_on_error=1:print_stacktrace=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure
+
   # Heavy lane: ONNX-on build with the Linux example (libspeech.so + demo +
   # tools + C-ABI integration test). Exercises the speech_core_models target,
   # the examples/linux subtree, and ALSA linkage. Integration tests that
