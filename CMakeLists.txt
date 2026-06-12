@@ -12,6 +12,7 @@ option(SPEECH_CORE_WITH_CUDA "Enable NVIDIA GPU execution providers (CUDA / Tens
 option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
+option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
 
 if(SPEECH_CORE_WITH_CUDA AND NOT SPEECH_CORE_WITH_ONNX)
     message(FATAL_ERROR "SPEECH_CORE_WITH_CUDA=ON requires SPEECH_CORE_WITH_ONNX=ON "
@@ -265,6 +266,44 @@ if(SPEECH_CORE_WITH_LITERT)
 endif()
 
 # ---------------------------------------------------------------------------
+# speech_core_llm_ollama — Ollama HTTP LLM adapter (optional)
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_WITH_OLLAMA)
+    add_library(speech_core_llm_ollama
+        src/llm/ollama_llm.cpp
+    )
+
+    target_include_directories(speech_core_llm_ollama
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    )
+
+    if(MSVC)
+        target_compile_options(speech_core_llm_ollama PRIVATE /W4)
+        target_compile_definitions(speech_core_llm_ollama PRIVATE
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+    else()
+        target_compile_options(speech_core_llm_ollama PRIVATE
+            -Wall -Wextra
+            $<$<CONFIG:Release>:-O2>
+        )
+    endif()
+
+    set_target_properties(speech_core_llm_ollama PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(speech_core_llm_ollama PUBLIC speech_core)
+
+    # Windows: cpp-httplib needs WinSock 2.
+    if(WIN32)
+        target_link_libraries(speech_core_llm_ollama PRIVATE ws2_32)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -280,7 +319,8 @@ if(SPEECH_CORE_BUILD_TESTS)
         # LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
            OR TEST_NAME STREQUAL "test_hf_download"
-           OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli")
+           OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
+           OR TEST_NAME STREQUAL "test_ollama_llm")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -370,6 +410,24 @@ if(SPEECH_CORE_BUILD_TESTS)
                 SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         endif()
     endif()
+
+    # Ollama LLM unit + opt-in integration test — runs against an in-process
+    # httplib mock server, no real Ollama required for the default suite.
+    if(SPEECH_CORE_WITH_OLLAMA AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ollama_llm.cpp)
+        add_executable(test_ollama_llm tests/test_ollama_llm.cpp)
+        target_link_libraries(test_ollama_llm PRIVATE speech_core_llm_ollama)
+        target_include_directories(test_ollama_llm PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        if(MSVC)
+            target_compile_definitions(test_ollama_llm PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+        endif()
+        if(WIN32)
+            target_link_libraries(test_ollama_llm PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_ollama_llm COMMAND test_ollama_llm)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -382,6 +440,9 @@ if(SPEECH_CORE_WITH_ONNX)
 endif()
 if(SPEECH_CORE_WITH_LITERT)
     list(APPEND _install_targets speech_core_models_litert)
+endif()
+if(SPEECH_CORE_WITH_OLLAMA)
+    list(APPEND _install_targets speech_core_llm_ollama)
 endif()
 
 install(TARGETS ${_install_targets}
