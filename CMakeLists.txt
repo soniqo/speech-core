@@ -276,9 +276,11 @@ if(SPEECH_CORE_BUILD_TESTS)
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         # test_models.cpp needs ORT — handled below when SPEECH_CORE_WITH_ONNX=ON.
-        # test_litert_models.cpp needs LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
+        # test_litert_models.cpp / test_litert_voxcpm2_clone_cli.cpp need
+        # LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
-           OR TEST_NAME STREQUAL "test_hf_download")
+           OR TEST_NAME STREQUAL "test_hf_download"
+           OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -345,6 +347,20 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_litert_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_litert_models COMMAND test_litert_models)
+
+        # CLI-boundary tests for speech_voxcpm2_clone — these spawn the real
+        # executable so OS argv encoding is part of the test surface (a
+        # Windows active-code-page conversion once turned a Devanagari text
+        # argument into '?', invisible to every in-process test). The ASR
+        # roundtrip layer skips unless SPEECH_LITERT_MODEL_DIR is set.
+        if(NOT ANDROID)
+            add_executable(test_litert_voxcpm2_clone_cli tests/test_litert_voxcpm2_clone_cli.cpp)
+            target_link_libraries(test_litert_voxcpm2_clone_cli PRIVATE speech_core_models_litert)
+            target_compile_definitions(test_litert_voxcpm2_clone_cli PRIVATE
+                SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+            add_dependencies(test_litert_voxcpm2_clone_cli speech_voxcpm2_clone)
+            add_test(NAME test_litert_voxcpm2_clone_cli COMMAND test_litert_voxcpm2_clone_cli)
+        endif()
 
         # CPU STT micro-benchmark (not registered as a ctest — perf tool only).
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_litert_stt.cpp)

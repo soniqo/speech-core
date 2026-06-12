@@ -12,15 +12,23 @@
 //   ref.wav     : reference speaker clip (mono/stereo PCM-16 WAV, any rate;
 //                 resampled to 16 kHz and trimmed/padded to 6.4 s internally)
 //   instruction : optional style prefix, e.g. "calm, clear delivery"
+//                 (default: none — style conditioning shifts the clone away
+//                 from the reference delivery)
 //   max_steps   : optional AR step cap (default 256, ~40 s ceiling)
+//   seed        : optional RNG seed for bit-reproducible renders (default:
+//                 fresh random seed; the value used is printed either way,
+//                 so any render can be reproduced after the fact)
 //
 // Pairs with speech_transcribe for a clone → ASR round-trip sanity check.
 
 #include <speech_core/models/litert_voxcpm2_tts.h>
 
+#include "../common/utf8_args.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -32,7 +40,9 @@ constexpr int kOutSampleRate = 48000;
 // Minimal mono-float loader for a canonical PCM-16 RIFF/WAVE file. Multi-channel
 // input is down-mixed by averaging. Returns false on any parse failure.
 bool load_wav_mono(const std::string& path, std::vector<float>& out, int& sample_rate) {
-    std::ifstream f(path, std::ios::binary);
+    // u8path: argv is UTF-8 (see utf8_args.h); MSVC's char* ifstream overload
+    // would reinterpret it through the active code page.
+    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
     if (!f) { std::fprintf(stderr, "cannot open %s\n", path.c_str()); return false; }
 
     char riff[4], wave[4];
@@ -87,7 +97,7 @@ bool load_wav_mono(const std::string& path, std::vector<float>& out, int& sample
 }
 
 bool write_wav(const std::string& path, const float* samples, size_t count, int rate) {
-    std::ofstream f(path, std::ios::binary);
+    std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
     if (!f) return false;
     auto put32 = [&](uint32_t v) {
         char b[4] = {char(v & 0xFF), char((v >> 8) & 0xFF),
@@ -121,19 +131,27 @@ bool write_wav(const std::string& path, const float* samples, size_t count, int 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 5) {
+    // UTF-8 argv: on Windows the default char** conversion goes through the
+    // active code page and turns non-Latin text into '?' — the field report
+    // behind this was a Hindi clone where the model was literally asked to
+    // speak fourteen question marks.
+    const std::vector<std::string> args = speech_examples::utf8_args(argc, argv);
+    if (args.size() < 5) {
         std::fprintf(stderr,
             "usage: %s <bundle_dir> <ref.wav> \"<text>\" <out.wav> "
-            "[instruction] [max_steps]\n",
-            argv[0]);
+            "[instruction] [max_steps] [seed]\n",
+            args.empty() ? "speech_voxcpm2_clone" : args[0].c_str());
         return 2;
     }
-    const std::string bundle      = argv[1];
-    const std::string ref_wav     = argv[2];
-    const std::string text        = argv[3];
-    const std::string out_wav     = argv[4];
-    const std::string instruction = (argc >= 6) ? argv[5] : "clear, natural delivery";
-    const int         max_steps   = (argc >= 7) ? std::atoi(argv[6]) : 256;
+    const std::string bundle      = args[1];
+    const std::string ref_wav     = args[2];
+    const std::string text        = args[3];
+    const std::string out_wav     = args[4];
+    // No default style instruction: conditioning on an (English) style line
+    // measurably shifts a non-English clone away from the reference voice.
+    const std::string instruction = (args.size() >= 6) ? args[5] : "";
+    const int         max_steps   = (args.size() >= 7) ? std::atoi(args[6].c_str()) : 256;
+    const long        seed        = (args.size() >= 8) ? std::atol(args[7].c_str()) : 0;
 
     const bool no_ref = (ref_wav == "none");
     std::vector<float> ref;
@@ -157,7 +175,27 @@ int main(int argc, char** argv) {
 
         if (!instruction.empty()) tts.set_instruction(instruction);
         tts.set_max_steps(max_steps);
-        tts.set_min_steps_before_stop(32);
+        // Floor under the model's stop signal, scaled with word count.
+        // VoxCPM2 fires its stop token prematurely on long non-Latin-script
+        // lines (~2.1 steps/word measured), but a flat floor pins short
+        // texts past their natural end and the AR fills the gap with babble
+        // (a 4-word Hindi line at the old flat 32-step floor rendered ~6 s of
+        // mostly noise). ~2.5 steps/word sits above the false-stop rate and
+        // below a natural full read (~2.5-3 steps/word). Whitespace word
+        // count: an undelimited line counts as one word and keeps the
+        // 8-step minimum.
+        int words = 0;
+        bool in_word = false;
+        for (const char c : text) {
+            const bool ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (!ws && !in_word) { ++words; in_word = true; }
+            if (ws) in_word = false;
+        }
+        int min_stop = words * 5 / 2;
+        if (min_stop < 8) min_stop = 8;
+        if (min_stop > max_steps - 16) min_stop = max_steps - 16;
+        tts.set_min_steps_before_stop(min_stop);
+        if (seed > 0) tts.set_seed(static_cast<uint32_t>(seed));
         if (!no_ref) tts.set_reference(ref.data(), ref.size(), ref_rate);
 
         std::vector<float> audio;
@@ -176,9 +214,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "could not write %s\n", out_wav.c_str());
             return 1;
         }
-        std::fprintf(stderr, "wrote %zu samples (%.2fs @ %d Hz) to %s\n",
+        std::fprintf(stderr, "wrote %zu samples (%.2fs @ %d Hz) to %s (seed=%u)\n",
                      audio.size(), double(audio.size()) / kOutSampleRate,
-                     kOutSampleRate, out_wav.c_str());
+                     kOutSampleRate, out_wav.c_str(), tts.seed_used());
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         return 1;
