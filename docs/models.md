@@ -169,7 +169,7 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
   - `audio-encoder`: 16 kHz PCM reference clip → conditioning features
   - `audio-decoder`: latent → 48 kHz PCM output
 - **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h). Reference-audio voice cloning isn't yet surfaced through `TTSInterface` (see the paragraph above).
-- Bundle is large (~4.6 GB total). Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
+- Weights are **FP16**. INT8 weight quantization of the token-step breaks sibilants (tonal/metallic whistle — the autoregressive acoustic path needs ≥16-bit); the INT8 variant was decommissioned. Bundle is ~8.4 GB on disk, ~10 GiB RAM at load. Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 
 ## LiteRTWeSpeakerEmbedding
@@ -562,7 +562,7 @@ A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON
 ```bash
 scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel
 scripts/download_models_litert.sh           # Silero + Parakeet
-scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (~4.6 GB, optional)
+scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (FP16, ~8.4 GB, optional)
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
 cmake --build build
 SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
