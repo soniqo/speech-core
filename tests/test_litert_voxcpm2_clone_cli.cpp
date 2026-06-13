@@ -438,7 +438,12 @@ void test_cli_utf8_argv_echo() {
     std::printf("  test_cli_utf8_argv_echo ...\n");
     const std::string err_file = tmp_path("cli_test_utf8.txt");
     const std::string devanagari_ref = "मेरा-missing-fixture.wav";
-    int code = run_cli({"no-such-bundle", devanagari_ref, "hello", tmp_path("cli_test_out.wav")},
+    // bundle_dir is optional (defaults to the model cache); omit it so the
+    // Devanagari path is argv[1] = ref.wav. The fixture is missing, so the ref
+    // load fails and echoes the path before any model is touched — no models
+    // needed. (A non-existent first arg can't double as the bundle: the CLI
+    // disambiguates by std::filesystem::is_directory, so it'd be read as ref.)
+    int code = run_cli({devanagari_ref, "hello", tmp_path("cli_test_out.wav")},
                        err_file);
     REQUIRE(code == 1);
     const std::string err = read_file(err_file);
