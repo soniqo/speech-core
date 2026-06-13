@@ -314,6 +314,71 @@ public:
             }
         }
 
+        // Three-tier fallback when the hardware-EP session create fails:
+        //   (1) Originally appended GPU EP (TRT or CUDA + CUDA fallback) ✗
+        //   (2) CUDA EP only — skip TRT EP entirely.  Many TRT EP
+        //       failures (UNSUPPORTED_NODE_ATTR cascades, INVALID_NODE on
+        //       shape ops like /Tile, /OneHot used by transformer-class
+        //       graphs) throw inside TRT EP's GetSupportedList and abort
+        //       the whole session even though CUDA EP was layered
+        //       beneath. Retrying without TRT EP keeps the model on
+        //       GPU instead of falling all the way to CPU.
+        //   (3) CPU-only — last resort if even CUDA fails (no CUDA libs,
+        //       cuDNN side-load missing, etc.)
+        //
+        // We only attempt (2) when (a) the requested GPU provider was
+        // TensorRT (CUDA failures don't benefit from retry without TRT
+        // since CUDA was already the only EP), and (b) the failure was
+        // not a graph-capture failure (already handled above), and
+        // (c) the session was the hardware-EP path (nnapi=true).
+        bool trt_to_cuda_retry = (create_status != nullptr && nnapi &&
+                                  gpu_attempted &&
+                                  gpu_provider_ == OrtGpuProvider::TensorRT &&
+                                  !graph_capture_failure);
+        if (trt_to_cuda_retry) {
+            const char* msg = api_->GetErrorMessage(create_status);
+            LOGI("TensorRT EP session failed (%s), retrying with CUDA EP only",
+                 msg);
+            api_->ReleaseStatus(create_status);
+            create_status = nullptr;
+            api_->ReleaseSessionOptions(opts);
+
+            opts = nullptr;
+            ort_check(api_, api_->CreateSessionOptions(&opts));
+            api_->SetSessionGraphOptimizationLevel(opts, opt_level);
+            api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_env_allocators", "1"));
+            ort_check(api_, api_->AddSessionConfigEntry(
+                opts, "session.use_device_allocator_for_initializers", "1"));
+            if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {
+                if (skip[0] != '\0') {
+                    ort_check(api_, api_->AddSessionConfigEntry(
+                        opts, "session.disable_specific_optimizers", skip));
+                }
+            }
+
+            // Temporarily override gpu_provider_ so try_append_gpu only
+            // appends CUDA EP — not TRT + CUDA underneath.
+            OrtGpuProvider saved = gpu_provider_;
+            gpu_provider_ = OrtGpuProvider::Cuda;
+            bool cuda_attempted = try_append_gpu(opts, path,
+                                                 /*enable_cuda_graph=*/false);
+            gpu_provider_ = saved;
+
+            if (cuda_attempted) {
+                create_status = api_->CreateSession(env_, ort_path.c_str(),
+                                                    opts, &session);
+                if (create_status == nullptr) {
+                    gpu_fallback_ = true;
+                    gpu_fallback_reason_ =
+                        "TensorRT EP failed, served on CUDA EP";
+                    LOGI("CUDA EP retry succeeded for %s",
+                         path.substr(path.find_last_of('/') + 1).c_str());
+                }
+            }
+        }
+
         if (create_status != nullptr && nnapi) {
             const char* msg = api_->GetErrorMessage(create_status);
             LOGI("Hardware-EP session failed (%s), retrying CPU-only", msg);
