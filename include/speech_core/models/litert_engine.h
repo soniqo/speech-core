@@ -160,16 +160,16 @@ public:
         LiteRtModel m = nullptr;
         // LiteRT v2.1.5's LiteRtCreateModelFromFile fails on Windows for files
         // ≥ 2 GiB ("Failed to get file size" — 32-bit stat overflow). VoxCPM2's
-        // token-step graph is 2.04 GiB, so the file API can't load it. Use
+        // FP16 token-step graph is ~4.3 GiB, so the file API can't load it. Use
         // LiteRtCreateModelFromBuffer (size_t buffer_size is 64-bit) for big
         // files, falling back to the file API otherwise so most loads stay
         // unchanged. The buffer is zero-copy and must outlive the model, so
         // we retain it in the engine singleton. We also cache the buffer by
         // path: a test suite that reloads the same VoxCPM2 graphs across six
-        // wrapper instances would otherwise sink 6 × ~4.5 GiB ≈ 27 GiB of
+        // wrapper instances would otherwise sink 6 × ~8.4 GiB ≈ 50 GiB of
         // RAM (CI Linux runners have ~7 GiB and SIGKILL'd at 9 min). Caching
         // caps it at one copy per path. Threshold is well under 2 GiB so the
-        // prefill graph (1.94 GiB) also routes through the safer path on
+        // FP16 prefill graph (~4.1 GiB) also routes through the safer path on
         // Windows.
         constexpr std::uint64_t kBufferThreshold = std::uint64_t{1} << 30;  // 1 GiB
         std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -229,10 +229,10 @@ public:
     /// this path -- the model holds a zero-copy pointer into the buffer, so
     /// freeing the buffer while a model still references it is undefined
     /// behaviour. This is the lazy-unload path used by the VoxCPM2 wrapper
-    /// to drop the ~1.9 GiB text_prefill graph between synthesize() calls,
-    /// freeing ~2 GiB of node headroom on the prod CCX23 (16 GiB total,
-    /// otherwise too cramped to host inference + Postgres + NATS + MinIO +
-    /// realtime-worker side-by-side). No-op when `path` was below the
+    /// to drop the ~4.1 GiB FP16 text_prefill graph between synthesize()
+    /// calls, freeing node headroom (the FP16 bundle needs ~10 GiB resident;
+    /// servers run the ONNX/CUDA path instead, so LiteRT is the edge/desktop
+    /// path). No-op when `path` was below the
     /// CreateModelFromBuffer threshold (1 GiB) and therefore was never
     /// retained.
     void release_buffer(const std::string& path) {
