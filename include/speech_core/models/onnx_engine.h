@@ -620,6 +620,38 @@ private:
                 // Listing them up front routes those nodes straight to
                 // CUDA from the first analysis pass — smaller TRT
                 // subgraphs, less compile memory, no error spam.
+                // SPEECH_CORE_TRT_MIN_SUBGRAPH_SIZE — minimum node count
+                // for a TRT-eligible subgraph to actually compile into a
+                // TRT engine. Default 1 (= every run becomes its own
+                // engine). Useful range: 30-200.
+                //
+                // Why: when OP_TYPES_TO_EXCLUDE is non-trivial (e.g. for
+                // VoxCPM2 token-step with 119 excluded ScatterND/OneHot/
+                // Tile nodes scattered evenly across ~5500 nodes), the
+                // partitioner produces ~120 small TRT-eligible runs
+                // separated by single-node CUDA EP islands. With the
+                // default min_subgraph_size=1, every one of those tiny
+                // runs becomes its own TRT engine. The runtime cost is
+                // dominated by cross-stream synchronisation at each
+                // TRT↔CUDA boundary — empirically deadlocks at first
+                // Run() on autoregressive loops.
+                //
+                // Raising the threshold collapses sub-threshold runs back
+                // to CUDA EP, leaving only the LARGE TRT subgraphs the
+                // INT8 fusion actually pays off on. ORT's
+                // trt_min_subgraph_size option does exactly this — it was
+                // just not threaded through here. 50 is a sensible start
+                // for VoxCPM2 token-step (collapses ~55 mid-size runs).
+                std::string min_sg_str;
+                if (const char* msz = std::getenv("SPEECH_CORE_TRT_MIN_SUBGRAPH_SIZE")) {
+                    long long n = std::atoll(msz);
+                    if (n > 0) {
+                        min_sg_str = std::to_string(n);
+                        keys.push_back("trt_min_subgraph_size");
+                        vals.push_back(min_sg_str.c_str());
+                    }
+                }
+
                 if (const char* exc = std::getenv("SPEECH_CORE_TRT_OP_TYPES_TO_EXCLUDE")) {
                     if (exc[0] != '\0') {
                         keys.push_back("trt_op_types_to_exclude");
