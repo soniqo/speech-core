@@ -322,7 +322,8 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
-           OR TEST_NAME STREQUAL "test_fdb_bench_smoke")
+           OR TEST_NAME STREQUAL "test_fdb_bench_smoke"
+           OR TEST_NAME STREQUAL "test_fdb_summary")
             continue()
         endif()
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -513,6 +514,39 @@ if(SPEECH_CORE_BUILD_TESTS)
                 target_link_libraries(test_fdb_bench_smoke PRIVATE ws2_32)
             endif()
             add_test(NAME test_fdb_bench_smoke COMMAND test_fdb_bench_smoke)
+        endif()
+    endif()
+
+    # fdb_summary — M3 post-processor that reads <out-dir>/*.json from
+    # fdb_bench and emits a single per-bucket CSV (p50/p90/p99 of
+    # stt/llm/tts/ttft/total). Gated identically to fdb_bench.
+    if(SPEECH_CORE_WITH_OLLAMA AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench/fdb_summary.cpp)
+        add_executable(fdb_summary
+            examples/fdb_bench/fdb_summary.cpp
+            examples/fdb_bench/fdb_summary_lib.cpp
+        )
+        target_include_directories(fdb_summary PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        target_link_libraries(fdb_summary PRIVATE speech_core)
+        if(MSVC)
+            target_compile_definitions(fdb_summary PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+        endif()
+
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fdb_summary.cpp)
+            add_executable(test_fdb_summary
+                tests/test_fdb_summary.cpp
+                examples/fdb_bench/fdb_summary_lib.cpp)
+            target_include_directories(test_fdb_summary PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/fdb_bench
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+            target_link_libraries(test_fdb_summary PRIVATE speech_core)
+            if(MSVC)
+                target_compile_definitions(test_fdb_summary PRIVATE
+                    _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+            endif()
+            add_test(NAME test_fdb_summary COMMAND test_fdb_summary)
         endif()
     endif()
 endif()

@@ -409,7 +409,8 @@ SampleResult process_one_sample(
         tts_pcm16.data(), tts_pcm16.size());
     int out_rate = tts.output_sample_rate();
     fs::create_directories(out_dir);
-    std::string wav_out = out_dir + "/" + s.sample_id + ".wav";
+    std::string wav_out = out_dir + "/" + s.category_dir_name +
+                          "__" + s.sample_id + ".wav";
     fdb_bench::write_wav_mono_pcm16(wav_out, float_audio.data(),
                                     float_audio.size(), out_rate);
 
@@ -447,7 +448,9 @@ void write_sample_json(const std::string& path,
             << json_escape(fdb_bench::FdbCorpus::extract_ground_truth_transcript(s.transcription_path))
             << "\",\n"
        << "  \"agent_transcript_input\": \"" << json_escape(r.agent_transcript_input) << "\",\n"
-       << "  \"output_wav\": \""       << json_escape(s.sample_id + ".wav") << "\",\n"
+       << "  \"output_wav\": \""
+            << json_escape(s.category_dir_name + "__" + s.sample_id + ".wav")
+            << "\",\n"
        << "  \"output_duration_sec\": " << r.output_duration_sec << ",\n"
        << "  \"output_sample_rate\": "  << r.output_sample_rate << ",\n"
        << "  \"timings_ms\": {\n"
@@ -571,7 +574,8 @@ int main(int argc, char** argv) {
                          r.error.empty() ? "(no error message)" : r.error.c_str());
         }
 
-        std::string json_out = args.out_dir + "/" + s.sample_id + ".json";
+        std::string json_out = args.out_dir + "/" + s.category_dir_name +
+                               "__" + s.sample_id + ".json";
         write_sample_json(json_out, s, r, args.stt, args.tts, args.llm_model,
                           in_dur);
     }
