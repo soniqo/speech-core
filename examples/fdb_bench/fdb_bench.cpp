@@ -333,6 +333,15 @@ SampleResult process_one_sample(
     cfg.min_interruption_duration = 0.0f;
     cfg.post_playback_guard = 0.0f;
     cfg.max_response_duration = 60.0f;
+    // Disable max-utterance force-split. FDB samples can run 20-30 s of
+    // real speech (Candor monologues, long interruption contexts); the
+    // default 15 s force-split would emit a spurious second
+    // UserSpeechStarted via streaming_vad_ reset, and the next worker-
+    // thread set_agent_speaking(true) inside process_utterance would
+    // arm the retroactive interruption path and cancel the LLM call.
+    // Benchmark replay has a known-bounded input length, so we don't
+    // need force-split protection here.
+    cfg.max_utterance_duration = 0.0f;
 
     vad.reset();
     vad.probs = make_vad_script_for_audio(audio16k.size(), vad.chunk_size());
