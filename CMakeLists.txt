@@ -498,6 +498,13 @@ if(SPEECH_CORE_BUILD_TESTS)
                 PRIVATE speech_core speech_core_llm_ollama)
             target_compile_definitions(test_fdb_bench_smoke PRIVATE
                 SPEECH_CORE_FDB_MINI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/fdb_mini/v1_0")
+            if(SPEECH_CORE_WITH_ONNX)
+                target_link_libraries(test_fdb_bench_smoke
+                    PRIVATE speech_core_models)
+                target_compile_definitions(test_fdb_bench_smoke PRIVATE
+                    SPEECH_CORE_FDB_WITH_ONNX
+                    SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+            endif()
             if(MSVC)
                 target_compile_definitions(test_fdb_bench_smoke PRIVATE
                     _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
