@@ -233,7 +233,10 @@ jobs:
       - name: Download ONNX Runtime (aarch64)
         run: |
           ./examples/linux/setup_linux.sh aarch64
-          file ort-linux/lib/libonnxruntime.so | grep -q "aarch64"
+          # -L: libonnxruntime.so is now a symlink into the versioned .so
+          # (setup_linux.sh preserves the chain for packaging); follow it so
+          # `file` reports the ELF arch, not "symbolic link to ...".
+          file -L ort-linux/lib/libonnxruntime.so | grep -q "aarch64"
 
       - name: Configure
         run: |

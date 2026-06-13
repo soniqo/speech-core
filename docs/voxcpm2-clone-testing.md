@@ -53,13 +53,16 @@ On Windows, copy `libLiteRt.dll` next to the executables in `build\Release\`.
 
 Run the same text through both references:
 
-```bash
-BUNDLE=scripts/models-litert
+`bundle_dir` is optional: omit it and the CLI reads `$SPEECH_LITERT_MODEL_DIR`
+(else the per-user cache dir). An explicit first-arg directory still wins.
 
-./build/speech_voxcpm2_clone "$BUNDLE" quiet_ref.wav \
+```bash
+export SPEECH_LITERT_MODEL_DIR=scripts/models-litert
+
+./build/speech_voxcpm2_clone quiet_ref.wav \
     "The quick brown fox jumps over the lazy dog" out_quiet.wav
 
-./build/speech_voxcpm2_clone "$BUNDLE" tests/data/test_audio.wav \
+./build/speech_voxcpm2_clone tests/data/test_audio.wav \
     "The quick brown fox jumps over the lazy dog" out_healthy.wav
 ```
 

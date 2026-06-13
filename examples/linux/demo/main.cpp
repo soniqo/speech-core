@@ -1,9 +1,12 @@
 #include "speech.h"
 
+#include "../../common/default_model_dir.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
+#include <string>
 #include <unistd.h>
 
 #ifdef HAS_ALSA
@@ -40,10 +43,14 @@ static void on_event(const speech_event_t* event, void* /*ctx*/) {
 }
 
 static void print_usage(const char* prog) {
-    fprintf(stderr, "Usage: %s --model-dir <path> [--qnn] [--transcribe-only] [--device <alsa_dev>]\n", prog);
+    fprintf(stderr,
+        "Usage: %s [--model-dir <path>] [--qnn] [--transcribe-only] [--device <alsa_dev>]\n"
+        "  --model-dir defaults to $SPEECH_MODEL_DIR, else %s\n",
+        prog, speech_example_model_dir().c_str());
 }
 
 int main(int argc, char* argv[]) {
+    std::string model_dir_storage;
     const char* model_dir = nullptr;
     const char* alsa_device = "default";
     bool use_qnn = false;
@@ -65,8 +72,8 @@ int main(int argc, char* argv[]) {
     }
 
     if (!model_dir) {
-        print_usage(argv[0]);
-        return 1;
+        model_dir_storage = speech_example_model_dir();
+        model_dir = model_dir_storage.c_str();
     }
 
     fprintf(stderr, "speech-linux %s\n", speech_version());

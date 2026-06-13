@@ -208,6 +208,33 @@ LiteRT 头文件随仓库内置于 `third_party/litert/`（无需额外配置）
 
 **设备端模型下载（可选）。** 添加 `-DSPEECH_CORE_WITH_HF_DOWNLOAD=ON` 可在首次使用时从 Hugging Face 拉取模型 bundle，免去手动配置。该选项链接 libcurl（`find_package(CURL)` —— Linux/macOS 使用系统 libcurl，Windows 使用 vcpkg），并为 [VoxCPM2 C ABI](include/speech_core/voxcpm2_c.h) 增加 `sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", …)`：可恢复、可重试的下载（HTTP Range、原子重命名），容忍网络中断，缓存在系统缓存目录（`SPEECH_CORE_CACHE_DIR` 可覆盖；`HF_ENDPOINT` 可使用镜像）。默认关闭，嵌入式/离线构建不会引入 HTTP/TLS 依赖。`hf_fetch` 调试 CLI 可直接演练该流程。
 
+### 在 Linux 上安装（预编译 `speech` 软件包）
+
+每个 release 都附带 `.deb` 和 `.tar.gz` 软件包，内含 CLI 工具
+（`speech_transcribe`、`speech_synthesize`、`speech_phonemize`、`speech_demo`，
+amd64 还包含声音克隆 CLI `speech_voxcpm2_clone`），并将
+`libonnxruntime.so` / `libLiteRt.so` 一并打包在 `/usr/lib/speech/` 下 ——
+无需额外的运行时配置：
+
+```bash
+# amd64（arm64：speech_VERSION_arm64.deb —— 仅含 transcribe/synthesize/phonemize）
+curl -LO https://github.com/soniqo/speech-core/releases/latest/download/speech_VERSION_amd64.deb
+sudo apt install ./speech_VERSION_amd64.deb
+
+speech download-models           # ONNX 模型集 → ~/.cache/speech-core/models（约 1.2 GB）
+speech transcribe input.wav      # 与 speech-swift 的 `brew install speech` 相同的子命令式 CLI
+speech speak "Hello world"
+```
+
+`speech` 命令会分发到独立的 `speech_<command>` 可执行文件
+（`speech_transcribe`、`speech_synthesize` 等），后者提供更多选项。
+
+软件包不含任何模型。工具按 `$SPEECH_MODEL_DIR`（LiteRT 为
+`$SPEECH_LITERT_MODEL_DIR`）查找模型，未设置时回退到
+`speech_download_models` / `speech_download_models_litert` 填充的用户缓存目录；
+显式传入的模型目录参数始终优先。要求 Ubuntu 22.04+ / Debian 12+
+（glibc ≥ 2.35）。
+
 ## 测试与 CI
 
 ```bash

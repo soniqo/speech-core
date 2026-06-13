@@ -1,4 +1,4 @@
-name: Release XCFramework
+name: Release
 
 on:
   push:
@@ -8,6 +8,150 @@ permissions:
   contents: write
 
 jobs:
+  # Linux CLI packages — .deb + .tar.gz per arch, attached to the release.
+  # Built on ubuntu-22.04 (oldest supported glibc 2.35) so the binaries run
+  # on 22.04, 24.04 and newer. amd64 is the full package (ONNX CLI tools +
+  # LiteRT voice-cloning CLI); arm64 is cross-compiled and ONNX-only, since
+  # fetch_litert.sh resolves the host-platform wheel and the cross sysroot
+  # has no ALSA (mirrors ci.yml's linux-examples-aarch64 lane).
+  build-linux-packages:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (amd64)
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake libasound2-dev curl ca-certificates \
+              python3-pip unzip file
+
+      - name: Install cross toolchain (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              g++-aarch64-linux-gnu gcc-aarch64-linux-gnu cmake curl \
+              ca-certificates file
+
+      - name: Download ONNX Runtime
+        run: |
+          ./examples/linux/setup_linux.sh ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}
+          ls -la ort-linux/lib/
+
+      - name: Fetch LiteRT runtime (amd64)
+        if: matrix.arch == 'amd64'
+        run: |
+          ./scripts/fetch_litert.sh litert-linux
+          ls -la litert-linux/
+
+      - name: Configure (amd64)
+        if: matrix.arch == 'amd64'
+        run: |
+          cmake -B build-pkg \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_WITH_LITERT=ON \
+              -DLITERT_DIR=litert-linux \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_TESTS=OFF \
+              -DSPEECH_LINUX_BUILD_TESTS=OFF \
+              -DSPEECH_CORE_PACKAGE=ON \
+              -DSPEECH_CORE_PACKAGE_VERSION=${GITHUB_REF_NAME#v} \
+              -DORT_DIR=ort-linux
+
+      - name: Configure (arm64 cross)
+        if: matrix.arch == 'arm64'
+        run: |
+          cmake -B build-pkg \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+              -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+              -DCMAKE_SYSTEM_NAME=Linux \
+              -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_TESTS=OFF \
+              -DSPEECH_LINUX_BUILD_DEMO=OFF \
+              -DSPEECH_LINUX_BUILD_TESTS=OFF \
+              -DSPEECH_CORE_PACKAGE=ON \
+              -DSPEECH_CORE_PACKAGE_VERSION=${GITHUB_REF_NAME#v} \
+              -DORT_DIR=ort-linux
+
+      - name: Build
+        run: cmake --build build-pkg --parallel
+
+      - name: Package
+        run: |
+          cd build-pkg
+          cpack -B ../dist
+          ls -la ../dist
+
+      - name: Smoke-test .deb in clean containers (amd64)
+        if: matrix.arch == 'amd64'
+        run: |
+          for img in ubuntu:22.04 ubuntu:24.04; do
+            echo "=== $img ==="
+            docker run --rm -v "$PWD/dist:/dist:ro" "$img" bash -ec '
+              apt-get update -q
+              apt-get install -yq /dist/speech_*_amd64.deb
+              for exe in speech_transcribe speech_synthesize speech_phonemize \
+                         speech_voxcpm2_clone speech_demo; do
+                echo "--- ldd $exe"
+                test -x "/usr/bin/$exe" || { echo "MISSING $exe"; exit 1; }
+                if ldd /usr/bin/$exe | grep "not found"; then
+                  echo "UNRESOLVED LIBS in $exe"; exit 1
+                fi
+              done
+              for sh in speech_download_models speech_download_models_litert speech; do
+                test -x "/usr/bin/$sh" || { echo "MISSING $sh"; exit 1; }
+              done
+              # Multiplexer dispatch must reach the real binaries.
+              /usr/bin/speech --help | grep -q transcribe
+              out=$(/usr/bin/speech phonemize 2>&1 | head -2 || true)
+              [ -n "$out" ] || { echo "speech phonemize dispatch failed"; exit 1; }
+              # Usage exits are non-zero by design; assert the binaries load
+              # far enough to print *something* (a crash prints nothing).
+              out=$(/usr/bin/speech_phonemize 2>&1 | head -2 || true)
+              [ -n "$out" ] || { echo "speech_phonemize produced no output"; exit 1; }
+              out=$(/usr/bin/speech_voxcpm2_clone 2>&1 | head -2 || true)
+              [ -n "$out" ] || { echo "speech_voxcpm2_clone produced no output"; exit 1; }
+              echo SMOKE-OK
+            '
+          done
+
+      - name: Verify arm64 artefacts (cross — no execution possible)
+        if: matrix.arch == 'arm64'
+        run: |
+          # The .deb can't be installed on the x86_64 runner; assert the staged
+          # binaries are really aarch64 and carry the packaging RPATH.
+          for exe in build-pkg/examples/linux/speech_transcribe \
+                     build-pkg/examples/linux/speech_synthesize \
+                     build-pkg/examples/linux/speech_phonemize; do
+            file "$exe" | tee /dev/stderr | grep -q "aarch64"
+            readelf -d "$exe" | tee /dev/stderr | grep -E "RUNPATH|RPATH" | grep -q '\$ORIGIN/../lib'
+          done
+          dpkg -c dist/speech_*_arm64.deb | grep -E "bin/|lib/" | head -30
+
+      # Pure asset upload — never PATCHes the release body, so it can't race
+      # the xcframework job's checksum notes (gh release upload only POSTs to
+      # the asset endpoint). The empty-notes create is a no-op if the release
+      # already exists; --clobber makes re-runs idempotent.
+      - name: Attach packages to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --notes "" || true
+          gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/*.tar.gz --clobber
+
   build-xcframework:
     runs-on: macos-latest
 

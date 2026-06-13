@@ -9,7 +9,15 @@
 set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo"
-OUT="${1:-$(dirname "$0")/models}"
+# Default output: repo-relative scripts/models when run from a writable
+# checkout; the per-user cache dir when run from a read-only install location
+# (e.g. /usr/bin/speech_download_models from the .deb). $SPEECH_MODEL_DIR
+# overrides either — it is also where the installed CLIs look by default.
+DEFAULT_OUT="$(dirname "$0")/models"
+if [ ! -w "$(dirname "$0")" ]; then
+    DEFAULT_OUT="${XDG_CACHE_HOME:-$HOME/.cache}/speech-core/models"
+fi
+OUT="${1:-${SPEECH_MODEL_DIR:-$DEFAULT_OUT}}"
 mkdir -p "$OUT/voices"
 
 FILES=(

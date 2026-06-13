@@ -2,25 +2,35 @@
 // produces for a piece of text. Used to verify text→phoneme conversion is
 // correct before blaming the TTS model.
 //
-// Usage: speech_phonemize <model_dir> "<text>" [language]
+// Usage: speech_phonemize [model_dir] "<text>" [language]
 
 #include <speech_core/models/kokoro_phonemizer.h>
 
+#include "../../common/default_model_dir.h"
+
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
+    if (argc < 2) {
         std::fprintf(stderr,
-            "usage: %s <model_dir> \"<text>\" [language]\n"
+            "usage: %s [model_dir] \"<text>\" [language]\n"
             "  model_dir : directory holding vocab_index.json + dictionaries\n"
+            "              (default: $SPEECH_MODEL_DIR, else %s)\n"
             "  language  : BCP-47 tag (default: en)\n",
-            argv[0]);
+            argv[0], speech_example_model_dir().c_str());
         return 2;
     }
-    const std::string model_dir = argv[1];
-    const std::string text      = argv[2];
-    const std::string language  = (argc >= 4) ? argv[3] : "en";
+    // model_dir is optional. With 3 args, <model_dir> <text> and
+    // <text> <language> are both plausible — disambiguate by whether argv[1]
+    // is an existing directory.
+    const bool has_dir = (argc >= 4)
+        || (argc == 3 && std::filesystem::is_directory(argv[1]));
+    const int base = has_dir ? 2 : 1;
+    const std::string model_dir = has_dir ? argv[1] : speech_example_model_dir();
+    const std::string text      = argv[base];
+    const std::string language  = (argc >= base + 2) ? argv[base + 1] : "en";
 
     speech_core::KokoroPhonemizer p;
     if (!p.load_vocab(model_dir + "/vocab_index.json")) {
