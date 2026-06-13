@@ -407,14 +407,16 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
     };
 
     // The Parakeet-TDT-0.6B-ONNX v3 decoder/joint expects INT32 for both
-    // `targets` (previous token) and `prednet_lengths_orig` (target len).
-    // An earlier export used INT64; the current published model on
-    // soniqo/Parakeet-TDT-0.6B-ONNX is INT32, so the runtime would die
-    // at decoder_joint with:
+    // `targets` (previous token) and `target_length` (target len).
+    // The older soniqo/Parakeet-TDT-v3-ONNX export used INT64 for these
+    // (and named the length input `prednet_lengths_orig`); the current
+    // soniqo/Parakeet-TDT-0.6B-ONNX export is INT32 + `target_length`, so
+    // the runtime would die at decoder_joint with:
     //   ORT: Unexpected input data type. Actual: (tensor(int64)) ,
     //        expected: (tensor(int32))
-    // Encoder length tensors (further up) intentionally stay INT64 —
-    // those inputs DID stay INT64 in the re-export.
+    // Input names are pinned in the in_names[] note below. Encoder length
+    // tensors (further up) intentionally stay INT64 — those DID stay INT64
+    // in the re-export.
     int32_t prev_token = static_cast<int32_t>(cfg_.blank_id);
     int64_t t = 0;
 

@@ -111,7 +111,7 @@ auto result = stt.transcribe(audio, length, 16000);
 - Greedy TDT decoding with per-frame duration prediction
 - Language detection via `<|xx|>` BPE tokens
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
-- Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64 — see `parakeet-encoder/decoder-joint` recent fixes for the v3 export contract.
+- Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64.
 
 ## LiteRTSileroVad
 
