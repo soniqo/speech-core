@@ -545,7 +545,72 @@ private:
         const char* fname = path.c_str() + path.find_last_of('/') + 1;
         bool appended = false;
 
-        if (gpu_provider_ == OrtGpuProvider::TensorRT) {
+        // SPEECH_CORE_TRT_DISABLED_MODELS — comma-separated list of model
+        // filename basenames (with or without .onnx extension) that should
+        // load on CUDA EP even when ORT_PROVIDER=tensorrt. For sessions
+        // where IoBinding patterns or other runtime constraints make TRT
+        // EP incompatible even when the graph itself imports cleanly.
+        //
+        // Why this exists: TRT EP + IoBinding-with-CUDA-allocator deadlock
+        // in autoregressive loops. VoxCPM2's token-step wraps Run() in
+        // IoBinding pinned to OrtMemTypeDefault on a CUDA device. TRT
+        // subgraph outputs land in TRT's own allocator; the boundary memcpy
+        // back to the IoBinding-pinned CUDA buffer never gets established
+        // and Run() blocks on cudaStreamSynchronize forever. The other
+        // VoxCPM2 sessions (text_prefill, audio_encoder, audio_decoder)
+        // use plain api_->Run() without IoBinding so TRT EP is fine there.
+        //
+        // SPEECH_CORE_TRT_DISABLED_MODELS=voxcpm2-token-step lets
+        // text_prefill + audio_* benefit from TRT INT8 fusion while
+        // token_step stays on the IoBinding-friendly CUDA EP.
+        //
+        // Matching: case-sensitive exact basename match against `fname`,
+        // with optional .onnx extension on either side stripped before
+        // comparison. Comma-separated, whitespace-trimmed. The override
+        // is per-session (this call only) — gpu_provider_ stays
+        // OrtGpuProvider::TensorRT for subsequent loads.
+        OrtGpuProvider effective_provider = gpu_provider_;
+        if (effective_provider == OrtGpuProvider::TensorRT) {
+            if (const char* disabled = std::getenv("SPEECH_CORE_TRT_DISABLED_MODELS")) {
+                if (disabled[0] != '\0') {
+                    std::string fn(fname);
+                    std::string fn_stem = fn;
+                    if (fn_stem.size() > 5 &&
+                        fn_stem.compare(fn_stem.size() - 5, 5, ".onnx") == 0) {
+                        fn_stem.resize(fn_stem.size() - 5);
+                    }
+                    std::string list(disabled);
+                    size_t pos = 0;
+                    while (pos < list.size()) {
+                        size_t comma = list.find(',', pos);
+                        if (comma == std::string::npos) comma = list.size();
+                        std::string entry = list.substr(pos, comma - pos);
+                        while (!entry.empty() &&
+                               (entry.front() == ' ' || entry.front() == '\t')) {
+                            entry.erase(0, 1);
+                        }
+                        while (!entry.empty() &&
+                               (entry.back() == ' ' || entry.back() == '\t')) {
+                            entry.pop_back();
+                        }
+                        if (entry.size() > 5 &&
+                            entry.compare(entry.size() - 5, 5, ".onnx") == 0) {
+                            entry.resize(entry.size() - 5);
+                        }
+                        if (!entry.empty() && entry == fn_stem) {
+                            LOGI("TensorRT EP disabled for %s via "
+                                 "SPEECH_CORE_TRT_DISABLED_MODELS — "
+                                 "using CUDA EP", fname);
+                            effective_provider = OrtGpuProvider::Cuda;
+                            break;
+                        }
+                        pos = comma + 1;
+                    }
+                }
+            }
+        }
+
+        if (effective_provider == OrtGpuProvider::TensorRT) {
             OrtTensorRTProviderOptionsV2* trt = nullptr;
             OrtStatus* cs = api_->CreateTensorRTProviderOptions(&trt);
             if (cs == nullptr && trt != nullptr) {
