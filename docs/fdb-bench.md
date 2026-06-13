@@ -21,12 +21,15 @@ In:
 
 Out:
 
-- M2 — real STT/TTS (`--stt parakeet`, `--tts kokoro`) is wired but
-  requires `SPEECH_CORE_WITH_ONNX=ON` and model files; treated as a
-  follow-up.
 - M3 — per-run summary CSV.
 - M4 — bridge to the upstream Python eval scripts (CrisperWhisper +
   JSD / pause-handling metrics).
+
+M2 (done) — real STT/TTS (`--stt parakeet`, `--tts kokoro`) is now
+usable when built with `-DSPEECH_CORE_WITH_ONNX=ON`. Point at a flat
+models directory (the layout produced by `scripts/download_models.sh`)
+via `--models-dir`, or override per-family with `--parakeet-dir` /
+`--kokoro-dir`.
 
 ## What FDB is
 
@@ -101,7 +104,19 @@ CI-style mock run against the fixture:
         --out-dir /tmp/fdb_out \
         --llm-model llama3.2:1b
 
-One category through the full real pipeline:
+One category through the full real pipeline (single flat models dir
+matching `scripts/download_models.sh`):
+
+    ./build/fdb_bench \
+        --corpus-dir /path/to/v1_0 \
+        --out-dir /tmp/fdb_out \
+        --llm-model qwen2.5:7b \
+        --stt parakeet --tts kokoro \
+        --models-dir ./scripts/models \
+        --category candor_pause_handling \
+        --limit 50
+
+Or with separate per-family directories:
 
     ./build/fdb_bench \
         --corpus-dir /path/to/v1_0 \
@@ -113,6 +128,23 @@ One category through the full real pipeline:
         --limit 50
 
 Run `./build/fdb_bench --help` for the full flag list.
+
+## Smoke vs. real-models integration test
+
+`test_fdb_bench_smoke` always runs the mock-backend smoke (no model
+files, no ORT). When built with `-DSPEECH_CORE_WITH_ONNX=ON` it
+additionally compiles an opt-in `real_models_integration` block that
+loads Parakeet + Kokoro + Silero from `$SPEECH_MODEL_DIR` and runs a
+single real-speech sample (`tests/data/test_audio.wav`) through the
+same per-sample driver path. It is **skipped silently** unless both env
+vars are set:
+
+    SPEECH_FDB_BENCH_INTEGRATION=1 \
+    SPEECH_MODEL_DIR=$PWD/scripts/models \
+    ctest --test-dir build -R test_fdb_bench_smoke --output-on-failure
+
+Per-file skips also kick in if specific `.onnx` files are missing, so
+partial model installs don't fail the test.
 
 ## Output layout
 
@@ -154,10 +186,12 @@ Final stdout line:
 
     fdb_bench: samples_ok=N errors=M avg_ttft_ms=X out_dir=...
 
-## How M2-M4 layer on top
+## How M3-M4 layer on top
 
-- **M2** — drop `--stt parakeet` / `--tts kokoro` defaults once latency
-  and quality are validated against a small corpus subset. No CLI break.
+- **M2 (done)** — `--stt parakeet` / `--tts kokoro` build out when
+  `SPEECH_CORE_WITH_ONNX=ON`; `--models-dir` shortcut matches the
+  `scripts/download_models.sh` layout; opt-in `real_models_integration`
+  smoke test verifies the path.
 - **M3** — post-process `<out-dir>/*.json` into a single summary CSV
   (`fdb_summary.csv`) suitable for one-line CI assertions and trend
   tracking across runs.

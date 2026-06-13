@@ -19,6 +19,12 @@
 #include "speech_core/llm/ollama_llm.h"
 #include "speech_core/pipeline/voice_pipeline.h"
 
+#ifdef SPEECH_CORE_FDB_WITH_ONNX
+#  include "speech_core/models/parakeet_stt.h"
+#  include "speech_core/models/kokoro_tts.h"
+#  include "speech_core/models/silero_vad.h"
+#endif
+
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
@@ -388,6 +394,156 @@ void test_smoke_driver_with_mock_ollama() {
                 samples.size(), server.request_count());
 }
 
+#ifdef SPEECH_CORE_FDB_WITH_ONNX
+// Opt-in integration test — loads real Parakeet STT + Kokoro TTS + Silero
+// VAD from SPEECH_MODEL_DIR and runs one real-speech sample through the
+// same per-sample driver path the unit smoke uses. Skipped silently
+// unless SPEECH_FDB_BENCH_INTEGRATION=1 is set and the model files
+// exist on disk.
+void test_real_models_integration() {
+    const char* enabled = std::getenv("SPEECH_FDB_BENCH_INTEGRATION");
+    if (!enabled || std::string(enabled) != "1") {
+        std::printf("  SKIP: real_models_integration "
+                    "(set SPEECH_FDB_BENCH_INTEGRATION=1 to enable)\n");
+        return;
+    }
+    const char* dir_env = std::getenv("SPEECH_MODEL_DIR");
+    std::string dir = dir_env ? dir_env : "";
+    if (dir.empty()) {
+        std::printf("  SKIP: real_models_integration — "
+                    "SPEECH_MODEL_DIR unset\n");
+        return;
+    }
+    const std::string enc   = dir + "/parakeet-encoder-int8.onnx";
+    const std::string dec   = dir + "/parakeet-decoder-joint-int8.onnx";
+    const std::string vocab = dir + "/vocab.json";
+    const std::string vad_m = dir + "/silero-vad.onnx";
+    const std::string kok_m = dir + "/kokoro-e2e.onnx";
+
+    auto path_exists = [](const std::string& p) {
+        std::error_code ec;
+        return fs::exists(p, ec);
+    };
+    if (!path_exists(enc) || !path_exists(dec) || !path_exists(vocab) ||
+        !path_exists(vad_m) || !path_exists(kok_m)) {
+        std::printf("  SKIP: real_models_integration — model files "
+                    "missing in %s\n", dir.c_str());
+        return;
+    }
+    const std::string sample_wav =
+        std::string(SPEECH_CORE_TEST_DATA_DIR) + "/test_audio.wav";
+    if (!path_exists(sample_wav)) {
+        std::printf("  SKIP: real_models_integration — %s missing\n",
+                    sample_wav.c_str());
+        return;
+    }
+
+    // Mock Ollama (real model integration is about STT/TTS, not LLM).
+    MockOllama server([](const nlohmann::json&, httplib::DataSink& sink) {
+        for (const char* d : {"ack", " response"}) {
+            write_json_line(sink, {
+                {"model", "test"},
+                {"message", {{"role", "assistant"}, {"content", d}}},
+                {"done", false}});
+        }
+        write_json_line(sink, {
+            {"model", "test"},
+            {"message", {{"role", "assistant"}, {"content", ""}}},
+            {"done", true}, {"done_reason", "stop"}});
+    });
+    OllamaLLM::Options lopts;
+    lopts.base_url = server.base_url();
+    lopts.model    = "test";
+    OllamaLLM llm(lopts);
+
+    // Build the real backends. Silero is constructed to verify it loads
+    // even though the orchestrator below consumes the deterministic
+    // ScriptedVAD trajectory — this keeps the unit smoke deterministic
+    // and the turn boundary predictable.
+    speech_core::ParakeetStt stt(enc, dec, vocab, /*hw_accel=*/false);
+    speech_core::KokoroTts   tts(kok_m, dir + "/voices", dir,
+                                 /*hw_accel=*/false);
+    speech_core::SileroVad   real_vad(vad_m, /*hw_accel=*/false);
+    (void)real_vad;  // exercised by construction
+    ScriptedVAD vad;
+
+    fdb_bench::WavData wav;
+    assert(fdb_bench::load_wav_mono_pcm16(sample_wav, &wav));
+    std::vector<float> audio16k = (wav.sample_rate == 16000)
+        ? wav.samples
+        : Resampler::resample(wav.samples.data(), wav.samples.size(),
+                              wav.sample_rate, 16000);
+    vad.reset();
+    vad.probs = make_vad_script(audio16k.size(), vad.chunk_size());
+
+    AgentConfig cfg;
+    cfg.mode = AgentConfig::Mode::Pipeline;
+    cfg.warmup_stt = false;
+    cfg.eager_stt = false;
+    cfg.post_playback_guard = 0.0f;
+    cfg.min_interruption_duration = 0.0f;
+    cfg.max_response_duration = 60.0f;
+
+    std::vector<uint8_t> tts_pcm16;
+    std::string captured_transcript;
+    std::atomic<int> response_done{0};
+    std::atomic<int> errors{0};
+    auto cb = [&](const PipelineEvent& e) {
+        switch (e.type) {
+        case EventType::TranscriptionCompleted:
+            captured_transcript = e.text; break;
+        case EventType::ResponseAudioDelta:
+            tts_pcm16.insert(tts_pcm16.end(),
+                             e.audio_data.begin(), e.audio_data.end());
+            break;
+        case EventType::ResponseDone: response_done.fetch_add(1); break;
+        case EventType::Error:        errors.fetch_add(1); break;
+        default: break;
+        }
+    };
+
+    VoicePipeline pipe(stt, tts, &llm, vad, cfg, cb);
+    pipe.start();
+    const size_t chunk = vad.chunk_size();
+    for (size_t off = 0; off < audio16k.size(); off += chunk) {
+        size_t n = std::min(chunk, audio16k.size() - off);
+        pipe.push_audio(audio16k.data() + off, n);
+    }
+    std::vector<float> tail(chunk, 0.0f);
+    for (int i = 0; i < 12; ++i) {
+        pipe.push_audio(tail.data(), tail.size());
+    }
+    pipe.wait_idle();
+    pipe.stop();
+
+    assert(errors.load() == 0);
+    assert(response_done.load() == 1);
+    assert(!tts_pcm16.empty());
+    assert(!captured_transcript.empty() &&
+           "real Parakeet must produce a non-empty transcript");
+
+    // Round-trip the TTS output to disk to exercise the writer at the
+    // real backend's native rate.
+    auto out_dir = fs::temp_directory_path() /
+                   ("fdb_real_out_" + std::to_string(::getpid()));
+    fs::create_directories(out_dir);
+    auto float_audio = PCMCodec::pcm16_to_float(
+        tts_pcm16.data(), tts_pcm16.size());
+    std::string wav_out = (out_dir / "real_models_integration.wav").string();
+    assert(fdb_bench::write_wav_mono_pcm16(
+        wav_out, float_audio.data(), float_audio.size(),
+        tts.output_sample_rate()));
+    assert(fs::file_size(wav_out) > 44);
+
+    std::error_code ec;
+    fs::remove_all(out_dir, ec);
+
+    std::printf("  PASS: real_models_integration "
+                "(transcript=\"%s\", tts_bytes=%zu)\n",
+                captured_transcript.c_str(), tts_pcm16.size());
+}
+#endif  // SPEECH_CORE_FDB_WITH_ONNX
+
 }  // namespace
 
 int main() {
@@ -397,6 +553,9 @@ int main() {
     test_corpus_category_filter();
     test_ground_truth_transcript_extraction();
     test_smoke_driver_with_mock_ollama();
+#ifdef SPEECH_CORE_FDB_WITH_ONNX
+    test_real_models_integration();
+#endif
     std::printf("All fdb_bench smoke tests passed.\n");
     return 0;
 }

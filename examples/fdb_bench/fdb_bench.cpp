@@ -18,7 +18,6 @@
 #ifdef SPEECH_CORE_FDB_WITH_ONNX
 #  include "speech_core/models/parakeet_stt.h"
 #  include "speech_core/models/kokoro_tts.h"
-#  include "speech_core/models/silero_vad.h"
 #endif
 
 #include <atomic>
@@ -118,11 +117,20 @@ struct Args {
     std::string llm_base_url = "http://localhost:11434";
     std::string llm_model;
     size_t limit = 0;
-    std::string parakeet_dir;
-    std::string kokoro_dir;
+    std::string models_dir;     // flat scripts/models/ layout shortcut
+    std::string parakeet_dir;   // overrides models_dir for Parakeet files
+    std::string kokoro_dir;     // overrides models_dir for Kokoro files
     std::string kokoro_voice = "af_heart";
+    bool hw_accel = false;      // pass through to ORT models
     bool show_help = false;
 };
+
+std::string resolve_parakeet_dir(const Args& a) {
+    return a.parakeet_dir.empty() ? a.models_dir : a.parakeet_dir;
+}
+std::string resolve_kokoro_dir(const Args& a) {
+    return a.kokoro_dir.empty() ? a.models_dir : a.kokoro_dir;
+}
 
 void print_usage() {
     std::fprintf(stdout,
@@ -143,9 +151,14 @@ void print_usage() {
         "  --tts <backend>        mock | kokoro    (default: mock)\n"
         "  --llm-base-url <url>   default http://localhost:11434\n"
         "  --limit <N>            cap at first N samples after sort (default: no cap)\n"
-        "  --parakeet-dir <path>  required when --stt parakeet\n"
-        "  --kokoro-dir <path>    required when --tts kokoro\n"
+        "  --models-dir <path>    flat directory holding parakeet-encoder-int8.onnx,\n"
+        "                         parakeet-decoder-joint-int8.onnx, vocab.json,\n"
+        "                         kokoro-e2e.onnx (+ voices/), etc. — matches the\n"
+        "                         layout produced by scripts/download_models.sh\n"
+        "  --parakeet-dir <path>  override Parakeet location (--stt parakeet)\n"
+        "  --kokoro-dir <path>    override Kokoro location (--tts kokoro)\n"
         "  --kokoro-voice <name>  default af_heart (only --tts kokoro)\n"
+        "  --hw-accel             enable ORT hardware EP (default off, for repro)\n"
         "  -h, --help             this help\n");
 }
 
@@ -173,9 +186,11 @@ Args parse_args(int argc, char** argv) {
         else if (f == "--llm-base-url")  { a.llm_base_url = eat(i, "--llm-base-url"); }
         else if (f == "--llm-model")     { a.llm_model = eat(i, "--llm-model"); }
         else if (f == "--limit")         { a.limit = std::stoul(eat(i, "--limit")); }
+        else if (f == "--models-dir")    { a.models_dir = eat(i, "--models-dir"); }
         else if (f == "--parakeet-dir")  { a.parakeet_dir = eat(i, "--parakeet-dir"); }
         else if (f == "--kokoro-dir")    { a.kokoro_dir = eat(i, "--kokoro-dir"); }
         else if (f == "--kokoro-voice")  { a.kokoro_voice = eat(i, "--kokoro-voice"); }
+        else if (f == "--hw-accel")      { a.hw_accel = true; }
         else throw std::runtime_error("unknown flag: " + f);
     }
     return a;
@@ -190,7 +205,14 @@ void validate(const Args& a) {
         throw std::runtime_error("--stt must be mock or parakeet");
     if (a.tts != "mock" && a.tts != "kokoro")
         throw std::runtime_error("--tts must be mock or kokoro");
-#ifndef SPEECH_CORE_FDB_WITH_ONNX
+#ifdef SPEECH_CORE_FDB_WITH_ONNX
+    if (a.stt == "parakeet" && a.parakeet_dir.empty() && a.models_dir.empty())
+        throw std::runtime_error(
+            "--stt parakeet requires --parakeet-dir or --models-dir");
+    if (a.tts == "kokoro" && a.kokoro_dir.empty() && a.models_dir.empty())
+        throw std::runtime_error(
+            "--tts kokoro requires --kokoro-dir or --models-dir");
+#else
     if (a.stt == "parakeet")
         throw std::runtime_error("--stt parakeet requires SPEECH_CORE_WITH_ONNX=ON");
     if (a.tts == "kokoro")
@@ -463,9 +485,12 @@ int main(int argc, char** argv) {
         stt = std::make_unique<MockSTT>();
     } else {
 #ifdef SPEECH_CORE_FDB_WITH_ONNX
-        ParakeetStt::Config pcfg;
-        pcfg.model_dir = args.parakeet_dir;
-        stt = std::make_unique<ParakeetStt>(pcfg);
+        const std::string pdir = resolve_parakeet_dir(args);
+        stt = std::make_unique<ParakeetStt>(
+            pdir + "/parakeet-encoder-int8.onnx",
+            pdir + "/parakeet-decoder-joint-int8.onnx",
+            pdir + "/vocab.json",
+            args.hw_accel);
 #else
         std::fprintf(stderr, "fdb_bench: --stt parakeet built out\n");
         return 2;
@@ -478,10 +503,14 @@ int main(int argc, char** argv) {
         tts = std::make_unique<MockTTS>();
     } else {
 #ifdef SPEECH_CORE_FDB_WITH_ONNX
-        KokoroTts::Config kcfg;
-        kcfg.model_dir = args.kokoro_dir;
-        kcfg.voice = args.kokoro_voice;
-        tts = std::make_unique<KokoroTts>(kcfg);
+        const std::string kdir = resolve_kokoro_dir(args);
+        auto k = std::make_unique<KokoroTts>(
+            kdir + "/kokoro-e2e.onnx",
+            kdir + "/voices",
+            kdir,
+            args.hw_accel);
+        k->set_voice(args.kokoro_voice);
+        tts = std::move(k);
 #else
         std::fprintf(stderr, "fdb_bench: --tts kokoro built out\n");
         return 2;
