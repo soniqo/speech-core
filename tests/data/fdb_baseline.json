@@ -1,0 +1,27 @@
+{
+  "_comment": "FDB regression baseline for the weekly weekly-fdb workflow. Compared against fdb_score.json by scripts/fdb_score.py --baseline. To regenerate: run the weekly workflow against a known-good commit, copy the generated fdb_score.json's categories block into this file (preserving _comment + tolerances). Direction-aware: a TOR drop on smooth_turn_taking / user_interruption (higher better) regresses; a TOR rise on pause_handling (lower better) regresses; any latency rise regresses. Quality improvements never fail the gate.",
+  "tolerances": {
+    "tor_mean": 0.05,
+    "latency_mean_s": 0.1
+  },
+  "categories": [
+    {
+      "category": "pause_handling",
+      "tor_mean": 0.0,
+      "latency_mean_s": 0.0,
+      "higher_tor_is_better": false
+    },
+    {
+      "category": "smooth_turn_taking",
+      "tor_mean": 0.0,
+      "latency_mean_s": 0.0,
+      "higher_tor_is_better": true
+    },
+    {
+      "category": "user_interruption",
+      "tor_mean": 0.0,
+      "latency_mean_s": 0.0,
+      "higher_tor_is_better": true
+    }
+  ]
+}

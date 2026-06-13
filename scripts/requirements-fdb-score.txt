@@ -1,0 +1,4 @@
+# Python deps for scripts/fdb_score.py — minimal stack for ASR + scoring.
+# Pinned to majors that work on Python 3.10/3.11 ubuntu-latest.
+faster-whisper>=1.0,<2.0
+numpy>=1.24,<3.0
