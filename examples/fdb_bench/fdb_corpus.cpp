@@ -81,6 +81,16 @@ std::vector<FdbSample> FdbCorpus::load(const FdbCorpusOptions& opts) {
         if (!fs::is_directory(category_dir, ec)) continue;
 
         std::vector<FdbSample> bucket;
+        // Use a separate ec for in-loop file existence probes so they don't
+        // contaminate the iterator's error state. Some libstdc++/libc++
+        // implementations set ec to "no such file or directory" when
+        // is_regular_file returns false for a missing path; without this
+        // separation, the very next iteration's `if (ec) break;` halts the
+        // entire category after the first sample whose optional companion
+        // file (e.g. transcription.json) is absent — which is precisely
+        // what bit candor_turn_taking and synthetic_user_interruption,
+        // categories whose samples ship without transcription.json.
+        std::error_code file_ec;
         for (auto& entry : fs::directory_iterator(category_dir, ec)) {
             if (ec) break;
             if (!entry.is_directory()) continue;
@@ -89,7 +99,7 @@ std::vector<FdbSample> FdbCorpus::load(const FdbCorpusOptions& opts) {
 
             fs::path sd = entry.path();
             fs::path wav = sd / "input.wav";
-            if (!fs::is_regular_file(wav, ec)) {
+            if (!fs::is_regular_file(wav, file_ec)) {
                 std::fprintf(stderr,
                     "fdb_corpus: missing input.wav under %s\n",
                     sd.string().c_str());
@@ -104,12 +114,12 @@ std::vector<FdbSample> FdbCorpus::load(const FdbCorpusOptions& opts) {
             s.input_wav_path    = wav.string();
             if (cd.annotation && cd.annotation[0]) {
                 fs::path ann = sd / cd.annotation;
-                if (fs::is_regular_file(ann, ec)) {
+                if (fs::is_regular_file(ann, file_ec)) {
                     s.annotation_path = ann.string();
                 }
             }
             fs::path tr = sd / "transcription.json";
-            if (fs::is_regular_file(tr, ec)) {
+            if (fs::is_regular_file(tr, file_ec)) {
                 s.transcription_path = tr.string();
             }
             bucket.push_back(std::move(s));

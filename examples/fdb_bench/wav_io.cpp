@@ -76,26 +76,48 @@ bool load_wav_mono_pcm16(const std::string& path, WavData* out) {
         if (chunk_size & 1u) pos += 1;
     }
 
-    if (audio_format != 1 || bits_per_sample != 16 ||
-        channels < 1 || sample_rate <= 0 || pcm_data == nullptr) {
-        return false;
-    }
+    // FDB v1.0 ships two WAV flavours:
+    //   - PCM int16          (audio_format=1, bits=16)  — candor_pause_handling, icc_backchannel, synthetic_user_interruption
+    //   - IEEE Float 32-bit  (audio_format=3, bits=32)  — candor_turn_taking, synthetic_pause_handling
+    // The function name says pcm16 for historical reasons (PR #43), but the
+    // contract here is "mono float32 audio in [-1, 1], whatever the on-disk
+    // encoding was". Keeping the name avoids churn in all the call sites.
+    if (channels < 1 || sample_rate <= 0 || pcm_data == nullptr) return false;
 
-    const size_t bytes_per_frame = static_cast<size_t>(channels) * 2;
+    const bool is_pcm16   = (audio_format == 1 && bits_per_sample == 16);
+    const bool is_float32 = (audio_format == 3 && bits_per_sample == 32);
+    if (!is_pcm16 && !is_float32) return false;
+
+    const size_t bytes_per_sample = is_pcm16 ? 2u : 4u;
+    const size_t bytes_per_frame = static_cast<size_t>(channels) * bytes_per_sample;
     if (pcm_bytes < bytes_per_frame) return false;
     const size_t num_frames = pcm_bytes / bytes_per_frame;
 
     out->samples.resize(num_frames);
     out->sample_rate = sample_rate;
 
-    // Downmix to mono via averaging. PCM16 → float32 in [-1, 1].
-    const auto* sp = reinterpret_cast<const int16_t*>(pcm_data);
-    for (size_t i = 0; i < num_frames; ++i) {
-        int acc = 0;
-        for (int c = 0; c < channels; ++c) acc += sp[i * channels + c];
-        const float avg = static_cast<float>(acc) /
-                          static_cast<float>(channels);
-        out->samples[i] = avg / 32768.0f;
+    if (is_pcm16) {
+        const auto* sp = reinterpret_cast<const int16_t*>(pcm_data);
+        for (size_t i = 0; i < num_frames; ++i) {
+            int acc = 0;
+            for (int c = 0; c < channels; ++c) acc += sp[i * channels + c];
+            const float avg = static_cast<float>(acc) /
+                              static_cast<float>(channels);
+            out->samples[i] = avg / 32768.0f;
+        }
+    } else {
+        // Float32 PCM is already in [-1, 1] — read with memcpy so we don't
+        // assume the pcm_data pointer is 4-byte aligned (the chunk offset
+        // depends on prior chunk sizes and isn't guaranteed to be aligned).
+        for (size_t i = 0; i < num_frames; ++i) {
+            float acc = 0.0f;
+            for (int c = 0; c < channels; ++c) {
+                float v;
+                std::memcpy(&v, pcm_data + (i * channels + c) * 4, 4);
+                acc += v;
+            }
+            out->samples[i] = acc / static_cast<float>(channels);
+        }
     }
     return true;
 }
