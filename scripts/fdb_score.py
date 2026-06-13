@@ -232,9 +232,22 @@ def _tor_for_sample(s: Sample) -> Optional[bool]:
 
 
 def _latency_for_sample(s: Sample) -> Optional[float]:
-    if s.error or s.asr_first_word_start_s is None:
+    """FDB latency = wall-clock time between user-turn-end and the agent's
+    first audio chunk. We use fdb_bench's recorded
+    timings_ms.ttft_first_audio_from_speech_end (the SpeechEnded ->
+    first ResponseAudioDelta delta), NOT the Whisper-derived first-word
+    timestamp inside output.wav — that WAV only contains the agent's
+    response and starts at sample 0, so the asr first-word timestamp is
+    always ~0 s and useless as a latency measure. This also makes the
+    metric available in --asr-mode metadata (no Whisper required), which
+    is what the weekly CI gate uses.
+    """
+    if s.error:
         return None
-    return float(s.asr_first_word_start_s)
+    ttft_ms = s.timings_ms.get("ttft_first_audio_from_speech_end")
+    if ttft_ms is None:
+        return None
+    return float(ttft_ms) / 1000.0
 
 
 def _aggregate(samples: list[Sample], higher_is_better: bool,
