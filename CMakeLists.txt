@@ -166,6 +166,24 @@ if(SPEECH_CORE_WITH_ONNX)
     endif()
 
     target_link_libraries(speech_core_models PUBLIC speech_core onnxruntime)
+
+    # VoxCPM2 ONNX voice-cloning CLI — the in-repo runner for the ONNX path:
+    # the full 4-graph AR loop through OnnxVoxCPM2Tts, on CPU or CUDA/TensorRT
+    # (SPEECH_CORE_ORT_PROVIDER). Desktop only; mirrors the LiteRT
+    # speech_voxcpm2_clone so the two backends validate identically.
+    if(NOT ANDROID)
+        add_executable(speech_voxcpm2_clone_onnx examples/onnx/voxcpm2_clone.cpp)
+        target_link_libraries(speech_voxcpm2_clone_onnx PRIVATE speech_core_models)
+        # VoxCPM2Tokenizer is compiled into speech_core_models_litert when both
+        # backends build (see the NOT SPEECH_CORE_WITH_LITERT guard above);
+        # link it through so the ONNX CLI resolves the tokenizer symbols.
+        if(SPEECH_CORE_WITH_LITERT)
+            target_link_libraries(speech_voxcpm2_clone_onnx PRIVATE speech_core_models_litert)
+        endif()
+        if(MSVC)
+            target_compile_definitions(speech_voxcpm2_clone_onnx PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
