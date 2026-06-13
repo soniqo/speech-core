@@ -1,0 +1,107 @@
+name: Weekly FDB scoring
+
+# Runs the cascade pipeline against the tests/data/fdb_mini fixture and
+# gates on tests/data/fdb_baseline.json via scripts/fdb_score.py.
+# Manual-trigger only for now (workflow_dispatch); flip the cron block on
+# once the baseline is dialed in against a meaningful corpus.
+#
+# The default mode uses --asr-mode metadata (no Whisper download) so the
+# job is hermetic and finishes in <5 minutes. Switch to whisper mode
+# locally via:
+#   python scripts/fdb_score.py --in-dir <out> --report-md ... \
+#       --score-json ... --asr-mode whisper
+
+on:
+  workflow_dispatch:
+    inputs:
+      asr_mode:
+        description: 'ASR mode (metadata | whisper)'
+        type: choice
+        default: metadata
+        options: [metadata, whisper]
+  # Uncomment once the baseline reflects a meaningful run:
+  # schedule:
+  #   - cron: '0 6 * * 3'   # 06:00 UTC every Wednesday
+
+jobs:
+  fdb-score:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake ninja-build curl ca-certificates
+
+      - name: Install Python deps (fdb_score)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements-fdb-score.txt
+
+      - name: Cache faster-whisper model
+        if: ${{ inputs.asr_mode == 'whisper' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: fdb-whisper-distil-small-en-v1
+
+      - name: Configure (mock backends, no ORT)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+                     -DSPEECH_CORE_WITH_OLLAMA=ON
+
+      - name: Build fdb_bench + fdb_summary
+        run: cmake --build build --parallel
+                     --target fdb_bench fdb_summary
+
+      - name: Run fdb_bench against fdb_mini
+        # No Ollama in CI — every sample errors fast on transport
+        # failure, but the JSONs still land with the schema fdb_score
+        # expects. This exercises the full plumbing and lets the
+        # baseline gate evolve without needing a live LLM in CI.
+        run: |
+          mkdir -p /tmp/fdb_out
+          ./build/fdb_bench \
+              --corpus-dir tests/data/fdb_mini/v1_0 \
+              --out-dir   /tmp/fdb_out \
+              --llm-model mock \
+              --llm-base-url http://127.0.0.1:1 || true
+          ls -la /tmp/fdb_out
+
+      - name: Run fdb_summary
+        run: |
+          ./build/fdb_summary --in-dir /tmp/fdb_out \
+                              --out-csv /tmp/fdb_summary.csv
+          cat /tmp/fdb_summary.csv
+
+      - name: Self-test fdb_score (sanity)
+        run: python scripts/fdb_score.py --self-test
+
+      - name: Run fdb_score (with baseline gate)
+        run: |
+          python scripts/fdb_score.py \
+              --in-dir     /tmp/fdb_out \
+              --report-md  /tmp/fdb_report.md \
+              --score-json /tmp/fdb_score.json \
+              --asr-mode   ${{ inputs.asr_mode || 'metadata' }} \
+              --baseline   tests/data/fdb_baseline.json
+          echo "--- fdb_report.md ---"
+          cat /tmp/fdb_report.md
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdb-weekly-${{ github.run_id }}
+          path: |
+            /tmp/fdb_report.md
+            /tmp/fdb_score.json
+            /tmp/fdb_summary.csv
+          retention-days: 30

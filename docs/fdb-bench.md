@@ -19,10 +19,7 @@ In:
 - Smoke `ctest` (`test_fdb_bench_smoke`) that runs the whole loop
   against a checked-in 4-sample fixture and an in-process Ollama mock.
 
-Out:
-
-- M4 — bridge to the upstream Python eval scripts (CrisperWhisper +
-  JSD / pause-handling metrics).
+Out: nothing — M1-M4 are done.
 
 M2 (done) — real STT/TTS (`--stt parakeet`, `--tts kokoro`) is now
 usable when built with `-DSPEECH_CORE_WITH_ONNX=ON`. Point at a flat
@@ -33,6 +30,12 @@ via `--models-dir`, or override per-family with `--parakeet-dir` /
 M3 (done) — `fdb_summary` reads an out-dir of `<category>__<id>.json`
 files and writes a single CSV with per-bucket sample / error counts
 and p50/p90/p99 of stt / llm / tts / ttft / total_wall.
+
+M4 (done) — `scripts/fdb_score.py` consumes an out-dir and emits a
+`fdb_report.md` + `fdb_score.json` per FDB v1.0's scoring rules (TOR +
+latency per category). `tests/data/fdb_baseline.json` is the
+regression gate; `.github/workflows/weekly-fdb.yml` runs the cascade
+against `tests/data/fdb_mini/` and diffs against the baseline.
 
 ## What FDB is
 
@@ -207,7 +210,56 @@ so two runs against different model configurations diff cleanly. Errored
 samples are counted in `samples` and `errors` but excluded from the
 timing percentiles. Pass `-` as `--out-csv` to stream to stdout.
 
-## How M4 layers on top
+## Scoring a run
+
+After `fdb_summary` extracts timing percentiles, `scripts/fdb_score.py`
+applies the FDB v1.0 metric rules (TOR + first-word latency) per
+category and emits a markdown report + machine-readable JSON:
+
+    pip install -r scripts/requirements-fdb-score.txt
+    python scripts/fdb_score.py \
+        --in-dir     /tmp/fdb_out \
+        --report-md  /tmp/fdb_report.md \
+        --score-json /tmp/fdb_score.json \
+        --asr-mode   metadata
+
+Three of FDB's four categories are scored:
+
+| Category | TOR direction | Notes |
+|---|---|---|
+| pause_handling      | lower better  | agent should stay silent during user's mid-utterance pause |
+| smooth_turn_taking  | higher better | agent should take the turn after user finishes |
+| user_interruption   | higher better | agent should yield + re-respond on barge-in |
+| backchannel         | **N/A**       | cascaded STT→LLM→TTS cannot vocalize while user is speaking |
+
+ASR modes:
+
+- `--asr-mode metadata` (default) — no Whisper. Uses
+  `output_duration_sec` + `agent_transcript_input` from the JSON as a
+  deterministic proxy. Best for hermetic CI gates.
+- `--asr-mode whisper` — `distil-whisper/distil-small.en` via
+  faster-whisper (~150 MB cached download).
+
+Pass `--baseline tests/data/fdb_baseline.json` to gate on a baseline.
+Direction-aware: a TOR drop on smooth/interruption (higher better)
+regresses; a TOR rise on pause_handling (lower better) does; any
+latency rise does. Quality improvements never fail the gate.
+
+The GPT-4-turbo LLM-judge for user_interruption is opt-in (requires
+`OPENAI_API_KEY`); CI runs without it.
+
+## Weekly regression gate
+
+`.github/workflows/weekly-fdb.yml` runs the chain against
+`tests/data/fdb_mini/v1_0` and diffs against
+`tests/data/fdb_baseline.json`. Currently manual-trigger only
+(`workflow_dispatch`); flip the cron block on once the baseline
+reflects a meaningful corpus run. Baseline regen is manual: rerun
+against a known-good commit, copy the `categories` block out of the
+artifact's `fdb_score.json` into `tests/data/fdb_baseline.json`
+(preserving the `_comment` + `tolerances`), re-commit.
+
+## How everything fits together
 
 - **M2 (done)** — `--stt parakeet` / `--tts kokoro` build out when
   `SPEECH_CORE_WITH_ONNX=ON`; `--models-dir` shortcut matches the
@@ -216,10 +268,9 @@ timing percentiles. Pass `-` as `--out-csv` to stream to stdout.
 - **M3 (done)** — `fdb_summary` reads `<out-dir>/*.json` and emits a
   single CSV with per-bucket sample / error counts and p50/p90/p99 of
   stt / llm / tts / ttft / total_wall.
-- **M4** — bridge `<out-dir>/<id>.wav` files to the upstream
-  `eval_*.py` scripts (CrisperWhisper output transcripts + JSD /
-  pause-handling metrics) and a weekly workflow that pulls the corpus
-  to a runner and asserts no regression vs a checked-in baseline.
+- **M4 (done)** — `scripts/fdb_score.py` + `tests/data/fdb_baseline.json`
+  + `.github/workflows/weekly-fdb.yml` close the loop from raw
+  fdb_bench output to a regression-gated FDB metric.
 
 ## Regenerating the smoke fixture
 
