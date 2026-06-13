@@ -166,10 +166,10 @@ public:
         // unchanged. The buffer is zero-copy and must outlive the model, so
         // we retain it in the engine singleton. We also cache the buffer by
         // path: a test suite that reloads the same VoxCPM2 graphs across six
-        // wrapper instances would otherwise sink 6 × ~8.4 GiB ≈ 50 GiB of
+        // wrapper instances would otherwise sink 6 × ~6.3 GiB ≈ 38 GiB of
         // RAM (CI Linux runners have ~7 GiB and SIGKILL'd at 9 min). Caching
         // caps it at one copy per path. Threshold is well under 2 GiB so the
-        // FP16 prefill graph (~4.1 GiB) also routes through the safer path on
+        // INT8 prefill graph (~2.0 GiB) also routes through the safer path on
         // Windows.
         constexpr std::uint64_t kBufferThreshold = std::uint64_t{1} << 30;  // 1 GiB
         std::ifstream f(path, std::ios::binary | std::ios::ate);
