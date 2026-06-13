@@ -237,6 +237,110 @@ void test_corpus_iterator_against_fdb_mini() {
     std::printf("  PASS: corpus_iterator_against_fdb_mini (4 samples)\n");
 }
 
+// Regression for the std::error_code contamination bug fixed alongside
+// IEEE Float WAV support. The FDB v1.0 corpus has two categories that
+// ship WITHOUT a transcription.json (candor_turn_taking,
+// synthetic_user_interruption). The original fdb_corpus.cpp used the same
+// std::error_code for both directory_iterator and the optional
+// is_regular_file probes inside the loop body; once the probe for
+// transcription.json returned false on the first sample, ec was set to
+// "not found", and the next iteration's `if (ec) break;` halted the
+// entire category — producing exactly 1 sample instead of 119/200.
+//
+// We rebuild a tiny on-disk fixture (no transcription.json, no
+// annotation) with 3 samples, and assert the iterator returns all three.
+// If the bug regresses, only the first sample comes back.
+void test_corpus_iterator_resilient_to_missing_aux_files() {
+    auto root = fs::temp_directory_path() /
+                ("fdb_iter_regress_" + std::to_string(::getpid()));
+    fs::create_directories(root);
+    // FdbCorpus iterates a fixed list of category dirs — reuse one that
+    // ships without an annotation file in the real corpus.
+    fs::path cat = root / "icc_backchannel";
+    fs::create_directories(cat);
+
+    // Generate three sample dirs each containing only input.wav — no
+    // transcription.json, no annotation. Each WAV is a 1 ms PCM16 tone
+    // (smallest valid file we can write).
+    for (int i = 1; i <= 3; ++i) {
+        fs::path sd = cat / std::to_string(i);
+        fs::create_directories(sd);
+        std::vector<float> tone(16, 0.0f);
+        bool ok = fdb_bench::write_wav_mono_pcm16(
+            (sd / "input.wav").string(),
+            tone.data(), tone.size(), 16000);
+        assert(ok);
+    }
+
+    fdb_bench::FdbCorpusOptions opts;
+    opts.corpus_root = root.string();
+    auto samples = fdb_bench::FdbCorpus::load(opts);
+    assert(samples.size() == 3 &&
+        "corpus iterator must not halt after the first sample whose "
+        "optional aux files are absent — see PR fixing FDB v1.0 "
+        "candor_turn_taking / synthetic_user_interruption truncation");
+    for (const auto& s : samples) {
+        assert(s.transcription_path.empty());
+        assert(s.annotation_path.empty());
+    }
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    std::printf("  PASS: corpus_iterator_resilient_to_missing_aux_files\n");
+}
+
+// Regression for IEEE Float 32-bit WAV support. FDB v1.0 ships
+// candor_turn_taking + synthetic_pause_handling as audio_format=3
+// (IEEE Float, 32 bps); the original loader rejected anything other
+// than audio_format=1, bits=16, which left 256 of 727 samples unusable.
+void test_wav_io_loads_ieee_float32() {
+    constexpr int sr = 16000;
+    constexpr int n  = 256;
+    std::vector<float> in(n);
+    for (int i = 0; i < n; ++i) {
+        in[i] = 0.25f * std::sin(2.0f * 3.14159265f * 220.0f * i / sr);
+    }
+
+    // Hand-write a mono float32 WAV (IEEE float, audio_format=3). We
+    // can't reuse write_wav_mono_pcm16 because it always emits PCM16.
+    auto tmp = fs::temp_directory_path() / "fdb_smoke_float32.wav";
+    {
+        std::ofstream os(tmp, std::ios::binary);
+        assert(os);
+        auto u16 = [&](uint16_t v) {
+            char b[2] = {char(v & 0xff), char((v >> 8) & 0xff)};
+            os.write(b, 2);
+        };
+        auto u32 = [&](uint32_t v) {
+            char b[4] = {char(v & 0xff), char((v >> 8) & 0xff),
+                         char((v >> 16) & 0xff), char((v >> 24) & 0xff)};
+            os.write(b, 4);
+        };
+        const uint32_t data_bytes = static_cast<uint32_t>(n * 4);
+        os.write("RIFF", 4); u32(36 + data_bytes); os.write("WAVE", 4);
+        os.write("fmt ", 4); u32(16);
+        u16(3);              // audio_format = IEEE Float
+        u16(1);              // channels
+        u32(sr);             // sample rate
+        u32(sr * 4);         // byte rate
+        u16(4);              // block align
+        u16(32);             // bits per sample
+        os.write("data", 4); u32(data_bytes);
+        os.write(reinterpret_cast<const char*>(in.data()), data_bytes);
+    }
+
+    fdb_bench::WavData out;
+    bool loaded = fdb_bench::load_wav_mono_pcm16(tmp.string(), &out);
+    assert(loaded && "loader must accept IEEE Float 32-bit WAVs");
+    assert(out.sample_rate == sr);
+    assert(out.samples.size() == static_cast<size_t>(n));
+    for (size_t i = 0; i < out.samples.size(); ++i) {
+        assert(std::fabs(in[i] - out.samples[i]) < 1e-6f);
+    }
+    fs::remove(tmp);
+    std::printf("  PASS: wav_io_loads_ieee_float32\n");
+}
+
 void test_corpus_category_filter() {
     fdb_bench::FdbCorpusOptions opts;
     opts.corpus_root = SPEECH_CORE_FDB_MINI_DIR;
@@ -549,7 +653,9 @@ void test_real_models_integration() {
 int main() {
     std::printf("test_fdb_bench_smoke:\n");
     test_wav_io_roundtrip();
+    test_wav_io_loads_ieee_float32();
     test_corpus_iterator_against_fdb_mini();
+    test_corpus_iterator_resilient_to_missing_aux_files();
     test_corpus_category_filter();
     test_ground_truth_transcript_extraction();
     test_smoke_driver_with_mock_ollama();
