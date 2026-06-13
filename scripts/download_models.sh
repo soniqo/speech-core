@@ -14,9 +14,9 @@ mkdir -p "$OUT/voices"
 
 FILES=(
     "Silero-VAD-v5-ONNX/silero-vad.onnx"
-    "Parakeet-TDT-v3-ONNX/parakeet-encoder-int8.onnx"
-    "Parakeet-TDT-v3-ONNX/parakeet-decoder-joint-int8.onnx"
-    "Parakeet-TDT-v3-ONNX/vocab.json"
+    "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx"
+    "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx"
+    "Parakeet-TDT-0.6B-ONNX/vocab.json"
     "Kokoro-82M-ONNX/kokoro-e2e.onnx"
     "Kokoro-82M-ONNX/kokoro-e2e.onnx.data"
     "Kokoro-82M-ONNX/vocab_index.json"
