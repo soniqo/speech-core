@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Download VoxCPM2 LiteRT model bundle (FP16, ~8.4 GB) for the LiteRTVoxCPM2Tts
-# skeleton test. Weights are FP16: INT8 broke sibilants (the AR acoustic path
-# needs >=16-bit), so the INT8 variant was decommissioned. Kept separate from
-# download_models_litert.sh because the
+# Download VoxCPM2 LiteRT model bundle (mixed int8/fp16, ~6.4 GB) for the
+# LiteRTVoxCPM2Tts skeleton test. token-step is FP16 (INT8 there broke
+# sibilants — the AR acoustic path needs >=16-bit); text-prefill is INT8
+# (context-only, clean). The all-INT8 variant was decommissioned. Kept
+# separate from download_models_litert.sh because the
 # bundle is too large to fit comfortably in the nightly's actions/cache
 # budget (10 GB per repo, shared).
 #

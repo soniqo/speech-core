@@ -30,7 +30,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
 
-`LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~4.6 GB) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
+`LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (mixed int8/fp16, ~6.4 GB) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
 All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. All LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`) which currently configures CPU-only inference with a configurable thread count. NNAPI / GPU / Hexagon delegates are not yet wired through the C API in this version.
 
@@ -169,7 +169,7 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
   - `audio-encoder`: 16 kHz PCM reference clip → conditioning features
   - `audio-decoder`: latent → 48 kHz PCM output
 - **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h). Reference-audio voice cloning isn't yet surfaced through `TTSInterface` (see the paragraph above).
-- Weights are **FP16**. INT8 weight quantization of the token-step breaks sibilants (tonal/metallic whistle — the autoregressive acoustic path needs ≥16-bit); the INT8 variant was decommissioned. Bundle is ~8.4 GB on disk, ~10 GiB RAM at load. Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
+- **Mixed precision**: `token-step` is FP16, `text-prefill` is INT8. INT8 weight quantization of the *token-step* breaks sibilants (tonal/metallic whistle — the autoregressive acoustic path needs ≥16-bit), so it stays FP16; the *text-prefill* only sets up context and doesn't paint sibilant texture, so INT8 there is clean (measured flatness 0.41 = FP16). The all-INT8 variant was decommissioned. Bundle is ~6.4 GB on disk, ~8 GiB RAM at load. Download with the dedicated script `scripts/download_voxcpm2_litert.sh`; we deliberately don't include it in `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 
 ## LiteRTWeSpeakerEmbedding
@@ -562,7 +562,7 @@ A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON
 ```bash
 scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel
 scripts/download_models_litert.sh           # Silero + Parakeet
-scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (FP16, ~8.4 GB, optional)
+scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (mixed int8/fp16, ~6.4 GB, optional)
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
 cmake --build build
 SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
