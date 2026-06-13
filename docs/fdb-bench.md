@@ -21,7 +21,6 @@ In:
 
 Out:
 
-- M3 — per-run summary CSV.
 - M4 — bridge to the upstream Python eval scripts (CrisperWhisper +
   JSD / pause-handling metrics).
 
@@ -30,6 +29,10 @@ usable when built with `-DSPEECH_CORE_WITH_ONNX=ON`. Point at a flat
 models directory (the layout produced by `scripts/download_models.sh`)
 via `--models-dir`, or override per-family with `--parakeet-dir` /
 `--kokoro-dir`.
+
+M3 (done) — `fdb_summary` reads an out-dir of `<category>__<id>.json`
+files and writes a single CSV with per-bucket sample / error counts
+and p50/p90/p99 of stt / llm / tts / ttft / total_wall.
 
 ## What FDB is
 
@@ -150,9 +153,11 @@ partial model installs don't fail the test.
 
 For each input sample `<id>`, the driver writes:
 
-- `<out-dir>/<id>.wav` — the agent's TTS response audio (PCM16 mono at
-  the TTS backend's native rate; mock TTS = 24 kHz).
-- `<out-dir>/<id>.json` — per-sample record:
+- `<out-dir>/<category_dir>__<id>.wav` — the agent's TTS response
+  audio (PCM16 mono at the TTS backend's native rate; mock TTS =
+  24 kHz). The `<category_dir>__` prefix prevents collisions because
+  FDB v1.0 reuses `1/`, `2/`, … under every category directory.
+- `<out-dir>/<category_dir>__<id>.json` — per-sample record:
 
       {
         "sample_id": "1",
@@ -186,15 +191,31 @@ Final stdout line:
 
     fdb_bench: samples_ok=N errors=M avg_ttft_ms=X out_dir=...
 
-## How M3-M4 layer on top
+## Summarizing a run
+
+After `fdb_bench` writes per-sample JSONs, run `fdb_summary` to roll
+them up into a single CSV with per-bucket percentiles:
+
+    ./build/fdb_bench   --corpus-dir /path/to/v1_0 \
+                        --out-dir /tmp/fdb_out \
+                        --llm-model llama3.2:3b
+    ./build/fdb_summary --in-dir   /tmp/fdb_out \
+                        --out-csv  /tmp/fdb_summary.csv
+
+The CSV is sorted by `(category, stt_backend, tts_backend, llm_model)`
+so two runs against different model configurations diff cleanly. Errored
+samples are counted in `samples` and `errors` but excluded from the
+timing percentiles. Pass `-` as `--out-csv` to stream to stdout.
+
+## How M4 layers on top
 
 - **M2 (done)** — `--stt parakeet` / `--tts kokoro` build out when
   `SPEECH_CORE_WITH_ONNX=ON`; `--models-dir` shortcut matches the
   `scripts/download_models.sh` layout; opt-in `real_models_integration`
   smoke test verifies the path.
-- **M3** — post-process `<out-dir>/*.json` into a single summary CSV
-  (`fdb_summary.csv`) suitable for one-line CI assertions and trend
-  tracking across runs.
+- **M3 (done)** — `fdb_summary` reads `<out-dir>/*.json` and emits a
+  single CSV with per-bucket sample / error counts and p50/p90/p99 of
+  stt / llm / tts / ttft / total_wall.
 - **M4** — bridge `<out-dir>/<id>.wav` files to the upstream
   `eval_*.py` scripts (CrisperWhisper output transcripts + JSD /
   pause-handling metrics) and a weekly workflow that pulls the corpus
