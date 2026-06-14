@@ -529,13 +529,12 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     // output exactly: voxcpm2-{graph}.onnx (the speech-cloud LiteRT bundle uses
     // the same prefix on the .tflite side too, so the wrapper file naming
     // stays parallel between backends).
-    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
-    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string decoder       = vox_dir + "/voxcpm2-decoder.onnx";
     std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
     std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
     std::string tokenizer     = vox_dir + "/tokenizer.json";
 
-    if (!file_exists(text_prefill) || !file_exists(token_step)
+    if (!file_exists(decoder)
         || !file_exists(audio_encoder) || !file_exists(audio_decoder)
         || !file_exists(tokenizer))
     {
@@ -548,7 +547,7 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     // Phase 1 (always): construct + introspect. Confirms all four ORT
     // sessions load, the tokenizer parses, and the I/O introspection paths
     // don't throw.
-    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+    speech_core::OnnxVoxCPM2Tts tts(decoder,
                                      audio_encoder, audio_decoder,
                                      tokenizer, /*hw_accel=*/false);
     REQUIRE(tts.output_sample_rate() == 48000);
@@ -610,8 +609,7 @@ void test_onnx_voxcpm2_parakeet_roundtrip(const std::string& dir) {
     const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
     std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
 
-    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
-    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string decoder       = vox_dir + "/voxcpm2-decoder.onnx";
     std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
     std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
     std::string tokenizer     = vox_dir + "/tokenizer.json";
@@ -619,7 +617,7 @@ void test_onnx_voxcpm2_parakeet_roundtrip(const std::string& dir) {
     std::string parakeet_dec  = dir + "/parakeet-decoder-joint-int8.onnx";
     std::string parakeet_voc  = dir + "/vocab.json";
 
-    if (!file_exists(text_prefill) || !file_exists(token_step)
+    if (!file_exists(decoder)
         || !file_exists(audio_encoder) || !file_exists(audio_decoder)
         || !file_exists(tokenizer)
         || !file_exists(parakeet_enc) || !file_exists(parakeet_dec)
@@ -629,7 +627,7 @@ void test_onnx_voxcpm2_parakeet_roundtrip(const std::string& dir) {
         return;
     }
 
-    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+    speech_core::OnnxVoxCPM2Tts tts(decoder,
                                      audio_encoder, audio_decoder,
                                      tokenizer, /*hw_accel=*/true);
     if (tts.max_text_tokens() < 256) {
@@ -726,8 +724,7 @@ static std::vector<std::string> tokenize_lower(const std::string& s) {
 void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
     const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
     std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
-    std::string text_prefill  = vox_dir + "/voxcpm2-text-prefill.onnx";
-    std::string token_step    = vox_dir + "/voxcpm2-token-step.onnx";
+    std::string decoder       = vox_dir + "/voxcpm2-decoder.onnx";
     std::string audio_encoder = vox_dir + "/voxcpm2-audio-encoder.onnx";
     std::string audio_decoder = vox_dir + "/voxcpm2-audio-decoder.onnx";
     std::string tokenizer     = vox_dir + "/tokenizer.json";
@@ -735,7 +732,7 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
     std::string parakeet_dec  = dir + "/parakeet-decoder-joint-int8.onnx";
     std::string parakeet_voc  = dir + "/vocab.json";
 
-    if (!file_exists(text_prefill) || !file_exists(token_step)
+    if (!file_exists(decoder)
         || !file_exists(audio_encoder) || !file_exists(audio_decoder)
         || !file_exists(tokenizer)
         || !file_exists(parakeet_enc) || !file_exists(parakeet_dec)
@@ -745,7 +742,7 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
         return;
     }
 
-    speech_core::OnnxVoxCPM2Tts tts(text_prefill, token_step,
+    speech_core::OnnxVoxCPM2Tts tts(decoder,
                                      audio_encoder, audio_decoder,
                                      tokenizer, /*hw_accel=*/true);
     if (tts.max_text_tokens() < 256) {

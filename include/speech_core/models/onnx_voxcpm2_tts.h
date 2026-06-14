@@ -32,20 +32,29 @@ namespace speech_core {
 /// reads back from the returned OrtValues' GetTensorMutableData pointers —
 /// the same idiom ParakeetStt uses.
 ///
-/// Pipeline (four ONNX graphs orchestrated here):
+/// Pipeline (three ONNX graphs orchestrated here):
 ///   audio_encoder  : (audio [1, 102400] = 6.4 s @ 16 kHz)
 ///                    → (audio_feats [1, 40, 4, 64])    — cloning only
-///   text_prefill   : (tokens, masks, audio_feats, audio_mask, context_len)
-///                    → (lm_hidden, residual_hidden, prefix_feat_cond, base_cache, residual_cache)
-///   token_step ×N  : (lm_hidden, residual_hidden, prefix_feat_cond, base_cache,
-///                     residual_cache, position_id, noise)
-///                    → (pred_feat, stop_logits, next_lm_hidden, next_residual_hidden,
-///                       base_cache, residual_cache)
+///   decoder        : UNIFIED prefill + token-step graph (the merged export).
+///     prefill mode  : (text_tokens, text_mask, audio_feats, audio_mask, ctx_len)
+///                     → (lm_hidden, residual_hidden, prefix_feat_cond, base_cache, residual_cache)
+///     token mode ×N : (ts_lm_hidden, ts_residual_hidden, ts_prefix_feat_cond, ts_base_cache,
+///                      ts_residual_cache, ts_position_id, ts_noise)
+///                     → (ts_pred_feat, ts_stop_logits, ts_next_lm, ts_next_resid,
+///                        ts_next_base_cache, ts_next_resid_cache)
 ///   audio_decoder  : (latent [1, 64, 256]) → PCM [1, 491520] (10.24 s @ 48 kHz)
+///
+/// The prefill and token-step graphs share one 2B transformer; exporting them
+/// as one graph stores those weights ONCE, ~halving GPU weight residency vs two
+/// separate sessions (measured 19.0→10.8 GB on the prefill+token portion). Both
+/// modes live in `decoder_session_`; each Run requests only its mode's outputs
+/// (ORT executes just that subgraph) but must still supply every graph input,
+/// so the idle mode's inputs are fed cheap zero dummies (built per call).
 class OnnxVoxCPM2Tts : public TTSInterface {
 public:
-    OnnxVoxCPM2Tts(const std::string& text_prefill_path,
-                   const std::string& token_step_path,
+    /// `decoder_path` is the unified prefill+token-step graph
+    /// (voxcpm2-decoder.onnx). audio_encoder/decoder + tokenizer as before.
+    OnnxVoxCPM2Tts(const std::string& decoder_path,
                    const std::string& audio_encoder_path,
                    const std::string& audio_decoder_path,
                    const std::string& tokenizer_path,
@@ -122,11 +131,14 @@ private:
 
     const OrtApi* api_ = nullptr;
 
-    OrtSession* text_prefill_session_  = nullptr;
-    OrtSession* token_step_session_    = nullptr;
+    // One session for the unified prefill+token graph (weights resident once).
+    OrtSession* decoder_session_       = nullptr;
     OrtSession* audio_encoder_session_ = nullptr;
     OrtSession* audio_decoder_session_ = nullptr;
 
+    // The unified graph's I/O split by the "ts_" prefix: prefill_io_ holds the
+    // prefill names (text_tokens…→lm_hidden…), step_io_ the token-step names
+    // (ts_lm_hidden…→ts_pred_feat…). Each is a subset of decoder_session_'s I/O.
     IoNames prefill_io_;
     IoNames step_io_;
     IoNames encoder_io_;

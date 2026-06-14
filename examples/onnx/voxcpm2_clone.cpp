@@ -14,8 +14,9 @@
 //   speech_voxcpm2_clone_onnx <bundle_dir> <ref.wav> "<text>" <out.wav> \
 //       [instruction] [max_steps] [seed]
 //
-//   bundle_dir : directory with voxcpm2-{text-prefill,token-step,audio-encoder,
-//                audio-decoder}.onnx (+ external *.onnx.data) + tokenizer.json
+//   bundle_dir : directory with voxcpm2-{decoder,audio-encoder,audio-decoder}.onnx
+//                (+ external *.onnx.data) + tokenizer.json. voxcpm2-decoder.onnx
+//                is the unified prefill+token-step graph (merged export).
 //   ref.wav    : reference speaker clip (16-bit PCM WAV; "none" for plain TTS)
 //   seed       : optional RNG seed for bit-reproducible renders
 
@@ -163,8 +164,7 @@ int main(int argc, char** argv) {
 
     try {
         speech_core::OnnxVoxCPM2Tts tts(
-            bundle + "/voxcpm2-text-prefill.onnx",
-            bundle + "/voxcpm2-token-step.onnx",
+            bundle + "/voxcpm2-decoder.onnx",
             bundle + "/voxcpm2-audio-encoder.onnx",
             bundle + "/voxcpm2-audio-decoder.onnx",
             bundle + "/tokenizer.json",

@@ -335,19 +335,18 @@ void bench_nemotron(const std::string& dir) {
 void bench_voxcpm2(const std::string& /*dir*/) {
     const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
     std::string vox = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
-    std::string prefill = vox + "/voxcpm2-text-prefill.onnx";
-    std::string step    = vox + "/voxcpm2-token-step.onnx";
+    std::string decoder = vox + "/voxcpm2-decoder.onnx";
     std::string enc     = vox + "/voxcpm2-audio-encoder.onnx";
     std::string dec     = vox + "/voxcpm2-audio-decoder.onnx";
     std::string tok     = vox + "/tokenizer.json";
-    if (!file_exists(prefill) || !file_exists(step) || !file_exists(enc)
+    if (!file_exists(decoder) || !file_exists(enc)
         || !file_exists(dec) || !file_exists(tok)) {
         std::fprintf(stderr, "[skip] voxcpm2 bundle\n");
         return;
     }
 
     auto t_load = clk::now();
-    speech_core::OnnxVoxCPM2Tts tts(prefill, step, enc, dec, tok,
+    speech_core::OnnxVoxCPM2Tts tts(decoder, enc, dec, tok,
                                      /*hw_accel=*/true);
     double load_ms = ms_since(t_load);
     if (tts.max_text_tokens() < 256) {
