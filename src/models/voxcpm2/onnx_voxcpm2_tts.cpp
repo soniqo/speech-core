@@ -100,8 +100,7 @@ int OnnxVoxCPM2Tts::query_prefill_context(OrtSession* session) {
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& text_prefill_path,
-                                const std::string& token_step_path,
+OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& decoder_path,
                                 const std::string& audio_encoder_path,
                                 const std::string& audio_decoder_path,
                                 const std::string& tokenizer_path,
@@ -109,22 +108,36 @@ OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& text_prefill_path,
 {
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
-    text_prefill_session_  = engine.load(text_prefill_path,  hw_accel);
-    // token_step runs 25-60 times per utterance with fixed shapes — the
-    // canonical CUDA Graph capture target. Opt this session into graph
-    // capture when SPEECH_CORE_CUDA_GRAPH=1 is set in the environment.
-    token_step_session_    = engine.load(token_step_path,    hw_accel,
+    // The unified graph runs both the one-shot prefill and the 25-60 per-step
+    // token decodes. Token-step shapes are fixed, so this is still the CUDA
+    // Graph capture target (SPEECH_CORE_CUDA_GRAPH=1).
+    decoder_session_       = engine.load(decoder_path, hw_accel,
                                          engine.cuda_graph_enabled());
     audio_encoder_session_ = engine.load(audio_encoder_path, hw_accel);
     audio_decoder_session_ = engine.load(audio_decoder_path, hw_accel);
 
-    query_io_names(text_prefill_session_,  prefill_io_);
-    query_io_names(token_step_session_,    step_io_);
+    // Split the unified graph's I/O into prefill (no prefix) and token (ts_).
+    IoNames full;
+    query_io_names(decoder_session_, full);
+    auto is_ts = [](const std::string& s) { return s.rfind("ts_", 0) == 0; };
+    for (auto& s : full.in_names_str)
+        (is_ts(s) ? step_io_ : prefill_io_).in_names_str.push_back(s);
+    for (auto& s : full.out_names_str)
+        (is_ts(s) ? step_io_ : prefill_io_).out_names_str.push_back(s);
+    auto rebuild = [](IoNames& io) {
+        io.in_names.clear();
+        for (auto& s : io.in_names_str) io.in_names.push_back(s.c_str());
+        io.out_names.clear();
+        for (auto& s : io.out_names_str) io.out_names.push_back(s.c_str());
+    };
+    rebuild(prefill_io_);
+    rebuild(step_io_);
+
     query_io_names(audio_encoder_session_, encoder_io_);
     query_io_names(audio_decoder_session_, decoder_io_);
 
-    // Context window comes from the prefill graph; cache sizes follow.
-    max_text_                = query_prefill_context(text_prefill_session_);
+    // Context window comes from the prefill graph's rank-4 audio_feats input.
+    max_text_                = query_prefill_context(decoder_session_);
     full_seq_                = max_text_ + kMaxGenerated;
     base_cache_floats_       = 2L * kBaseLayers     * kKvHeads * full_seq_ * kHeadDim;
     residual_cache_floats_   = 2L * kResidualLayers * kKvHeads * full_seq_ * kHeadDim;
@@ -144,8 +157,7 @@ OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& text_prefill_path,
 OnnxVoxCPM2Tts::~OnnxVoxCPM2Tts() {
     if (audio_decoder_session_)  api_->ReleaseSession(audio_decoder_session_);
     if (audio_encoder_session_)  api_->ReleaseSession(audio_encoder_session_);
-    if (token_step_session_)     api_->ReleaseSession(token_step_session_);
-    if (text_prefill_session_)   api_->ReleaseSession(text_prefill_session_);
+    if (decoder_session_)        api_->ReleaseSession(decoder_session_);
 }
 
 void OnnxVoxCPM2Tts::cancel() {
@@ -333,7 +345,25 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
 
     auto* mem = OnnxEngine::get().cpu_memory();
 
-    // --- 2. text_prefill → initial hiddens + caches.
+    // The unified graph exposes both modes' inputs; ORT requires every graph
+    // input in each Run even though we request only one mode's outputs (it
+    // executes just that subgraph). make_dummy mints a zero tensor for an idle
+    // input — minimal shape, since the nodes that read it are never run.
+    auto make_dummy = [&](const int64_t* shape, int rank,
+                          ONNXTensorElementDataType dt,
+                          std::vector<std::vector<uint8_t>>& bufs,
+                          std::vector<OrtValue*>& vals) {
+        size_t elems = 1;
+        for (int i = 0; i < rank; ++i) elems *= static_cast<size_t>(shape[i] > 0 ? shape[i] : 1);
+        const size_t esz = (dt == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) ? 8u : 4u;
+        bufs.emplace_back(elems * esz, 0);
+        OrtValue* v = nullptr;
+        ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+            mem, bufs.back().data(), bufs.back().size(), shape, rank, dt, &v));
+        vals.push_back(v);
+    };
+
+    // --- 2. prefill mode → initial hiddens + caches.
     //
     // TODO: text_prefill ONNX graph does not yet exist with real weights.
     // The speech-models export at facca69 only emits a tiny-random-init
@@ -376,13 +406,37 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
             mem, const_cast<int64_t*>(&context_length_scalar), sizeof(int64_t),
             s_ctxlen, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_ctxlen));
 
-        OrtValue* prefill_in[5]  = {t_tokens, t_tmask, t_afeats, t_amask, t_ctxlen};
-        OrtValue* prefill_out[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+        // Idle (token-step) inputs: minimal-shape zero dummies, in step_io_
+        // input order (ts_lm, ts_resid, ts_pfc, ts_base, ts_rcache, ts_pos, ts_noise).
+        const int64_t d_lm[2]     = {1, kHidden};
+        const int64_t d_pfc[3]    = {1, kPatchSize, kFeatDim};
+        const int64_t d_bcache[6] = {2, kBaseLayers,     1, kKvHeads, 1, kHeadDim};
+        const int64_t d_rcache[6] = {2, kResidualLayers, 1, kKvHeads, 1, kHeadDim};
+        const int64_t* d_scalar   = nullptr;
+        const int64_t d_noise[3]  = {1, kFeatDim, kPatchSize};
+        std::vector<std::vector<uint8_t>> ts_dummy_bufs;
+        std::vector<OrtValue*>            ts_dummy_vals;
+        make_dummy(d_lm,     2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_lm,     2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_pfc,    3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_bcache, 6, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_rcache, 6, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_scalar, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, ts_dummy_bufs, ts_dummy_vals);
+        make_dummy(d_noise,  3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ts_dummy_bufs, ts_dummy_vals);
 
+        // Full input set = real prefill (prefill_io_ order) + ts_ dummies.
+        std::vector<const char*> in_names = prefill_io_.in_names;
+        in_names.insert(in_names.end(), step_io_.in_names.begin(), step_io_.in_names.end());
+        std::vector<OrtValue*> in_vals = {t_tokens, t_tmask, t_afeats, t_amask, t_ctxlen};
+        in_vals.insert(in_vals.end(), ts_dummy_vals.begin(), ts_dummy_vals.end());
+
+        OrtValue* prefill_out[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
         ort_check(api_, api_->Run(
-            text_prefill_session_, nullptr,
-            prefill_io_.in_names.data(),  prefill_in,  prefill_io_.in_names.size(),
+            decoder_session_, nullptr,
+            in_names.data(),  in_vals.data(), in_names.size(),
             prefill_io_.out_names.data(), prefill_io_.out_names.size(), prefill_out));
+
+        for (OrtValue* v : ts_dummy_vals) api_->ReleaseValue(v);
 
         auto copy_out = [&](OrtValue* v, void* dst, size_t bytes) {
             void* p = nullptr;
@@ -468,6 +522,22 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     const int64_t s_dec_in [3] = {1, kFramesPerChunk, kPredFeatFloats};
     (void)s_dec_in;  // referenced by the decoder Run below
 
+    // Idle (prefill) inputs for every token-step Run: zero dummies in
+    // prefill_io_ input order, created once and reused each step. Prefill input
+    // shapes are fixed (not dynamic), so the dummies use the real dimensions.
+    const int64_t pd_tokens[2] = {1, max_text_};
+    const int64_t pd_mask[2]   = {1, max_text_};
+    const int64_t pd_afeats[4] = {1, max_text_, kPatchSize, kFeatDim};
+    const int64_t pd_amask[2]  = {1, max_text_};
+    const int64_t* pd_ctx      = nullptr;
+    std::vector<std::vector<uint8_t>> prefill_dummy_bufs;
+    std::vector<OrtValue*>            prefill_dummy_vals;
+    make_dummy(pd_tokens, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, prefill_dummy_bufs, prefill_dummy_vals);
+    make_dummy(pd_mask,   2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, prefill_dummy_bufs, prefill_dummy_vals);
+    make_dummy(pd_afeats, 4, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, prefill_dummy_bufs, prefill_dummy_vals);
+    make_dummy(pd_amask,  2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, prefill_dummy_bufs, prefill_dummy_vals);
+    make_dummy(pd_ctx,    0, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, prefill_dummy_bufs, prefill_dummy_vals);
+
     auto flush_decoder = [&](size_t valid_steps, bool is_final) {
         std::fill(decoder_input.begin(), decoder_input.end(), 0.0f);
         const size_t cap_steps = std::min<size_t>(
@@ -551,7 +621,7 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
         OrtStatus* s = api_->CreateMemoryInfo(
             "Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault, &cuda_mem);
         if (s == nullptr) {
-            s = api_->CreateAllocator(token_step_session_, cuda_mem, &cuda_alloc);
+            s = api_->CreateAllocator(decoder_session_, cuda_mem, &cuda_alloc);
         }
         if (s != nullptr) {
             // Session was created on CPU (e.g. hw_accel=false) — drop back
@@ -563,7 +633,7 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     }
 
     if (use_gpu_bind) {
-        ort_check(api_, api_->CreateIoBinding(token_step_session_, &binding));
+        ort_check(api_, api_->CreateIoBinding(decoder_session_, &binding));
 
         auto alloc_gpu = [&](const int64_t* shape, int rank, OrtValue** out) {
             ort_check(api_, api_->CreateTensorAsOrtValue(
@@ -615,14 +685,20 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
             mem, noise.data(), noise.size() * sizeof(float),
             s_noise, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_noise));
 
-        // Input order mirrors the LiteRT graph: lm_hidden, residual_hidden,
-        // prefix_feat_cond, base_cache, residual_cache, position_id, noise.
-        OrtValue* step_in[7]  = {t_lm, t_resid, t_pfc, t_bcache, t_rcache, t_pos, t_noise};
-        OrtValue* step_out[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+        // Input order mirrors the graph: ts_lm_hidden, ts_residual_hidden,
+        // ts_prefix_feat_cond, ts_base_cache, ts_residual_cache, ts_position_id,
+        // ts_noise — plus the idle prefill dummies (ORT needs every input).
+        std::vector<const char*> step_in_names = step_io_.in_names;
+        step_in_names.insert(step_in_names.end(),
+                             prefill_io_.in_names.begin(), prefill_io_.in_names.end());
+        std::vector<OrtValue*> step_in_vals = {t_lm, t_resid, t_pfc, t_bcache, t_rcache, t_pos, t_noise};
+        step_in_vals.insert(step_in_vals.end(),
+                            prefill_dummy_vals.begin(), prefill_dummy_vals.end());
 
+        OrtValue* step_out[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
         ort_check(api_, api_->Run(
-            token_step_session_, nullptr,
-            step_io_.in_names.data(),  step_in,  step_io_.in_names.size(),
+            decoder_session_, nullptr,
+            step_in_names.data(),  step_in_vals.data(), step_in_names.size(),
             step_io_.out_names.data(), step_io_.out_names.size(), step_out));
 
         // Output order mirrors LiteRT: pred_feat, stop_logits, next_lm,
@@ -722,6 +798,11 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
             step == 0 ? in_rcache : gpu_rcache[slot_in]));
         ort_check(api_, api_->BindInput(binding, in_n[5], t_pos));
         ort_check(api_, api_->BindInput(binding, in_n[6], t_noise));
+        // Idle prefill inputs — bound to the persistent zero dummies so the
+        // unified graph has every input present (the prefill subgraph isn't run).
+        for (size_t i = 0; i < prefill_io_.in_names.size(); ++i)
+            ort_check(api_, api_->BindInput(
+                binding, prefill_io_.in_names[i], prefill_dummy_vals[i]));
 
         // Output layout: 0=pred_feat, 1=stop_logits, 2=next_lm_hidden,
         // 3=next_residual_hidden, 4=base_cache, 5=residual_cache.
@@ -733,7 +814,7 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
         ort_check(api_, api_->BindOutput(binding, out_n[4], gpu_base[slot_out]));
         ort_check(api_, api_->BindOutput(binding, out_n[5], gpu_rcache[slot_out]));
 
-        ort_check(api_, api_->RunWithBinding(token_step_session_, nullptr, binding));
+        ort_check(api_, api_->RunWithBinding(decoder_session_, nullptr, binding));
         // CPU-bound outputs (pred_feat, stop_logits) need an explicit
         // device->host sync; GPU-bound outputs stay on device.
         ort_check(api_, api_->SynchronizeBoundOutputs(binding));
@@ -795,6 +876,8 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
         if (cuda_alloc) api_->ReleaseAllocator(cuda_alloc);
         if (cuda_mem)   api_->ReleaseMemoryInfo(cuda_mem);
     }
+
+    for (OrtValue* v : prefill_dummy_vals) api_->ReleaseValue(v);
 
     if (steps_in_chunk > 0) {
         flush_decoder(static_cast<size_t>(steps_in_chunk), /*is_final=*/true);
