@@ -19,6 +19,7 @@
 #include "speech_core/models/deepfilter.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_sidon_restorer.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/onnx_personaplex.h"
 #include "speech_core/models/parakeet_stt.h"
@@ -347,6 +348,46 @@ void test_deepfilter(const std::string& dir) {
     REQUIRE(has_signal);
 
     std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+
+void test_sidon_restorer(const std::string& dir) {
+    std::string predictor = dir + "/sidon-predictor.onnx";
+    std::string vocoder = dir + "/sidon-vocoder.onnx";
+    if (!file_exists(predictor) || !file_exists(vocoder)) {
+        std::printf("  [skip] sidon files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_sidon_restorer ... ");
+
+    speech_core::OnnxSidonRestorer rest(predictor, vocoder, /*hw_accel=*/false);
+    REQUIRE(rest.input_sample_rate() == 16000);
+    REQUIRE(rest.output_sample_rate() == 48000);
+
+    // ~1 second of a tone mix at 16 kHz (the model's input rate).
+    std::vector<float> in(16000);
+    for (size_t i = 0; i < in.size(); ++i) {
+        const float t = static_cast<float>(i) / 16000.0f;
+        in[i] = 0.4f * std::sin(2.0f * kPi * 220.0f * t)
+              + 0.2f * std::sin(2.0f * kPi * 880.0f * t);
+    }
+
+    std::vector<float> out = rest.restore(in.data(), in.size(), 16000);
+
+    // Restoration upsamples 16 kHz -> 48 kHz, so expect ~3x the samples.
+    REQUIRE(!out.empty());
+    REQUIRE(out.size() > in.size() * 2);
+
+    bool has_signal = false, has_nan = false;
+    for (float v : out) {
+        if (std::isnan(v) || std::isinf(v)) { has_nan = true; break; }
+        if (std::abs(v) > 1e-6f) has_signal = true;
+    }
+    REQUIRE(!has_nan);
+    REQUIRE(has_signal);
+
+    std::printf("ok (%zu in -> %zu out @ 48k)\n", in.size(), out.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +1011,7 @@ int main() {
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
     RUN(test_deepfilter);
+    RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_silero_vad_cuda);
     RUN(test_onnx_voxcpm2_load);
