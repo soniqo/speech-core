@@ -19,7 +19,7 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
+- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
 - **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
@@ -38,6 +38,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-LiteRT) | Text-to-speech (48 kHz, voice cloning) | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) | Speech restoration — denoise + dereverb (16 kHz → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) | Full-duplex speech-to-speech (CUDA) — 4 variants from 7.6 GB → 17 GB | ✓ | — |
 
 Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embedder into speaker-labelled segments — no ML-runtime dependency of its own.
@@ -158,6 +159,24 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is
     // 48 kHz Float32 PCM, streamed in chunks
 });
 ```
+
+### Speech restoration (Sidon)
+
+Combined denoise + dereverb. A w2v-BERT 2.0 predictor (with a C++ SeamlessM4T
+log-mel front-end) feeds a DAC vocoder; input is resampled to 16 kHz and the
+output is 48 kHz mono. Typical use: clean a reverberant voice-cloning reference
+before handing it to a TTS voice-cloner. Offline / whole-clip, ONNX only.
+
+```cpp
+#include <speech_core/models/onnx_sidon_restorer.h>
+speech_core::OnnxSidonRestorer rest("sidon-predictor.onnx", "sidon-vocoder.onnx");
+
+// Any input rate (resampled to 16 kHz internally) -> 48 kHz mono.
+std::vector<float> clean = rest.restore(ref.data(), ref.size(), ref_rate);
+```
+
+CLI: `speech_sidon_restore <bundle_dir> <in.wav> <out.wav>` (built with
+`SPEECH_CORE_WITH_ONNX=ON`; reads any-rate 16-bit PCM WAV, writes 48 kHz).
 
 Each interface and model is documented in **[docs/interfaces.md](docs/interfaces.md)** and **[docs/models.md](docs/models.md)** (download URLs, sizes, preprocessing).
 

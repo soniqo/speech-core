@@ -387,6 +387,67 @@ void test_sidon_restorer(const std::string& dir) {
     REQUIRE(!has_nan);
     REQUIRE(has_signal);
 
+    // --- 48 kHz output-length contract ---------------------------------------
+    // The DAC vocoder upsamples by a fixed ×960 over the (×2-stacked) frame
+    // count, and the SeamlessM4T front-end emits T = floor(num_frames/2) with
+    // num_frames = 1 + (samples-400)/160. So output samples ≈ T * 960. For
+    // 16000 input samples: num_frames = 98, T = 49, expected ≈ 47040. Allow a
+    // small slack for the vocoder's edge handling.
+    {
+        const int num_frames = 1 + static_cast<int>((in.size() - 400) / 160);
+        const int Texp = num_frames / 2;
+        const size_t expected = static_cast<size_t>(Texp) * 960;
+        const double ratio = static_cast<double>(out.size()) / expected;
+        REQUIRE(ratio > 0.95 && ratio < 1.05);
+    }
+
+    // --- resample-to-16k path -------------------------------------------------
+    // Feed the SAME audio resampled to 48 kHz. The restorer must resample down
+    // to its 16 kHz front-end internally and produce a comparable 48 kHz length
+    // (same underlying ~1 s of content -> same frame count within slack).
+    {
+        auto in_48k = speech_core::Resampler::resample(
+            in.data(), in.size(), 16000, 48000);
+        REQUIRE(!in_48k.empty());
+        auto out_48in = rest.restore(in_48k.data(), in_48k.size(), 48000);
+        REQUIRE(!out_48in.empty());
+        const double ratio = static_cast<double>(out_48in.size()) / out.size();
+        REQUIRE(ratio > 0.95 && ratio < 1.05);
+        for (float v : out_48in) REQUIRE(std::isfinite(v));
+    }
+
+    // --- error / degenerate-input handling -----------------------------------
+    // Null pointer and zero length must return empty, never crash.
+    REQUIRE(rest.restore(nullptr, 0, 16000).empty());
+    REQUIRE(rest.restore(in.data(), 0, 16000).empty());
+    // A clip shorter than one analysis frame yields no features -> empty.
+    {
+        std::vector<float> tiny(200, 0.1f);
+        REQUIRE(rest.restore(tiny.data(), tiny.size(), 16000).empty());
+    }
+
+    // --- EnhancerInterface adapter: equal-rate, equal-length, in-place --------
+    // as_enhancer() resamples the 48 kHz restoration back down to the caller's
+    // rate and writes EXACTLY `length` samples (truncate / zero-pad). Contract:
+    // input_sample_rate() == 16000, output buffer fully written, finite values.
+    {
+        auto enh = rest.as_enhancer();
+        REQUIRE(enh != nullptr);
+        REQUIRE(enh->input_sample_rate() == 16000);
+
+        std::vector<float> adapted(in.size(), -42.0f);  // sentinel
+        enh->enhance(in.data(), in.size(), 16000, adapted.data());
+        // Every sample must have been written (no sentinel survivors) and finite.
+        bool any_sentinel = false, adapter_signal = false;
+        for (float v : adapted) {
+            REQUIRE(std::isfinite(v));
+            if (v == -42.0f) any_sentinel = true;
+            if (std::abs(v) > 1e-6f) adapter_signal = true;
+        }
+        REQUIRE(!any_sentinel);
+        REQUIRE(adapter_signal);
+    }
+
     std::printf("ok (%zu in -> %zu out @ 48k)\n", in.size(), out.size());
 }
 
