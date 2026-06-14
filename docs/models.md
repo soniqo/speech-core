@@ -10,6 +10,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
+| `OnnxSidonRestorer` | (own API; `EnhancerInterface` adapter) | `speech_core/models/onnx_sidon_restorer.h` | full — see [OnnxSidonRestorer](#onnxsidonrestorer) |
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
 | `OnnxPersonaPlex` | `FullDuplexSpeechInterface` | `speech_core/models/onnx_personaplex.h` | structural — see [OnnxPersonaPlex](#onnxpersonaplex) |
@@ -538,6 +539,33 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 - STFT (960/480) → ERB filterbank → neural mask + deep filter coefficients → inverse STFT
 - Auxiliary binary file holds precomputed ERB filterbanks and Vorbis window: `erb_fb [481*32] | erb_inv_fb [32*481] | window [960]` (float32)
 - Model files: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
+
+## OnnxSidonRestorer
+
+Sidon — combined denoise + dereverb speech restoration. Two ONNX graphs (a
+w2v-BERT 2.0 predictor truncated to 8 layers with a merged LoRA, and a DAC
+decoder vocoder) plus a C++ SeamlessM4T log-mel front-end. Input is 16 kHz;
+output is **48 kHz**. Primary use case: clean a reverberant voice-cloning
+reference before a TTS voice-cloner.
+
+```cpp
+#include <speech_core/models/onnx_sidon_restorer.h>
+
+speech_core::OnnxSidonRestorer rest(
+    "/models/sidon-predictor.onnx",
+    "/models/sidon-vocoder.onnx");
+
+// restore() takes audio at any rate (resampled to 16 kHz internally) and
+// returns 48 kHz mono.
+std::vector<float> clean = rest.restore(ref.data(), ref.size(), ref_rate);
+```
+
+- Pipeline: `audio (16 kHz)` → SeamlessM4T log-mel front-end → `input_features [1, T, 160]` → predictor → `features [1, T, 1024]` → DAC vocoder → `audio (48 kHz)`.
+- Front-end (`speech_core/audio/seamless_fbank.h`, pure C++17, in the core lib): Kaldi-compatible 80-bin log-mel (povey window, pre-emphasis 0.97, per-frame DC removal, power spectrum, kaldi mel scale, natural log) + per-mel-bin CMVN + ×2 frame stacking (80 → 160). Validated against `transformers.SeamlessM4TFeatureExtractor` (`facebook/w2v-bert-2.0`): cosine ≈ 1.0, golden-value parity in `test_seamless_fbank`.
+- **Not an `EnhancerInterface`** natively: restoration changes both sample rate (16 → 48 kHz) and length, while `EnhancerInterface` is fixed-rate, equal-length, in-place. Use `restore()`. `as_enhancer()` provides an adapter (resamples 48 kHz back to the input rate/length) for callers that only hold the abstract handle.
+- **ONNX-only.** The DAC decoder's `ConvTranspose1d` does not legalise to TFLite, so there is no LiteRT vocoder (see speech-models `models/sidon/export/NOTES.md`). ONNX FP32 is bit-exact vs PyTorch; FP16 is near-lossless at half the size.
+- CLI: `speech_sidon_restore <bundle_dir> <in.wav> <out.wav>` (`examples/onnx/sidon_restore.cpp`).
+- Model files (provisional): `aufklarer/Sidon-ONNX` — `sidon-predictor.onnx` + `sidon-vocoder.onnx` (FP32 ~939 MB, FP16 ~470 MB).
 
 ## Testing
 

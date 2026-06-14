@@ -42,6 +42,7 @@ add_library(speech_core
     src/audio/fft.cpp
     src/audio/mel.cpp
     src/audio/stft.cpp
+    src/audio/seamless_fbank.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
@@ -116,6 +117,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/kokoro/kokoro_phonemizer.cpp
         src/models/kokoro/kokoro_multilingual.cpp
         src/models/deepfilter/deepfilter.cpp
+        src/models/sidon/onnx_sidon_restorer.cpp
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
         src/models/personaplex/onnx_personaplex.cpp
@@ -182,6 +184,15 @@ if(SPEECH_CORE_WITH_ONNX)
         endif()
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone_onnx PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Sidon speech-restoration CLI (ONNX): denoise + dereverb a clip to
+        # 48 kHz. The in-repo runner for validating the predictor + DAC vocoder
+        # pipeline (and the C++ SeamlessM4T front-end) end-to-end. Desktop only.
+        add_executable(speech_sidon_restore examples/onnx/sidon_restore.cpp)
+        target_link_libraries(speech_sidon_restore PRIVATE speech_core_models)
+        if(MSVC)
+            target_compile_definitions(speech_sidon_restore PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
     endif()
 endif()

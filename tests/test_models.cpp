@@ -19,6 +19,7 @@
 #include "speech_core/models/deepfilter.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_sidon_restorer.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/onnx_personaplex.h"
 #include "speech_core/models/parakeet_stt.h"
@@ -347,6 +348,107 @@ void test_deepfilter(const std::string& dir) {
     REQUIRE(has_signal);
 
     std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+
+void test_sidon_restorer(const std::string& dir) {
+    std::string predictor = dir + "/sidon-predictor.onnx";
+    std::string vocoder = dir + "/sidon-vocoder.onnx";
+    if (!file_exists(predictor) || !file_exists(vocoder)) {
+        std::printf("  [skip] sidon files not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_sidon_restorer ... ");
+
+    speech_core::OnnxSidonRestorer rest(predictor, vocoder, /*hw_accel=*/false);
+    REQUIRE(rest.input_sample_rate() == 16000);
+    REQUIRE(rest.output_sample_rate() == 48000);
+
+    // ~1 second of a tone mix at 16 kHz (the model's input rate).
+    std::vector<float> in(16000);
+    for (size_t i = 0; i < in.size(); ++i) {
+        const float t = static_cast<float>(i) / 16000.0f;
+        in[i] = 0.4f * std::sin(2.0f * kPi * 220.0f * t)
+              + 0.2f * std::sin(2.0f * kPi * 880.0f * t);
+    }
+
+    std::vector<float> out = rest.restore(in.data(), in.size(), 16000);
+
+    // Restoration upsamples 16 kHz -> 48 kHz, so expect ~3x the samples.
+    REQUIRE(!out.empty());
+    REQUIRE(out.size() > in.size() * 2);
+
+    bool has_signal = false, has_nan = false;
+    for (float v : out) {
+        if (std::isnan(v) || std::isinf(v)) { has_nan = true; break; }
+        if (std::abs(v) > 1e-6f) has_signal = true;
+    }
+    REQUIRE(!has_nan);
+    REQUIRE(has_signal);
+
+    // --- 48 kHz output-length contract ---------------------------------------
+    // The DAC vocoder upsamples by a fixed ×960 over the (×2-stacked) frame
+    // count, and the SeamlessM4T front-end emits T = floor(num_frames/2) with
+    // num_frames = 1 + (samples-400)/160. So output samples ≈ T * 960. For
+    // 16000 input samples: num_frames = 98, T = 49, expected ≈ 47040. Allow a
+    // small slack for the vocoder's edge handling.
+    {
+        const int num_frames = 1 + static_cast<int>((in.size() - 400) / 160);
+        const int Texp = num_frames / 2;
+        const size_t expected = static_cast<size_t>(Texp) * 960;
+        const double ratio = static_cast<double>(out.size()) / expected;
+        REQUIRE(ratio > 0.95 && ratio < 1.05);
+    }
+
+    // --- resample-to-16k path -------------------------------------------------
+    // Feed the SAME audio resampled to 48 kHz. The restorer must resample down
+    // to its 16 kHz front-end internally and produce a comparable 48 kHz length
+    // (same underlying ~1 s of content -> same frame count within slack).
+    {
+        auto in_48k = speech_core::Resampler::resample(
+            in.data(), in.size(), 16000, 48000);
+        REQUIRE(!in_48k.empty());
+        auto out_48in = rest.restore(in_48k.data(), in_48k.size(), 48000);
+        REQUIRE(!out_48in.empty());
+        const double ratio = static_cast<double>(out_48in.size()) / out.size();
+        REQUIRE(ratio > 0.95 && ratio < 1.05);
+        for (float v : out_48in) REQUIRE(std::isfinite(v));
+    }
+
+    // --- error / degenerate-input handling -----------------------------------
+    // Null pointer and zero length must return empty, never crash.
+    REQUIRE(rest.restore(nullptr, 0, 16000).empty());
+    REQUIRE(rest.restore(in.data(), 0, 16000).empty());
+    // A clip shorter than one analysis frame yields no features -> empty.
+    {
+        std::vector<float> tiny(200, 0.1f);
+        REQUIRE(rest.restore(tiny.data(), tiny.size(), 16000).empty());
+    }
+
+    // --- EnhancerInterface adapter: equal-rate, equal-length, in-place --------
+    // as_enhancer() resamples the 48 kHz restoration back down to the caller's
+    // rate and writes EXACTLY `length` samples (truncate / zero-pad). Contract:
+    // input_sample_rate() == 16000, output buffer fully written, finite values.
+    {
+        auto enh = rest.as_enhancer();
+        REQUIRE(enh != nullptr);
+        REQUIRE(enh->input_sample_rate() == 16000);
+
+        std::vector<float> adapted(in.size(), -42.0f);  // sentinel
+        enh->enhance(in.data(), in.size(), 16000, adapted.data());
+        // Every sample must have been written (no sentinel survivors) and finite.
+        bool any_sentinel = false, adapter_signal = false;
+        for (float v : adapted) {
+            REQUIRE(std::isfinite(v));
+            if (v == -42.0f) any_sentinel = true;
+            if (std::abs(v) > 1e-6f) adapter_signal = true;
+        }
+        REQUIRE(!any_sentinel);
+        REQUIRE(adapter_signal);
+    }
+
+    std::printf("ok (%zu in -> %zu out @ 48k)\n", in.size(), out.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +1072,7 @@ int main() {
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
     RUN(test_deepfilter);
+    RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_silero_vad_cuda);
     RUN(test_onnx_voxcpm2_load);
