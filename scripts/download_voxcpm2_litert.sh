@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Download VoxCPM2 LiteRT model bundle (mixed int8/fp16, ~6.4 GB) for the
-# LiteRTVoxCPM2Tts skeleton test. token-step is FP16 (INT8 there broke
-# sibilants — the AR acoustic path needs >=16-bit); text-prefill is INT8
-# (context-only, clean). The all-INT8 variant was decommissioned. Kept
-# separate from download_models_litert.sh because the
-# bundle is too large to fit comfortably in the nightly's actions/cache
-# budget (10 GB per repo, shared).
+# Download the VoxCPM2 LiteRT bundle for the LiteRTVoxCPM2Tts test. The repo
+# root holds the ARM/'selective' bundle (fp16 token-step + fp32 LocDiT, ~8.7 GB);
+# on x86_64 this script instead pulls the fp32-token-step bundle from the repo's
+# fp32-p16/ subdir (~13 GB) — the fp16 token-step over-generates on x86 (its
+# stop-margin rounds the wrong way under x86 XNNPACK so the stop token never
+# fires). Kept separate from download_models_litert.sh because the bundle is too
+# large for the nightly's actions/cache budget (10 GB per repo, shared).
 #
 # Usage:
 #     scripts/download_voxcpm2_litert.sh [output_dir]
@@ -17,6 +17,13 @@
 set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo/VoxCPM2-LiteRT/resolve/main"
+# x86_64 pulls the fp32-token-step variant (fp16 over-generates on x86); ARM
+# uses the repo-root 'selective'. Local layout stays flat — point
+# SPEECH_LITERT_MODEL_DIR at $OUT either way.
+case "$(uname -m)" in
+    x86_64|amd64) URL_SUBDIR="fp32-p16/" ;;
+    *)            URL_SUBDIR="" ;;
+esac
 OUT="${1:-$(dirname "$0")/models-voxcpm2}"
 mkdir -p "$OUT"
 
@@ -39,7 +46,7 @@ for rel in "${FILES[@]}"; do
         continue
     fi
     echo "[fetch] $rel"
-    if ! curl -fL --retry 3 -o "$dest" "$BASE_URL/$rel"; then
+    if ! curl -fL --retry 3 -o "$dest" "$BASE_URL/$URL_SUBDIR$rel"; then
         echo "[warn] $rel not available (HTTP error) — leaving missing"
         rm -f "$dest"
     fi

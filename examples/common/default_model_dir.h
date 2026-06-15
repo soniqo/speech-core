@@ -42,5 +42,9 @@ inline std::string speech_example_model_dir() {
 /// Default directory for the VoxCPM2 LiteRT bundle.
 inline std::string speech_example_voxcpm2_dir() {
     if (const char* e = std::getenv("SPEECH_LITERT_MODEL_DIR"); e && *e) return e;
-    return speech_example_cache_dir() + "/soniqo__VoxCPM2-LiteRT";
+    std::string d = speech_example_cache_dir() + "/soniqo__VoxCPM2-LiteRT";
+#if defined(__x86_64__) || defined(_M_X64)
+    d += "/fp32-p16";  // x86 fetches the fp32-token-step bundle (see voxcpm2_c.cpp)
+#endif
+    return d;
 }

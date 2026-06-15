@@ -172,6 +172,9 @@ void download_bundle(const std::string& repo, const std::string& revision,
         const std::string& file = files[i];
         const fs::path final_path = fs::path(dest_dir) / file;
         const fs::path part_path = fs::path(dest_dir) / (file + ".part");
+        // A file may carry a subdir (e.g. "fp32-p16/foo.tflite", for the x86
+        // bundle variant) — create its parent so the .part write succeeds.
+        fs::create_directories(final_path.parent_path(), ec);
         const std::string url = resolve_url(repo, revision, file);
 
         const uint64_t total = remote_size(url);
