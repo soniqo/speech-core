@@ -1,12 +1,10 @@
 // Micro-benchmark for the ORT models (Silero VAD, Parakeet STT, Kokoro TTS).
 // Runs each model on the test fixture, reports load time / latency / RTF /
-// peak RSS. Pick the provider via env: SPEECH_CORE_ORT_PROVIDER=cuda|cpu.
-// hw_accel is wired true so the engine actually engages the GPU EP under CUDA.
+// peak RSS.
 //
 // Build: part of the SPEECH_CORE_WITH_ONNX target set.
 // Run:
-//   SPEECH_CORE_ORT_PROVIDER=cpu  SPEECH_MODEL_DIR=scripts/models ./build-cuda/Release/bench_ort_models.exe
-//   SPEECH_CORE_ORT_PROVIDER=cuda SPEECH_MODEL_DIR=scripts/models ./build-cuda/Release/bench_ort_models.exe
+//   SPEECH_MODEL_DIR=scripts/models ./build/Release/bench_ort_models.exe
 //
 // Reports machine-readable CSV lines to stdout, headed by a # comment.
 
@@ -72,10 +70,7 @@ std::string env_model_dir() {
 }
 
 const char* provider_label() {
-    auto p = OnnxEngine::get().gpu_provider();
-    if (p == OrtGpuProvider::Cuda)     return "cuda";
-    if (p == OrtGpuProvider::TensorRT) return "tensorrt";
-    return "cpu";
+    return OnnxEngine::get().has_gpu_provider() ? "gpu" : "cpu";
 }
 
 struct WavData { std::vector<float> samples; int sample_rate = 0; };

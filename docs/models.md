@@ -232,14 +232,14 @@ auto final   = stt.end_stream();
 
 ## OnnxPersonaPlex
 
-> **Status: shipped on HuggingFace.** All four ONNX graphs exported, parity-verified, quantized through multiple recipes. Four production bundle variants live at [**soniqo/PersonaPlex-7B-ONNX**](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX): `fp16`, `mixed`, `int8-nb-dep_gint8` ⭐ (recommended ship default), and `int4-nb-dep_gint8`. All run end-to-end on CUDA EP with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio.
+> **Status: shipped on HuggingFace.** All four ONNX graphs exported, parity-verified, quantized through multiple recipes. Four production bundle variants live at [**soniqo/PersonaPlex-7B-ONNX**](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX): `fp16`, `mixed`, `int8-nb-dep_gint8` ⭐ (recommended ship default), and `int4-nb-dep_gint8`. All run end-to-end with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio.
 
 ### Quick start — the customer-service round-trip
 
 ```bash
-# Build (Windows, ORT GPU 1.26):
-cmake -B build-ort -DSPEECH_CORE_WITH_ONNX=ON -DSPEECH_CORE_WITH_CUDA=ON \
-    -DORT_DIR=path/to/onnxruntime-win-x64-gpu-1.26.0
+# Build (Windows, ORT 1.26):
+cmake -B build-ort -DSPEECH_CORE_WITH_ONNX=ON \
+    -DORT_DIR=path/to/onnxruntime-win-x64-1.26.0
 cmake --build build-ort --config Release --target run_personaplex
 
 # Download the recommended ship default bundle from HF (9.4 GB):
@@ -291,7 +291,7 @@ NVIDIA's PersonaPlex 7B — a full-duplex speech-to-speech model on Kyutai's Mos
 | 3 | `depformer_step` ONNX with per-step weight Gather | ✅ shipped, with custom 3D-Gather INT8 quant in `quantize_depformer_gather.py` | |
 | 4 | `FullDuplexSpeechInterface` | ✅ shipped | `include/speech_core/interfaces.h` |
 | 5 | `OnnxPersonaPlex` wrapper | ✅ shipped end-to-end, multi-turn KV cache, auto-detect dtypes, GPU-resident KV | `include/speech_core/models/onnx_personaplex.h`, `src/models/personaplex/onnx_personaplex.cpp` |
-| 6 | CUDA EP routing | ✅ shipped (via `OnnxEngine` with `SPEECH_CORE_WITH_CUDA=ON`); IOBinding + CUDA Graph capture remain as opt-in scaffolding for follow-up | `include/speech_core/models/onnx_engine.h` |
+| 6 | Custom EP routing | ✅ shipped via `OnnxEngine::SessionOptionsHook`; alternate input-binding paths remain runtime-gated by `has_gpu_provider()` | `include/speech_core/models/onnx_engine.h` |
 | 7 | 4 bundle variants on HuggingFace + downloader + tests | ✅ shipped | `soniqo/PersonaPlex-7B-ONNX`, `scripts/download_personaplex_onnx.sh`, `tests/test_models.cpp::test_onnx_personaplex_load` |
 
 ### Bundle variants on HuggingFace

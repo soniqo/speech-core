@@ -8,9 +8,6 @@
 // Primary use case: clean a reverberant voice-cloning reference before a TTS
 // voice-cloner. Offline / whole-clip; this is not a streaming tool.
 //
-// Execution provider is chosen by SPEECH_CORE_ORT_PROVIDER (cpu | cuda |
-// tensorrt). Requires a SPEECH_CORE_WITH_ONNX build; CUDA/TRT additionally need
-// SPEECH_CORE_WITH_CUDA and a GPU onnxruntime (ORT_DIR).
 //
 // Usage:
 //   speech_sidon_restore <bundle_dir> <in.wav> <out.wav>
@@ -132,18 +129,13 @@ int main(int argc, char** argv) {
     if (args.size() < 4) {
         std::fprintf(stderr,
             "usage: %s <bundle_dir> <in.wav> <out.wav>\n"
-            "  bundle_dir : dir with sidon-predictor.onnx + sidon-vocoder.onnx\n"
-            "  provider via SPEECH_CORE_ORT_PROVIDER=cpu|cuda|tensorrt\n",
+            "  bundle_dir : dir with sidon-predictor.onnx + sidon-vocoder.onnx\n",
             args.empty() ? "speech_sidon_restore" : args[0].c_str());
         return 2;
     }
     const std::string bundle  = args[1];
     const std::string in_wav  = args[2];
     const std::string out_wav = args[3];
-
-    const char* prov = std::getenv("SPEECH_CORE_ORT_PROVIDER");
-    std::fprintf(stderr, "ORT provider request: %s\n",
-                 (prov && *prov) ? prov : "cpu/cuda (build default)");
 
     std::vector<float> in;
     int in_rate = 0;

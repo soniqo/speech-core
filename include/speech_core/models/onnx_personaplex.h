@@ -29,10 +29,10 @@ namespace speech_core {
 ///   `voices/<name>.bin`         — per-voice audio embeddings (~6 KB each)
 ///   `config.json`               — bundle config (delays, vocab sizes, etc.)
 ///
-/// Hardware accel is automatic via OnnxEngine: CUDA EP on Linux/Windows when
-/// `SPEECH_CORE_WITH_CUDA=ON`, NNAPI on Android, CPU fallback otherwise.
-/// The temporal KV cache is ~1.5 GB fp16 at full ctx; GPU-resident via
-/// IOBinding when CUDA EP is active (PR 6).
+/// Hardware accel is automatic via OnnxEngine: hardware EP via the optional
+/// SessionOptionsHook, NNAPI on Android, CPU fallback otherwise.
+/// The temporal KV cache is ~1.5 GB fp16 at full ctx; alternate input-binding
+/// path activates when OnnxEngine::has_gpu_provider() reports true.
 ///
 /// Implements FullDuplexSpeechInterface. Mirrors speech-swift's
 /// PersonaPlexModel.respondStream contract: caller pushes user PCM, the

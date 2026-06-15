@@ -109,10 +109,10 @@ OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& decoder_path,
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
     // The unified graph runs both the one-shot prefill and the 25-60 per-step
-    // token decodes. Token-step shapes are fixed, so this is still the CUDA
-    // Graph capture target (SPEECH_CORE_CUDA_GRAPH=1).
+    // token decodes. Token-step shapes are fixed, so this is the capture
+    // hint target on hardware EPs that support graph capture.
     decoder_session_       = engine.load(decoder_path, hw_accel,
-                                         engine.cuda_graph_enabled());
+                                         /*capture_hint=*/true);
     audio_encoder_session_ = engine.load(audio_encoder_path, hw_accel);
     audio_decoder_session_ = engine.load(audio_decoder_path, hw_accel);
 
@@ -601,7 +601,7 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     // status with "No requested allocator available" and we fall through to
     // the host path.
     bool use_gpu_bind =
-        OnnxEngine::get().gpu_provider() != OrtGpuProvider::None
+        OnnxEngine::get().has_gpu_provider()
         && std::getenv("SPEECH_CORE_VOXCPM2_NO_IOBINDING") == nullptr;
 
     OrtMemoryInfo* cuda_mem = nullptr;

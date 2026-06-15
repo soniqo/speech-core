@@ -514,103 +514,12 @@ void test_kokoro_parakeet_roundtrip(const std::string& dir) {
     std::printf("ok\n");
 }
 
-// ---------------------------------------------------------------------------
-// OnnxEngine GPU / fallback smoke test — confirms the GPU resolution machinery
-// works regardless of whether CUDA was wired into this build. On a CPU-only
-// build (SPEECH_CORE_WITH_CUDA undefined) the engine must report None and no
-// fallbacks. On a CUDA-enabled build with a GPU-enabled ORT, the env var
-// SPEECH_CORE_ORT_PROVIDER=cpu forces None even on a GPU box (kept here for
-// hand-running; the test itself doesn't set it). Always cheap to run.
-// ---------------------------------------------------------------------------
-
 void test_onnx_engine_provider_resolution(const std::string& /*dir*/) {
     std::printf("  test_onnx_engine_provider_resolution ... ");
     auto& engine = OnnxEngine::get();
     REQUIRE(engine.api() != nullptr);
-
-#if defined(SPEECH_CORE_WITH_CUDA)
-    // Build was wired for GPU — provider may be Cuda, TensorRT, or None
-    // depending on whether the linked ORT actually shipped the EP and the
-    // env override. CPU is a valid degraded outcome; just check the value
-    // is one of the enum members and the accessors are stable.
-    auto p = engine.gpu_provider();
-    REQUIRE(p == OrtGpuProvider::None
-         || p == OrtGpuProvider::Cuda
-         || p == OrtGpuProvider::TensorRT);
-#else
-    // Build didn't include CUDA — provider MUST be None and there can never
-    // be a GPU fallback (we don't even try to load CUDA).
-    REQUIRE(engine.gpu_provider() == OrtGpuProvider::None);
-    REQUIRE(engine.had_gpu_fallback() == false);
-    REQUIRE(engine.gpu_fallback_reason().empty());
-#endif
-    std::printf("ok (provider=%s)\n",
-                engine.gpu_provider() == OrtGpuProvider::Cuda     ? "CUDA"     :
-                engine.gpu_provider() == OrtGpuProvider::TensorRT ? "TensorRT" : "CPU");
-}
-
-// ---------------------------------------------------------------------------
-// Silero VAD on CUDA — only meaningful on a CUDA build with a GPU-enabled ORT
-// AND an available NVIDIA device. Loads Silero with hw_accel=true so the
-// engine genuinely runs it through the CUDA EP (the other model wrappers
-// default hw_accel=false because their numerics are fragile under non-CPU
-// EPs; Silero is robust). The assertion is twofold:
-//   1. After load, the engine reports no GPU fallback (i.e. CUDA actually
-//      took the session).
-//   2. The model produces probabilities in [0,1] on real audio — a NaN or
-//      blown-up output would catch silent EP-routing bugs that "session
-//      loaded without throwing" misses.
-// Skipped on non-CUDA builds or when gpu_provider() == None (no GPU on box).
-// ---------------------------------------------------------------------------
-
-void test_silero_vad_cuda(const std::string& dir) {
-#if !defined(SPEECH_CORE_WITH_CUDA)
-    std::printf("  [skip] test_silero_vad_cuda — build is not CUDA-enabled\n");
-    (void)dir;
-    return;
-#else
-    if (OnnxEngine::get().gpu_provider() == OrtGpuProvider::None) {
-        std::printf("  [skip] test_silero_vad_cuda — no GPU EP available at runtime\n");
-        return;
-    }
-    std::string model = dir + "/silero-vad.onnx";
-    if (!file_exists(model)) {
-        std::printf("  [skip] silero-vad.onnx not in %s\n", dir.c_str());
-        return;
-    }
-    std::printf("  test_silero_vad_cuda ... ");
-
-    // hw_accel=true asks the engine to route through CUDA. After load(), if
-    // the session creation fell back to CPU (CUDA EP rejected the model for
-    // any reason — most often a missing cuDNN side-load), had_gpu_fallback()
-    // flips true with a reason. We skip (rather than fail) in that case so
-    // the test runs cleanly on a CPU/CUDA-toolkit-only host; the strong
-    // assertion is reserved for when the GPU EP actually ran.
-    speech_core::SileroVad vad(model, /*hw_accel=*/true);
-    auto& engine = OnnxEngine::get();
-    if (engine.had_gpu_fallback()) {
-        std::printf("[skip] GPU EP unavailable at runtime: %s\n",
-                    engine.gpu_fallback_reason().c_str());
-        return;
-    }
-
-    REQUIRE(vad.input_sample_rate() == 16000);
-    REQUIRE(vad.chunk_size() == 512);
-
-    // Run a few chunks of a speech-band tone — output must be finite and
-    // in-range. A CUDA-routed graph that returned NaN/inf would catch a
-    // silent kernel-precision problem.
-    auto tone = generate_tone(16000, 220.0f, 1.0f, 0.4f);
-    float peak = 0.0f;
-    for (size_t i = 0; i + 512 <= tone.size(); i += 512) {
-        float p = vad.process_chunk(tone.data() + i, 512);
-        REQUIRE(std::isfinite(p));
-        REQUIRE(p >= -0.01f && p <= 1.01f);
-        if (p > peak) peak = p;
-    }
-
-    std::printf("ok (provider=CUDA peak=%.3f)\n", peak);
-#endif
+    REQUIRE(engine.has_gpu_provider() == false);
+    std::printf("ok\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -859,11 +768,9 @@ void test_onnx_voxcpm2_wer_corpus(const std::string& dir) {
     // falls back to the pre-existing host path -- making this print the only
     // way a reviewer or CI can tell whether the GPU+IoBinding code was actually
     // exercised, or whether a green run only validates the legacy path.
-    const auto _gpu = OnnxEngine::get().gpu_provider();
-    const char* _gpu_name = (_gpu == OrtGpuProvider::Cuda     ? "CUDA"
-                          :  _gpu == OrtGpuProvider::TensorRT ? "TensorRT"
-                          :                                     "CPU (host path)");
-    const char* _bind = (_gpu == OrtGpuProvider::None ? "OFF" : "ON");
+    const bool _gpu_on = OnnxEngine::get().has_gpu_provider();
+    const char* _gpu_name = _gpu_on ? "GPU (via hook)" : "CPU (host path)";
+    const char* _bind = _gpu_on ? "ON" : "OFF";
     std::printf("  test_onnx_voxcpm2_wer_corpus [provider=%s iobinding=%s] ... ",
                 _gpu_name, _bind);
     std::fflush(stdout);
@@ -1074,7 +981,6 @@ int main() {
     RUN(test_deepfilter);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
-    RUN(test_silero_vad_cuda);
     RUN(test_onnx_voxcpm2_load);
     RUN(test_onnx_voxcpm2_parakeet_roundtrip);
     RUN(test_onnx_voxcpm2_wer_corpus);

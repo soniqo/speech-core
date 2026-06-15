@@ -6,9 +6,6 @@
 // through OnnxVoxCPM2Tts, so this is the in-repo runner for validating the
 // ONNX path end-to-end (perceptually, not just tensor cosines) on CPU and GPU.
 //
-// Execution provider is chosen by the SPEECH_CORE_ORT_PROVIDER env var
-// (cpu | cuda | tensorrt). Requires a SPEECH_CORE_WITH_ONNX build; CUDA/TRT
-// additionally need SPEECH_CORE_WITH_CUDA and a GPU onnxruntime (ORT_DIR).
 //
 // Usage:
 //   speech_voxcpm2_clone_onnx <bundle_dir> <ref.wav> "<text>" <out.wav> \
@@ -135,8 +132,7 @@ int main(int argc, char** argv) {
     if (args.size() < 5) {
         std::fprintf(stderr,
             "usage: %s <bundle_dir> <ref.wav> \"<text>\" <out.wav> "
-            "[instruction] [max_steps] [seed]\n"
-            "  provider via SPEECH_CORE_ORT_PROVIDER=cpu|cuda|tensorrt\n",
+            "[instruction] [max_steps] [seed]\n",
             args.empty() ? "speech_voxcpm2_clone_onnx" : args[0].c_str());
         return 2;
     }
@@ -147,9 +143,6 @@ int main(int argc, char** argv) {
     const std::string instruction = (args.size() >= 6) ? args[5] : "";
     const int         max_steps   = (args.size() >= 7) ? std::atoi(args[6].c_str()) : 256;
     const long        seed        = (args.size() >= 8) ? std::atol(args[7].c_str()) : 0;
-
-    const char* prov = std::getenv("SPEECH_CORE_ORT_PROVIDER");
-    std::fprintf(stderr, "ORT provider request: %s\n", (prov && *prov) ? prov : "cuda (build default)");
 
     const bool no_ref = (ref_wav == "none");
     std::vector<float> ref;
