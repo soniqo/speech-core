@@ -55,11 +55,15 @@ typedef void (*sc_voxcpm2_progress_fn)(const char* filename, int file_index,
 /// retried, so they tolerate network interruptions (override the host with the
 /// HF_ENDPOINT env var to use a mirror).
 ///
-///   model_id         : HF repo id.
+///   model_id         : HF repo id (e.g. "soniqo/VoxCPM2-LiteRT"). On x86_64 the
+///                      fp32-token-step bundle is fetched from the repo's
+///                      "fp32-p16/" subdir (the fp16 token-step over-generates
+///                      on x86); ARM64 uses the fp16 bundle at the repo root.
 ///   revision         : git revision/branch; NULL or "" means "main".
 ///   cache_dir        : where bundles are cached; NULL uses a per-user default
 ///                      (SPEECH_CORE_CACHE_DIR env, else the OS cache dir). The
-///                      bundle lands in <cache_dir>/<model_id with '/'→'__'>.
+///                      bundle lands in <cache_dir>/<model_id with '/'→'__'>
+///                      (plus the "/fp32-p16" subdir on x86_64).
 ///   on_progress      : optional, may be NULL.
 ///   progress_context : passed back to on_progress.
 ///

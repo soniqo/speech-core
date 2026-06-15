@@ -166,13 +166,38 @@ int main(int argc, char** argv) {
     }
     const std::string bundle      = has_dir ? args[1] : speech_example_voxcpm2_dir();
     const std::string ref_wav     = args[base];
-    const std::string text        = args[base + 1];
+    std::string       text        = args[base + 1];
     const std::string out_wav     = args[base + 2];
     // No default style instruction: conditioning on an (English) style line
     // measurably shifts a non-English clone away from the reference voice.
     const std::string instruction = (static_cast<int>(args.size()) >= base + 4) ? args[base + 3] : "";
-    const int         max_steps   = (static_cast<int>(args.size()) >= base + 5) ? std::atoi(args[base + 4].c_str()) : 256;
-    const long        seed        = (static_cast<int>(args.size()) >= base + 6) ? std::atol(args[base + 5].c_str()) : 0;
+    int               max_steps   = (static_cast<int>(args.size()) >= base + 5) ? std::atoi(args[base + 4].c_str()) : 256;
+    long              seed        = (static_cast<int>(args.size()) >= base + 6) ? std::atol(args[base + 5].c_str()) : 0;
+
+    // [verify] @file text source: read the prompt from a UTF-8 file when the
+    // text arg is "@<path>", sidestepping Windows argv quote-mangling on phrases
+    // with embedded double-quotes (which silently shift the later positional
+    // args — e.g. max_steps parsed as 0, yielding a 0-step "no audio" render).
+    if (!text.empty() && text[0] == '@') {
+        std::ifstream tf(std::filesystem::u8path(text.substr(1)),
+                         std::ios::binary | std::ios::ate);
+        if (tf) {
+            const std::streamsize sz = tf.tellg();
+            tf.seekg(0);
+            std::string ft(static_cast<size_t>(sz), '\0');
+            tf.read(&ft[0], sz);
+            while (!ft.empty() && (ft.back() == '\n' || ft.back() == '\r'
+                                   || ft.back() == ' ' || ft.back() == '\t'))
+                ft.pop_back();
+            text = ft;
+        }
+    }
+    // [verify] env overrides for deterministic A/B without the positional empty
+    // instruction arg (PowerShell drops "" and shifts max_steps/seed left).
+    if (const char* e = std::getenv("VOXCPM2_MAX_STEPS")) { if (*e) max_steps = std::atoi(e); }
+    if (const char* e = std::getenv("VOXCPM2_SEED"))      { if (*e) seed     = std::atol(e); }
+    std::fprintf(stderr, "PARSED text_len=%zu out=%s max_steps=%d seed=%ld\n",
+                 text.size(), out_wav.c_str(), max_steps, seed);
 
     const bool no_ref = (ref_wav == "none");
     std::vector<float> ref;
@@ -238,6 +263,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "wrote %zu samples (%.2fs @ %d Hz) to %s (seed=%u)\n",
                      audio.size(), double(audio.size()) / kOutSampleRate,
                      kOutSampleRate, out_wav.c_str(), tts.seed_used());
+        // [verify-instrumentation] exact stop metadata for the over-generation
+        // check: tokens_generated == AR steps emitted; stopped_on_stop_token
+        // distinguishes a model-driven stop from hitting the max_steps cap.
+        std::fprintf(stderr,
+                     "METADATA tokens_generated=%d stopped_on_stop_token=%s "
+                     "min_stop=%d max_steps=%d duration_s=%.2f\n",
+                     tts.tokens_generated(),
+                     tts.stopped_on_stop_token() ? "true" : "false",
+                     min_stop, max_steps,
+                     double(audio.size()) / kOutSampleRate);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         return 1;

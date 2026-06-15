@@ -65,6 +65,17 @@ std::string sanitize_repo(const std::string& id) {
     return s;
 }
 
+// Arch-appropriate VoxCPM2 LiteRT bundle subdir within the HF repo. On x86_64
+// the fp16 token-step over-generates (its stop-margin rounds the wrong way on
+// x86 XNNPACK so the stop token never fires); desktop x86 therefore pulls the
+// fp32-token-step bundle from the repo's "fp32-p16/" subdir. ARM64 (native
+// fp16, correct) uses the fp16 'selective' bundle at the repo root.
+#if defined(__x86_64__) || defined(_M_X64)
+constexpr const char* kBundleSubdir = "fp32-p16";
+#else
+constexpr const char* kBundleSubdir = "";
+#endif
+
 }  // namespace
 
 extern "C" {
@@ -92,13 +103,16 @@ sc_voxcpm2_t sc_voxcpm2_create_from_pretrained(const char* model_id,
             (cache_dir && *cache_dir) ? std::string(cache_dir) : default_cache_dir();
         const std::string dir = base + "/" + sanitize_repo(repo);
 
-        // The five files LiteRTVoxCPM2Tts needs to construct a synthesizer.
-        static const std::vector<std::string> kFiles = {
-            "voxcpm2-text-prefill.tflite",
-            "voxcpm2-token-step.tflite",
-            "voxcpm2-audio-encoder.tflite",
-            "voxcpm2-audio-decoder.tflite",
-            "tokenizer.json",
+        // The five files LiteRTVoxCPM2Tts needs, under the arch-appropriate
+        // bundle subdir (x86 -> "fp32-p16/", ARM -> repo root). The subdir is
+        // part of each fetched path, so the bundle lands in dir/<subdir>/.
+        const std::string sub = *kBundleSubdir ? std::string(kBundleSubdir) + "/" : "";
+        const std::vector<std::string> kFiles = {
+            sub + "voxcpm2-text-prefill.tflite",
+            sub + "voxcpm2-token-step.tflite",
+            sub + "voxcpm2-audio-encoder.tflite",
+            sub + "voxcpm2-audio-decoder.tflite",
+            sub + "tokenizer.json",
         };
 
         speech_core::hf::ProgressFn cb;
@@ -110,7 +124,7 @@ sc_voxcpm2_t sc_voxcpm2_create_from_pretrained(const char* model_id,
             };
         }
         speech_core::hf::download_bundle(repo, rev, kFiles, dir, cb);
-        return create_from_dir(dir);
+        return create_from_dir(*kBundleSubdir ? dir + "/" + kBundleSubdir : dir);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[speech ERROR] sc_voxcpm2_create_from_pretrained: %s\n",
                      e.what());
