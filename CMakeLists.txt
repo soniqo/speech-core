@@ -7,19 +7,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
-option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)" OFF)
-option(SPEECH_CORE_WITH_CUDA "Enable NVIDIA GPU execution providers (CUDA / TensorRT) in the ONNX engine. Requires SPEECH_CORE_WITH_ONNX=ON and ORT_DIR pointing at a GPU-enabled ONNX Runtime (onnxruntime-gpu). Selection is further gated at runtime by env SPEECH_CORE_ORT_PROVIDER and provider availability, with automatic CPU fallback." OFF)
+option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)." OFF)
 option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
 option(SPEECH_CORE_PACKAGE "Add install rules for the CLI tools + bundled runtime libraries and configure CPack (Linux .deb / .tar.gz). Linux-only; see the Packaging section at the bottom of this file." OFF)
 set(SPEECH_CORE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into binary packages. The release workflow passes the git tag (e.g. 0.0.8); local builds default to the project version.")
-
-if(SPEECH_CORE_WITH_CUDA AND NOT SPEECH_CORE_WITH_ONNX)
-    message(FATAL_ERROR "SPEECH_CORE_WITH_CUDA=ON requires SPEECH_CORE_WITH_ONNX=ON "
-                        "(CUDA / TensorRT EPs are ONNX-Runtime-only; LiteRT cannot use CUDA).")
-endif()
 
 if(SPEECH_CORE_WITH_HF_DOWNLOAD AND NOT SPEECH_CORE_WITH_LITERT)
     message(FATAL_ERROR "SPEECH_CORE_WITH_HF_DOWNLOAD=ON requires SPEECH_CORE_WITH_LITERT=ON "
@@ -151,21 +145,6 @@ if(SPEECH_CORE_WITH_ONNX)
 
     # See speech_core above — same reason.
     set_target_properties(speech_core_models PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-    # NVIDIA GPU execution providers (CUDA / TensorRT). Compile-time gate only:
-    # ORT_DIR must point at a GPU-enabled onnxruntime so the CUDA/TensorRT EP
-    # symbols are present in libonnxruntime at link/load time. The V2 provider
-    # API used in onnx_engine.h returns failure (not a crash) on a CPU-only
-    # runtime, so a binary built with this flag still runs on a CPU-only host;
-    # runtime selection is gated by env SPEECH_CORE_ORT_PROVIDER + provider
-    # availability. No extra link libs are needed — the EP lives inside the
-    # imported onnxruntime shared object (or its companion provider .so loaded
-    # at runtime by ORT itself).
-    if(SPEECH_CORE_WITH_CUDA)
-        target_compile_definitions(speech_core_models PUBLIC SPEECH_CORE_WITH_CUDA)
-        message(STATUS "speech_core_models: NVIDIA GPU EPs enabled (SPEECH_CORE_WITH_CUDA). "
-                       "Ensure ORT_DIR is a GPU-enabled ONNX Runtime.")
-    endif()
 
     target_link_libraries(speech_core_models PUBLIC speech_core onnxruntime)
 

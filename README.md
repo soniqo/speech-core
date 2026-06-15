@@ -50,7 +50,7 @@ Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embed
 | ONNX | `speech_core_models` | `onnxruntime` | Linux, macOS, Windows, Android | `ORT_DIR` from an ONNX Runtime release |
 | LiteRT | `speech_core_models_litert` | `libLiteRt` | Linux x86_64, Windows x86_64, Android, macOS arm64 | `scripts/fetch_litert.sh` (extracts from the `ai-edge-litert` PyPI wheel) |
 
-**Hardware acceleration.** ONNX: NNAPI on Android, QNN on Qualcomm Linux (drop `libQnnHtp.so` on the lib path), optional NVIDIA CUDA / TensorRT via `-DSPEECH_CORE_WITH_CUDA=ON` — runtime-gated by `SPEECH_CORE_ORT_PROVIDER` with silent CPU fallback. LiteRT runs CPU only today; Hexagon / GPU delegates exist in `libLiteRt` but aren't wired through the C API yet.
+**Hardware acceleration.** ONNX: CPU, NNAPI on Android, QNN on Qualcomm Linux (drop `libQnnHtp.so` on the lib path). For other accelerators, install a `SessionOptionsHook` on `OnnxEngine` to append your provider before `CreateSession`. LiteRT runs CPU only today; Hexagon / GPU delegates exist in `libLiteRt` but aren't wired through the C API yet.
 
 ## Quick start
 
@@ -214,9 +214,6 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 
 # + ONNX backend
 cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime && cmake --build build
-
-# + ONNX with NVIDIA CUDA / TensorRT (ORT_DIR must be a GPU-enabled ONNX Runtime)
-cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DSPEECH_CORE_WITH_CUDA=ON -DORT_DIR=/path/to/onnxruntime-gpu && cmake --build build
 
 # + LiteRT backend
 scripts/fetch_litert.sh build/litert

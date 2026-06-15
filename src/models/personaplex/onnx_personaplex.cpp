@@ -187,7 +187,7 @@ OnnxPersonaPlex::OnnxPersonaPlex(const std::string& mimi_encoder_path,
     // host vectors. Eliminates ~1.5 GB of host RAM + 16 Memcpy nodes/step.
     // Opt-out via SPEECH_CORE_PP_GPU_KV=0 to fall back to the host path
     // (useful for debugging or CPU-only sessions).
-    if (OnnxEngine::get().gpu_provider() != OrtGpuProvider::None) {
+    if (OnnxEngine::get().has_gpu_provider()) {
         const char* off = std::getenv("SPEECH_CORE_PP_GPU_KV");
         gpu_kv_enabled_ = (!off || std::strcmp(off, "0") != 0);
 

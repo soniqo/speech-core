@@ -30,7 +30,7 @@ namespace speech_core {
 /// Backend note: this ships on ONNX Runtime only. The DAC decoder's
 /// `ConvTranspose1d` does not legalise to TFLite, so there is no LiteRT vocoder
 /// (documented in NOTES). Both graphs run through the shared `OnnxEngine`
-/// (CPU, or CUDA/TensorRT on a SPEECH_CORE_WITH_CUDA build, with CPU fallback;
+/// (CPU, or hardware EP via the optional SessionOptionsHook with CPU fallback;
 /// NNAPI/QNN on Android).
 ///
 /// Use case: clean a reverberant voice-cloning reference clip before feeding it

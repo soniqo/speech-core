@@ -26,7 +26,7 @@ namespace speech_core {
 ///
 /// Mirrors LiteRTVoxCPM2Tts byte-for-byte at the AR-loop level. The four ORT
 /// sessions are loaded through OnnxEngine, which routes hw_accel=true to the
-/// CUDA EP on a SPEECH_CORE_WITH_CUDA build (with automatic CPU fallback) and
+/// hardware EP via the optional SessionOptionsHook (with automatic CPU fallback) and
 /// to NNAPI/QNN on Android. Each per-Run call mints a fresh set of OrtValues
 /// over caller-owned host memory via CreateTensorWithDataAsOrtValue, then
 /// reads back from the returned OrtValues' GetTensorMutableData pointers —
