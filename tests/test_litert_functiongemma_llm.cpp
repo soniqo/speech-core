@@ -49,6 +49,16 @@ int main() {
     cfg.max_num_tokens = 256;
     cfg.system_message =
         "You are a helpful assistant that calls tools using the function-call grammar.";
+    // Optional backend override: SPEECH_FUNCTIONGEMMA_BACKEND={cpu,gpu,npu}.
+    // Useful on Apple-silicon Android emulators where XNNPack's CPU detection
+    // picks Apple-specific kernels that don't survive HVF passthrough — flip
+    // to gpu and the GPU accelerator runs the graph instead.
+    if (const char* be = std::getenv("SPEECH_FUNCTIONGEMMA_BACKEND")) {
+        if (*be) {
+            cfg.backend = be;
+            std::printf("[backend] %s (from env)\n", be);
+        }
+    }
 
     LiteRTFunctionGemmaLLM llm(model_path, cfg);
 

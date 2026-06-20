@@ -3,13 +3,18 @@
 # Drops the shared library into $OUT, ready for cmake -DLITERT_LM_DIR=$OUT.
 #
 # The .litertlm bundle format is loaded by this higher-level runtime, NOT by
-# the libLiteRt C API that fetch_litert.sh extracts. Use both together:
-# speech_core_models_litert needs libLiteRt for .tflite STT/VAD/TTS models AND
-# liblitert-lm for .litertlm tool-calling LLMs like FunctionGemma.
+# the libLiteRt C API that fetch_litert.sh extracts. The two are independent
+# CMake targets now (speech_core_models_litert vs speech_core_models_litert_lm)
+# so a consumer that only wants FunctionGemma sets SPEECH_CORE_WITH_LITERT_LM
+# without also setting SPEECH_CORE_WITH_LITERT.
 #
 # Usage:
 #     scripts/fetch_litert_lm.sh [output_dir] [litert-lm-api_version]
 # Defaults: output_dir = build/litert_lm ; version = 0.13.1
+#
+# Wheel ships macOS arm64 only. For Android cross-compile from source, use
+# scripts/build_litert_lm_android.sh (same output layout under
+# ${OUT}/${ANDROID_ABI}/liblitert-lm.so).
 #
 # The runtime ships in the litert-lm-api wheel; the litert-lm meta-package
 # pulls in additional Python tooling we do not need at runtime.
