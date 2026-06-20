@@ -27,6 +27,34 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `LiteRTOmnilingualStt` | `STTInterface` | `speech_core/models/litert_omnilingual_stt.h` | full |
 | `LiteRTNemotronStreamingStt` | `STTInterface` | `speech_core/models/litert_nemotron_streaming_stt.h` | full (streaming) |
 
+### LLM backends (`LLMInterface`)
+
+speech-core provides the abstract `LLMInterface` (`interfaces.h`) plus a tool
+registry (`tools/tool_registry.h`) and the pipeline integration that routes
+LLM-emitted tool calls through `ToolExecutor`. Three reference implementations
+ship today.
+
+| Implementation | Header | Backend | Built when |
+|---|---|---|---|
+| `OllamaLLM` | `speech_core/llm/ollama_llm.h` | Local Ollama HTTP server (`/api/chat`) | `SPEECH_CORE_WITH_OLLAMA=ON` (in `speech_core_llm_ollama`) |
+| `LiteRTFunctionGemmaLLM` | `speech_core/models/litert_functiongemma_llm.h` | Google's `liblitert-lm` runtime driving a `.litertlm` bundle (e.g. [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM)) | `SPEECH_CORE_WITH_LITERT_LM=ON` (in `speech_core_models_litert`) |
+| **FunctionGemma 270M (CoreML)** | (platform) | Core ML on Apple via [speech-swift](https://github.com/soniqo/speech-swift) | platform-side |
+
+`LiteRTFunctionGemmaLLM` loads `.litertlm` bundles via the higher-level
+`liblitert-lm` shared library, NOT through the lower-level `libLiteRt` C API
+that drives the `.tflite` models in this directory. Extract the runtime with
+`scripts/fetch_litert_lm.sh` (mirrors `scripts/fetch_litert.sh` — pulls the
+shared library out of the `litert-lm-api` PyPI wheel) and point CMake at it
+with `-DSPEECH_CORE_WITH_LITERT_LM=ON -DLITERT_LM_DIR=...`. The class
+implements `LLMInterface` directly, so it plugs into `VoicePipeline`
+identically to `OllamaLLM`.
+
+To wire your own on-device LLM into speech-core, subclass `LLMInterface`,
+implement `set_tools()` (convert `ToolDefinition[]` into the model's prompt
+format) and `chat()` (run prefill+decode, parse tool-call markers, populate
+`LLMResponse.tool_calls`), then pass an instance to `VoicePipeline`. See
+`OllamaLLM` or `LiteRTFunctionGemmaLLM` for reference shapes.
+
 `DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`, implements `DiarizerInterface`) composes a segmenter + embedder + constrained clustering. It is pure C++ and ships in the **core** library (built always, no LiteRT dependency); pair it with the LiteRT segmenter + embedder above.
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.

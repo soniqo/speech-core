@@ -9,11 +9,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)." OFF)
 option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
+option(SPEECH_CORE_WITH_LITERT_LM "Add the liblitert-lm-backed reference LLM (LiteRTFunctionGemmaLLM) to speech_core_models_litert. Requires SPEECH_CORE_WITH_LITERT=ON and LITERT_LM_DIR pointing at liblitert-lm.{so,dylib,dll}." OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
 option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
 option(SPEECH_CORE_PACKAGE "Add install rules for the CLI tools + bundled runtime libraries and configure CPack (Linux .deb / .tar.gz). Linux-only; see the Packaging section at the bottom of this file." OFF)
 set(SPEECH_CORE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into binary packages. The release workflow passes the git tag (e.g. 0.0.8); local builds default to the project version.")
+
+if(SPEECH_CORE_WITH_LITERT_LM AND NOT SPEECH_CORE_WITH_LITERT)
+    message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT_LM=ON requires SPEECH_CORE_WITH_LITERT=ON — the litert-lm runtime drives .litertlm bundles, but the same target compiles in alongside the .tflite-based LiteRT models. Set SPEECH_CORE_WITH_LITERT=ON.")
+endif()
 
 if(SPEECH_CORE_WITH_HF_DOWNLOAD AND NOT SPEECH_CORE_WITH_LITERT)
     message(FATAL_ERROR "SPEECH_CORE_WITH_HF_DOWNLOAD=ON requires SPEECH_CORE_WITH_LITERT=ON "
@@ -208,6 +213,38 @@ if(SPEECH_CORE_WITH_LITERT)
         set_target_properties(litert PROPERTIES IMPORTED_IMPLIB "${_LITERT_IMPLIB}")
     endif()
 
+    # liblitert-lm — Google's higher-level runtime that loads .litertlm bundles
+    # (FunctionGemma 270M, Gemma 4, ...). Only compiled in when the consumer
+    # explicitly opts in via SPEECH_CORE_WITH_LITERT_LM and supplies
+    # LITERT_LM_DIR. The library is fetched at build time by
+    # scripts/fetch_litert_lm.sh (extracts the dylib/so from the
+    # litert-lm-api PyPI wheel).
+    if(SPEECH_CORE_WITH_LITERT_LM)
+        if(NOT DEFINED LITERT_LM_DIR)
+            message(FATAL_ERROR "SPEECH_CORE_WITH_LITERT_LM=ON requires LITERT_LM_DIR — a directory containing liblitert-lm.{so,dylib,dll} from the litert-lm-api PyPI wheel. Use scripts/fetch_litert_lm.sh to extract it.")
+        endif()
+        get_filename_component(LITERT_LM_DIR "${LITERT_LM_DIR}" ABSOLUTE)
+
+        add_library(litert_lm SHARED IMPORTED)
+        if(WIN32)
+            set(_LITERT_LM_LIB    "${LITERT_LM_DIR}/litert-lm.dll")
+            set(_LITERT_LM_IMPLIB "${LITERT_LM_DIR}/litert-lm.lib")
+        elseif(APPLE)
+            set(_LITERT_LM_LIB "${LITERT_LM_DIR}/liblitert-lm.dylib")
+        elseif(ANDROID)
+            set(_LITERT_LM_LIB "${LITERT_LM_DIR}/${ANDROID_ABI}/liblitert-lm.so")
+        else()
+            set(_LITERT_LM_LIB "${LITERT_LM_DIR}/liblitert-lm.so")
+        endif()
+        set_target_properties(litert_lm PROPERTIES
+            IMPORTED_LOCATION "${_LITERT_LM_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/litert_lm"
+        )
+        if(WIN32)
+            set_target_properties(litert_lm PROPERTIES IMPORTED_IMPLIB "${_LITERT_LM_IMPLIB}")
+        endif()
+    endif()
+
     add_library(speech_core_models_litert
         src/models/litert/litert_silero_vad.cpp
         src/models/litert/litert_parakeet_stt.cpp
@@ -220,6 +257,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_omnilingual_stt.cpp
         src/models/litert/litert_nemotron_streaming_stt.cpp
         src/models/litert/litert_nemotron_multilingual_stt.cpp
+        $<$<BOOL:${SPEECH_CORE_WITH_LITERT_LM}>:${CMAKE_CURRENT_SOURCE_DIR}/src/models/litert/litert_functiongemma_llm.cpp>
     )
 
     target_include_directories(speech_core_models_litert
@@ -241,6 +279,15 @@ if(SPEECH_CORE_WITH_LITERT)
     set_target_properties(speech_core_models_litert PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models_litert PUBLIC speech_core litert)
+    if(SPEECH_CORE_WITH_LITERT_LM)
+        target_link_libraries(speech_core_models_litert PUBLIC litert_lm)
+        # The LiteRTFunctionGemmaLLM impl uses nlohmann::json (vendored
+        # under third_party/nlohmann) for tool-list serialisation and the
+        # function-call parser's argument round-trip.
+        target_include_directories(speech_core_models_litert PRIVATE
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
+        )
+    endif()
 
     # Optional first-run model download (sc_voxcpm2_create_from_pretrained).
     # libcurl provides resumable HTTPS with an OS-native TLS backend (Schannel
@@ -330,6 +377,7 @@ if(SPEECH_CORE_BUILD_TESTS)
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
+           OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
            OR TEST_NAME STREQUAL "test_fdb_bench_smoke"
@@ -400,6 +448,17 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_litert_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_litert_models COMMAND test_litert_models)
+
+        # Smoke test for the litert-lm-backed FunctionGemma LLM. Gated on
+        # SPEECH_CORE_WITH_LITERT_LM=ON; the test itself early-exits if
+        # SPEECH_FUNCTIONGEMMA_LITERTLM_PATH does not point at a real bundle,
+        # so it passes by default and only exercises the runtime when the
+        # caller stages a model file (e.g. on the nightly CI).
+        if(SPEECH_CORE_WITH_LITERT_LM AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_litert_functiongemma_llm.cpp)
+            add_executable(test_litert_functiongemma_llm tests/test_litert_functiongemma_llm.cpp)
+            target_link_libraries(test_litert_functiongemma_llm PRIVATE speech_core_models_litert)
+            add_test(NAME test_litert_functiongemma_llm COMMAND test_litert_functiongemma_llm)
+        endif()
 
         # CLI-boundary tests for speech_voxcpm2_clone — these spawn the real
         # executable so OS argv encoding is part of the test surface (a
