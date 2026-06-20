@@ -37,17 +37,31 @@ ship today.
 | Implementation | Header | Backend | Built when |
 |---|---|---|---|
 | `OllamaLLM` | `speech_core/llm/ollama_llm.h` | Local Ollama HTTP server (`/api/chat`) | `SPEECH_CORE_WITH_OLLAMA=ON` (in `speech_core_llm_ollama`) |
-| `LiteRTFunctionGemmaLLM` | `speech_core/models/litert_functiongemma_llm.h` | Google's `liblitert-lm` runtime driving a `.litertlm` bundle (e.g. [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM)) | `SPEECH_CORE_WITH_LITERT_LM=ON` (in `speech_core_models_litert`) |
+| `LiteRTFunctionGemmaLLM` | `speech_core/models/litert_functiongemma_llm.h` | Google's `liblitert-lm` runtime driving a `.litertlm` bundle (e.g. [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM)) | `SPEECH_CORE_WITH_LITERT_LM=ON` (in `speech_core_models_litert_lm` — a standalone target, independent of `speech_core_models_litert`) |
 | **FunctionGemma 270M (CoreML)** | (platform) | Core ML on Apple via [speech-swift](https://github.com/soniqo/speech-swift) | platform-side |
 
 `LiteRTFunctionGemmaLLM` loads `.litertlm` bundles via the higher-level
 `liblitert-lm` shared library, NOT through the lower-level `libLiteRt` C API
-that drives the `.tflite` models in this directory. Extract the runtime with
-`scripts/fetch_litert_lm.sh` (mirrors `scripts/fetch_litert.sh` — pulls the
-shared library out of the `litert-lm-api` PyPI wheel) and point CMake at it
-with `-DSPEECH_CORE_WITH_LITERT_LM=ON -DLITERT_LM_DIR=...`. The class
+that drives the `.tflite` models in this directory. It builds into its own
+static library (`speech_core_models_litert_lm`) so Android consumers that need
+only the LLM can link it without dragging in `libLiteRt`. Point CMake at the
+runtime with `-DSPEECH_CORE_WITH_LITERT_LM=ON -DLITERT_LM_DIR=...`. The class
 implements `LLMInterface` directly, so it plugs into `VoicePipeline`
 identically to `OllamaLLM`.
+
+On **macOS**, `scripts/fetch_litert_lm.sh` extracts the shared library out of
+the `litert-lm-api` PyPI wheel (mirrors `scripts/fetch_litert.sh`). On
+**Android**, Google publishes neither `libLiteRt.so` nor `liblitert-lm.so` —
+the PyPI wheel is macOS-only and the Maven artifact only exposes the Kotlin
+facade. Use `scripts/build_litert_lm_android.sh` to cross-compile
+`liblitert-lm.so` from the pinned `google-ai-edge/LiteRT-LM` v0.13.1 source
+tree; outputs land in the same `${LITERT_LM_DIR}/${ANDROID_ABI}/` layout the
+top-level CMake expects. Set `EMULATOR_SAFE=1` when targeting the
+Apple-Silicon-hosted Android emulator: HVF passthrough mistraps KleidiAI's
+SME `rdsvl` instruction (the guest CPU presents as implementer 0x61 Apple),
+so the script disables XNNPack assembly + KleidiAI SME kernels. Costs 3–5×
+decode rate but unblocks the emulator dev loop; real devices should leave it
+off.
 
 To wire your own on-device LLM into speech-core, subclass `LLMInterface`,
 implement `set_tools()` (convert `ToolDefinition[]` into the model's prompt

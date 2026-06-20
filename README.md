@@ -44,8 +44,15 @@ Consumers can enable either, both, or neither — or bring their own implementat
 
 `LiteRTFunctionGemmaLLM` loads the [FunctionGemma 270M .litertlm bundle](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM)
 via Google's `liblitert-lm` runtime — a higher-level shared library than the
-`libLiteRt` used for the `.tflite` STT/VAD/TTS models. Extract it once with
-`scripts/fetch_litert_lm.sh`, then build with
+`libLiteRt` used for the `.tflite` STT/VAD/TTS models. It builds into its own
+static library (`speech_core_models_litert_lm`) so Android consumers can link
+the LLM without pulling in `libLiteRt`. On macOS, extract the runtime once
+with `scripts/fetch_litert_lm.sh` (PyPI wheel). On Android, neither
+`libLiteRt.so` nor `liblitert-lm.so` is published upstream — use
+`scripts/build_litert_lm_android.sh` to cross-compile `liblitert-lm.so` from
+the pinned `google-ai-edge/LiteRT-LM` v0.13.1 source tree (set
+`EMULATOR_SAFE=1` for the Apple-Silicon-hosted Android emulator, where HVF
+mistraps KleidiAI's SME `rdsvl` instruction). Then build with
 `-DSPEECH_CORE_WITH_LITERT_LM=ON -DLITERT_LM_DIR=...`. The Apple CoreML
 build of the same model lives in [speech-swift](https://github.com/soniqo/speech-swift);
 see [docs/models.md](docs/models.md#llm-backends-llminterface) for the full
