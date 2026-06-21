@@ -15,8 +15,11 @@ namespace speech_core {
 namespace {
 
 // Exported fixed latent length (frames) of the vector_estimator / vocoder graphs. The published
-// LiteRT bundle is fixed-shape (T=128, L=64); a dynamic-L export is the stated follow-up. Override
-// at bring-up via SUPERTONIC_LATENT_FRAMES while validating against a re-exported graph.
+// LiteRT bundle is fixed-shape (T=128, L=64). A dynamic-L export is currently BLOCKED upstream:
+// litert_torch/odml_torch can't lower SupertonicTTS's relpos attention + ConvNeXt with a symbolic L
+// (see speech-models/stmodels/export_litert.py). The host instead caps chunk length to this window
+// (synthesize() below); longer chunks would need L-buckets or an upstream fix. SUPERTONIC_LATENT_FRAMES
+// overrides this only for experiments against a re-exported graph.
 int graph_latent_frames() {
     if (const char* e = std::getenv("SUPERTONIC_LATENT_FRAMES")) {
         int v = std::atoi(e);
@@ -176,8 +179,8 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
     }
 
     // Keep each chunk's predicted audio within the fixed latent window (L frames). The chars/sec is a
-    // conservative heuristic — only needed for the fixed-shape bundle; the dynamic-L re-export removes
-    // it. Any residual overflow is logged + trimmed in synth_chunk().
+    // conservative heuristic; because dynamic-L is blocked upstream (see graph_latent_frames()), this
+    // cap is the truncation guard. Any residual overflow is logged + trimmed in synth_chunk().
     const double window_s = static_cast<double>(graph_latent_frames()) * kChunkSamples / kSampleRate;
     const bool cjk = (language == "ko" || language == "ja");
     const int dur_cap = std::max(8, static_cast<int>(window_s * (cjk ? 6 : 14) * 0.9));
@@ -259,7 +262,7 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
     const int L_fill = std::min(std::max(L_true, 1), L);  // valid frames inside the fixed window
     if (L_true > L) {
         LOGE("Supertonic: chunk needs L=%d frames > fixed graph L=%d; audio truncated to %.2fs "
-             "(re-export with dynamic L, or shorten the chunk).",
+             "(shorten the chunk; dynamic L is blocked upstream).",
              L_true, L, static_cast<double>(chunk_size) * L / kSampleRate);
     }
 
