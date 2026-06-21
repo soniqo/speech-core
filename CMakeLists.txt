@@ -193,7 +193,10 @@ if(SPEECH_CORE_WITH_LITERT)
     find_package(utf8proc QUIET)
     if(NOT utf8proc_FOUND)
         include(FetchContent)
-        # v2.11.0+ — earlier tags' cmake_minimum_required(VERSION 3.0.0) is rejected by CMake >= 4.
+        # CMake >= 4 errors on utf8proc's cmake_minimum_required if the fetched/cached source is an
+        # older tag (e.g. v2.9.0's VERSION 3.0.0). Pin v2.11.0 (VERSION 3.10) AND set the policy floor
+        # so configure still succeeds even when a stale checkout surfaces on a CI runner.
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
         FetchContent_Declare(utf8proc
             GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc.git
             GIT_TAG        v2.11.0)
