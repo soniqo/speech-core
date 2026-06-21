@@ -512,6 +512,10 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_link_libraries(test_litert_functiongemma_llm PRIVATE speech_core_models_litert_lm)
         add_test(NAME test_litert_functiongemma_llm COMMAND test_litert_functiongemma_llm)
     endif()
+    if(SPEECH_CORE_WITH_LITERT_LM AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_litert_functiongemma_llm.cpp)
+        add_executable(bench_litert_functiongemma_llm tests/bench_litert_functiongemma_llm.cpp)
+        target_link_libraries(bench_litert_functiongemma_llm PRIVATE speech_core_models_litert_lm)
+    endif()
 
     # Ollama LLM unit + opt-in integration test — runs against an in-process
     # httplib mock server, no real Ollama required for the default suite.
