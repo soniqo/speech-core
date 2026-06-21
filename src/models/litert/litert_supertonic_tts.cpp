@@ -95,39 +95,50 @@ LiteRTSupertonicTts::LiteRTSupertonicTts(const std::string& duration_path,
                                          const std::string& tokenizer_dir,
                                          const std::string& voice_styles_dir,
                                          bool hw_accel) {
-    auto& engine = LiteRTEngine::get();
-    engine.load(duration_path,         hw_accel, &duration_model_, &duration_compiled_);
-    engine.load(text_encoder_path,     hw_accel, &encoder_model_,  &encoder_compiled_);
-    engine.load(vector_estimator_path, hw_accel, &vector_model_,   &vector_compiled_);
-    engine.load(vocoder_path,          hw_accel, &vocoder_model_,  &vocoder_compiled_);
+    // The four LiteRt handles are raw (no per-member RAII), so a throw partway through loading would
+    // leak the already-acquired graphs (a partially-constructed object never runs the dtor). Guard
+    // the whole construction and release on failure.
+    try {
+        auto& engine = LiteRTEngine::get();
+        engine.load(duration_path,         hw_accel, &duration_model_, &duration_compiled_);
+        engine.load(text_encoder_path,     hw_accel, &encoder_model_,  &encoder_compiled_);
+        engine.load(vector_estimator_path, hw_accel, &vector_model_,   &vector_compiled_);
+        engine.load(vocoder_path,          hw_accel, &vocoder_model_,  &vocoder_compiled_);
 
-    namespace fs = std::filesystem;
-    tokenizer_ = std::make_unique<SupertonicTokenizer>(
-        (fs::path(tokenizer_dir) / "unicode_indexer.json").string(),
-        (fs::path(tokenizer_dir) / "tts.json").string());
+        namespace fs = std::filesystem;
+        tokenizer_ = std::make_unique<SupertonicTokenizer>(
+            (fs::path(tokenizer_dir) / "unicode_indexer.json").string(),
+            (fs::path(tokenizer_dir) / "tts.json").string());
 
-    for (const auto& entry : fs::directory_iterator(voice_styles_dir)) {
-        if (entry.path().extension() != ".json") continue;
-        VoiceStyle v;
-        load_style(entry.path().string(), v.style_ttl, v.style_dp);
-        if (v.style_ttl.size() != kStyleTtlFloats || v.style_dp.size() != kStyleDpFloats) continue;
-        voices_.emplace(entry.path().stem().string(), std::move(v));
+        for (const auto& entry : fs::directory_iterator(voice_styles_dir)) {
+            if (entry.path().extension() != ".json") continue;
+            VoiceStyle v;
+            load_style(entry.path().string(), v.style_ttl, v.style_dp);
+            if (v.style_ttl.size() != kStyleTtlFloats || v.style_dp.size() != kStyleDpFloats) continue;
+            voices_.emplace(entry.path().stem().string(), std::move(v));
+        }
+        if (voices_.empty())
+            throw std::runtime_error("Supertonic: no voice styles in " + voice_styles_dir);
+        if (!voices_.count(voice_id_)) voice_id_ = voices_.begin()->first;
+    } catch (...) {
+        destroy_graphs();  // release any LiteRt handles acquired before the failure, then rethrow
+        throw;
     }
-    if (voices_.empty())
-        throw std::runtime_error("Supertonic: no voice styles in " + voice_styles_dir);
-    if (!voices_.count(voice_id_)) voice_id_ = voices_.begin()->first;
 }
 
-LiteRTSupertonicTts::~LiteRTSupertonicTts() {
-    // Free compiled before model (litert_engine.h contract).
-    if (vocoder_compiled_)  LiteRtDestroyCompiledModel(vocoder_compiled_);
-    if (vocoder_model_)     LiteRtDestroyModel(vocoder_model_);
-    if (vector_compiled_)   LiteRtDestroyCompiledModel(vector_compiled_);
-    if (vector_model_)      LiteRtDestroyModel(vector_model_);
-    if (encoder_compiled_)  LiteRtDestroyCompiledModel(encoder_compiled_);
-    if (encoder_model_)     LiteRtDestroyModel(encoder_model_);
-    if (duration_compiled_) LiteRtDestroyCompiledModel(duration_compiled_);
-    if (duration_model_)    LiteRtDestroyModel(duration_model_);
+LiteRTSupertonicTts::~LiteRTSupertonicTts() { destroy_graphs(); }
+
+// Free compiled-before-model (litert_engine.h contract); idempotent + nulls each handle so the ctor
+// can call it on failure without risking a double-free.
+void LiteRTSupertonicTts::destroy_graphs() noexcept {
+    if (vocoder_compiled_)  { LiteRtDestroyCompiledModel(vocoder_compiled_);  vocoder_compiled_  = nullptr; }
+    if (vocoder_model_)     { LiteRtDestroyModel(vocoder_model_);             vocoder_model_     = nullptr; }
+    if (vector_compiled_)   { LiteRtDestroyCompiledModel(vector_compiled_);   vector_compiled_   = nullptr; }
+    if (vector_model_)      { LiteRtDestroyModel(vector_model_);              vector_model_      = nullptr; }
+    if (encoder_compiled_)  { LiteRtDestroyCompiledModel(encoder_compiled_);  encoder_compiled_  = nullptr; }
+    if (encoder_model_)     { LiteRtDestroyModel(encoder_model_);             encoder_model_     = nullptr; }
+    if (duration_compiled_) { LiteRtDestroyCompiledModel(duration_compiled_); duration_compiled_ = nullptr; }
+    if (duration_model_)    { LiteRtDestroyModel(duration_model_);            duration_model_    = nullptr; }
 }
 
 void LiteRTSupertonicTts::cancel() { cancelled_.store(true); }
@@ -162,12 +173,18 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
         seed_used_ = rd();
     }
 
-    const std::vector<std::string> chunks = tokenizer_->chunk(text, language);
+    // Keep each chunk's predicted audio within the fixed latent window (L frames). The chars/sec is a
+    // conservative heuristic — only needed for the fixed-shape bundle; the dynamic-L re-export removes
+    // it. Any residual overflow is logged + trimmed in synth_chunk().
+    const double window_s = static_cast<double>(graph_latent_frames()) * kChunkSamples / kSampleRate;
+    const bool cjk = (language == "ko" || language == "ja");
+    const int dur_cap = std::max(8, static_cast<int>(window_s * (cjk ? 6 : 14) * 0.9));
+    const std::vector<std::string> chunks = tokenizer_->chunk(text, language, dur_cap);
     const int silence = static_cast<int>(chunk_silence_s_ * kSampleRate);
 
     for (size_t ci = 0; ci < chunks.size(); ++ci) {
         if (cancelled_.load()) return;
-        std::vector<float> pcm = synth_chunk(chunks[ci], language);
+        std::vector<float> pcm = synth_chunk(chunks[ci], language, ci);
         const bool is_final = (ci + 1 == chunks.size());
 
         if (ci > 0 && silence > 0) {
@@ -179,21 +196,26 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
 }
 
 std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
-                                                    const std::string& language) {
+                                                    const std::string& language,
+                                                    size_t chunk_index) {
     LiteRtEnvironment env = LiteRTEngine::get().env();
     const VoiceStyle& voice = current_voice();
 
     // --- tokenize → fixed-T ids + mask ---
     const SupertonicTokenizer::Tokens tok = tokenizer_->process(chunk, language, kTextT);
 
-    const LiteRtRankedTensorType t_ids   = make_type(kLiteRtElementTypeInt32,   {1, kTextT});
+    // The exported LiteRT graphs take text_ids as INT64 (ai_edge_torch traces ids with torch.long;
+    // the CoreML export is int32 via a wrapper, but LiteRT stays int64 — confirmed against the
+    // published .tflite signatures). Widen the i32 tokenizer ids into an i64 input buffer.
+    const std::vector<int64_t> ids64(tok.ids.begin(), tok.ids.end());
+    const LiteRtRankedTensorType t_ids   = make_type(kLiteRtElementTypeInt64,   {1, kTextT});
     const LiteRtRankedTensorType t_mask  = make_type(kLiteRtElementTypeFloat32, {1, 1, kTextT});
     const LiteRtRankedTensorType t_ttl   = make_type(kLiteRtElementTypeFloat32, {1, 50, 256});
     const LiteRtRankedTensorType t_dp    = make_type(kLiteRtElementTypeFloat32, {1, 8, 16});
     const LiteRtRankedTensorType t_emb   = make_type(kLiteRtElementTypeFloat32, {1, 256, kTextT});
     const LiteRtRankedTensorType t_dur   = make_type(kLiteRtElementTypeFloat32, {1});
 
-    LiteRtHostBuffer in_ids (env, t_ids,  tok.ids.size()  * sizeof(int32_t), tok.ids.data());
+    LiteRtHostBuffer in_ids (env, t_ids,  ids64.size() * sizeof(int64_t), ids64.data());
     LiteRtHostBuffer in_mask(env, t_mask, tok.mask.size() * sizeof(float),   tok.mask.data());
     LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
     LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size()  * sizeof(float), voice.style_dp.data());
@@ -222,18 +244,26 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
         out.read(text_emb.data(), text_emb.size() * sizeof(float));
     }
 
-    // --- latent geometry: L_true = ceil(dur*SR / 3072); graph runs at fixed L ---
+    // --- latent geometry: L_true = ceil(int(dur*SR) / 3072); graph runs at fixed L ---
     const int chunk_size = kChunkSamples;  // 512 * 6 = 3072
-    const int L_true = static_cast<int>(std::ceil(duration * kSampleRate / chunk_size));
+    // Match the reference (infer.py): truncate dur*SR to integer samples BEFORE the ceil.
+    const long long wav_len = static_cast<long long>(duration * kSampleRate);
+    const int L_true = static_cast<int>((wav_len + chunk_size - 1) / chunk_size);
     const int L      = graph_latent_frames();
     const int L_fill = std::min(std::max(L_true, 1), L);  // valid frames inside the fixed window
+    if (L_true > L) {
+        LOGE("Supertonic: chunk needs L=%d frames > fixed graph L=%d; audio truncated to %.2fs "
+             "(re-export with dynamic L, or shorten the chunk).",
+             L_true, L, static_cast<double>(chunk_size) * L / kSampleRate);
+    }
 
     // latent_mask[1,1,L]: 1.0 for the first L_fill frames, else 0.
     std::vector<float> latent_mask(static_cast<size_t>(L), 0.0f);
     for (int t = 0; t < L_fill; ++t) latent_mask[t] = 1.0f;
 
-    // noisy[1,144,L] = randn * latent_mask (row-major c*L + t).
-    std::mt19937 rng(seed_used_ + 0x9E3779B9u);  // decorrelate chunks via the golden ratio
+    // noisy[1,144,L] = randn * latent_mask (row-major c*L + t). Mix the chunk index into the seed so
+    // multi-chunk utterances draw distinct noise per chunk (the reference advances one shared RNG).
+    std::mt19937 rng(seed_used_ + 0x9E3779B9u * static_cast<uint32_t>(chunk_index + 1));
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<float> xt(static_cast<size_t>(kLatentChannels) * L);
     for (int c = 0; c < kLatentChannels; ++c)

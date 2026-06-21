@@ -255,10 +255,11 @@ SupertonicTokenizer::process(const std::string& text, const std::string& lang, i
 }
 
 std::vector<std::string>
-SupertonicTokenizer::chunk(const std::string& text, const std::string& lang) const {
+SupertonicTokenizer::chunk(const std::string& text, const std::string& lang, int max_codepoints) const {
     // Cap so the wrapped, tokenized form fits the exported fixed text length (max_text_tokens_).
     // tag overhead = len("<lang>") + len("</lang>") = 2*lang + 5.
     int cap = max_text_tokens_ - (2 * static_cast<int>(lang.size()) + 5) - 1;
+    if (max_codepoints > 0 && max_codepoints < cap) cap = max_codepoints;  // fixed-window duration cap
     if (cap < 8) cap = 8;
 
     const std::vector<char32_t> cps = utf8_to_u32(text);

@@ -18,7 +18,7 @@ namespace speech_core {
 /// Models: https://huggingface.co/soniqo/Supertonic-3-LiteRT
 ///
 /// Four LiteRT graphs orchestrated here (text padded to a fixed T = 128):
-///   duration_predictor : (text_ids[1,T] i32, style_dp[1,8,16], text_mask[1,1,T]) → duration[1] (sec)
+///   duration_predictor : (text_ids[1,T] i64, style_dp[1,8,16], text_mask[1,1,T]) → duration[1] (sec)
 ///   text_encoder       : (text_ids, style_ttl[1,50,256], text_mask)              → text_emb[1,256,T]
 ///   vector_estimator ×N: (noisy[1,144,L], text_emb, style_ttl, latent_mask[1,1,L],
 ///                         text_mask, current_step[1], total_step[1])              → denoised[1,144,L]
@@ -79,9 +79,10 @@ private:
         std::vector<float> style_dp;   // [1,8,16]   → 128
     };
 
-    // Synthesize one ≤T-token chunk into trimmed 44.1 kHz PCM.
-    std::vector<float> synth_chunk(const std::string& chunk, const std::string& language);
+    // Synthesize one ≤T-token chunk into trimmed 44.1 kHz PCM. chunk_index decorrelates the noise.
+    std::vector<float> synth_chunk(const std::string& chunk, const std::string& language, size_t chunk_index);
     const VoiceStyle& current_voice() const;
+    void destroy_graphs() noexcept;  // idempotent; used by the dtor and ctor-failure cleanup
 
     LiteRtModel         duration_model_  = nullptr;  LiteRtCompiledModel duration_compiled_  = nullptr;
     LiteRtModel         encoder_model_   = nullptr;  LiteRtCompiledModel encoder_compiled_   = nullptr;

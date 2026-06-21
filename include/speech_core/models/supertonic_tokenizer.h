@@ -38,7 +38,10 @@ public:
     /// Split free-form text into per-synthesis chunks. Caps each chunk so the wrapped, tokenized
     /// form fits the exported fixed text length (`max_text_tokens`, default 128). Sentence-aware,
     /// codepoint-counted; CJK uses a tighter cap. Mirrors `helper.py::_chunk_text`.
-    std::vector<std::string> chunk(const std::string& text, const std::string& lang) const;
+    /// @param max_codepoints if > 0, an additional (tighter) per-chunk codepoint cap — used to keep a
+    ///        chunk's predicted audio within a fixed-shape graph's latent window.
+    std::vector<std::string> chunk(const std::string& text, const std::string& lang,
+                                   int max_codepoints = 0) const;
 
     /// Result of tokenizing one chunk for the fixed-T graphs.
     struct Tokens {
