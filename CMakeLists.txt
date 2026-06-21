@@ -284,6 +284,13 @@ if(SPEECH_CORE_WITH_LITERT)
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
+
+        # SupertonicTTS-3 smoke test / example CLI.
+        add_executable(speech_supertonic_tts examples/litert/supertonic_tts.cpp)
+        target_link_libraries(speech_supertonic_tts PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(speech_supertonic_tts PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
     endif()
 
     # Debug CLI for the HF downloader (resume/retry testing). Links the internal

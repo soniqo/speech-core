@@ -25,17 +25,19 @@ int graph_latent_frames() {
     return 64;
 }
 
-// Parse a flat JSON number array at s[i] (i must point at '[').
+// Parse a JSON number array at s[i] (i must point at '['), FLATTENING any nesting — voice-style
+// `data` is stored as a nested array matching `dims` (e.g. [1][50][256]), not a flat list.
 std::vector<float> parse_float_array(const std::string& s, size_t& i) {
     std::vector<float> out;
     json::skip_ws(s, i);
     if (i >= s.size() || s[i] != '[') return out;
-    ++i;
+    int depth = 0;
     while (i < s.size()) {
-        json::skip_ws(s, i);
-        if (s[i] == ']') { ++i; break; }
-        if (s[i] == ',') { ++i; continue; }
-        const std::string v = json::parse_value_raw(s, i);
+        const char c = s[i];
+        if (c == '[') { ++depth; ++i; continue; }
+        if (c == ']') { --depth; ++i; if (depth == 0) break; continue; }
+        if (c == ',' || c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++i; continue; }
+        const std::string v = json::parse_value_raw(s, i);  // one number; i advances to the delimiter
         if (!v.empty()) out.push_back(std::strtof(v.c_str(), nullptr));
     }
     return out;
@@ -220,11 +222,14 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
     LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
     LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size()  * sizeof(float), voice.style_dp.data());
 
-    // --- 1) duration_predictor (text_ids, style_dp, text_mask) → duration[1] ---
+    // --- 1) duration_predictor → duration[1] ---
+    // LiteRtRunCompiledModel binds ins[] by the graph's tensor-INDEX order, which the ai_edge_torch
+    // export permutes away from the (args_0=ids, args_1=style_dp, args_2=text_mask) declaration.
+    // Introspected order of the published duration_predictor.tflite: [text_mask, text_ids, style_dp].
     float duration = 0.0f;
     {
         LiteRtHostBuffer out(env, t_dur, sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_ids.raw(), in_dp.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_dp.raw() };
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(duration_compiled_, 0, 3, ins, 1, outs),
                      "duration_predictor Run");
@@ -233,11 +238,12 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
     duration /= speed_;
     if (!(duration > 0.0f) || std::isnan(duration)) return {};
 
-    // --- 2) text_encoder (text_ids, style_ttl, text_mask) → text_emb[1,256,T] ---
+    // --- 2) text_encoder → text_emb[1,256,T] ---
+    // Introspected tensor-index order of text_encoder.tflite: [text_mask, text_ids, style_ttl].
     std::vector<float> text_emb(static_cast<size_t>(256) * kTextT);
     {
         LiteRtHostBuffer out(env, t_emb, text_emb.size() * sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_ids.raw(), in_ttl.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_ttl.raw() };
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(encoder_compiled_, 0, 3, ins, 1, outs),
                      "text_encoder Run");
@@ -288,9 +294,10 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
         LiteRtHostBuffer in_tot  (env, t_step, sizeof(float), &total_step_f);
         LiteRtHostBuffer out     (env, t_lat,  xt.size() * sizeof(float));
 
-        // export order: noisy, text_emb, style_ttl, latent_mask, text_mask, current_step, total_step
-        LiteRtTensorBuffer ins[7]  = { in_noisy.raw(), in_emb.raw(), in_ttl.raw(),
-                                       in_lmask.raw(), in_mask.raw(), in_cur.raw(), in_tot.raw() };
+        // Introspected tensor-index order of vector_estimator.tflite:
+        // [current_step, style_ttl, latent_mask, noisy, total_step, text_mask, text_emb].
+        LiteRtTensorBuffer ins[7]  = { in_cur.raw(), in_ttl.raw(), in_lmask.raw(),
+                                       in_noisy.raw(), in_tot.raw(), in_mask.raw(), in_emb.raw() };
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(vector_compiled_, 0, 7, ins, 1, outs),
                      "vector_estimator Run");
