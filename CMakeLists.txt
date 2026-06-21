@@ -187,6 +187,24 @@ if(SPEECH_CORE_WITH_LITERT)
     endif()
     get_filename_component(LITERT_DIR "${LITERT_DIR}" ABSOLUTE)
 
+    # utf8proc — Unicode NFKD for the SupertonicTTS G2P-free front-end (the keystone that
+    # decomposes accents/Hangul into in-vocab codepoints). MIT-licensed, no GPL in the TTS path.
+    # Prefer a system copy; otherwise fetch a pinned release. Linked PRIVATE: the C ABI hides it.
+    find_package(utf8proc QUIET)
+    if(NOT utf8proc_FOUND)
+        include(FetchContent)
+        # CMake >= 4 errors on utf8proc's cmake_minimum_required if the fetched/cached source is an
+        # older tag (e.g. v2.9.0's VERSION 3.0.0). Pin v2.11.0 (VERSION 3.10) AND set the policy floor
+        # so configure still succeeds even when a stale checkout surfaces on a CI runner.
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        FetchContent_Declare(utf8proc
+            GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc.git
+            GIT_TAG        v2.11.0)
+        set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+        set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(utf8proc)
+    endif()
+
     # libLiteRt from Google's ai-edge-litert package — imported shared library.
     # Windows needs both .dll (runtime) and .lib (link-time import library);
     # other platforms only need the shared object itself.
@@ -216,6 +234,9 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/voxcpm2_c.cpp
         src/models/litert/hf_download.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
+        src/models/litert/litert_supertonic_tts.cpp
+        src/models/litert/supertonic_tokenizer.cpp
+        src/models/litert/supertonic_c.cpp
         src/models/litert/litert_wespeaker_embedding.cpp
         src/models/litert/litert_pyannote_segmentation.cpp
         src/models/litert/litert_omnilingual_stt.cpp
@@ -242,6 +263,12 @@ if(SPEECH_CORE_WITH_LITERT)
     set_target_properties(speech_core_models_litert PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models_litert PUBLIC speech_core litert)
+    # utf8proc for SupertonicTokenizer NFKD (PRIVATE: hidden behind the C ABI).
+    if(TARGET utf8proc)
+        target_link_libraries(speech_core_models_litert PRIVATE utf8proc)
+    else()
+        target_link_libraries(speech_core_models_litert PRIVATE utf8proc::utf8proc)
+    endif()
 
     # Optional first-run model download (sc_voxcpm2_create_from_pretrained).
     # libcurl provides resumable HTTPS with an OS-native TLS backend (Schannel
@@ -260,6 +287,13 @@ if(SPEECH_CORE_WITH_LITERT)
         target_link_libraries(speech_voxcpm2_clone PRIVATE speech_core_models_litert)
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # SupertonicTTS-3 smoke test / example CLI.
+        add_executable(speech_supertonic_tts examples/litert/supertonic_tts.cpp)
+        target_link_libraries(speech_supertonic_tts PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(speech_supertonic_tts PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
     endif()
 
