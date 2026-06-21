@@ -193,9 +193,10 @@ if(SPEECH_CORE_WITH_LITERT)
     find_package(utf8proc QUIET)
     if(NOT utf8proc_FOUND)
         include(FetchContent)
+        # v2.11.0+ — earlier tags' cmake_minimum_required(VERSION 3.0.0) is rejected by CMake >= 4.
         FetchContent_Declare(utf8proc
             GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc.git
-            GIT_TAG        v2.9.0)
+            GIT_TAG        v2.11.0)
         set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
         set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(utf8proc)
