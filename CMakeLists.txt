@@ -25,6 +25,8 @@ endif()
 # speech_core — orchestration core (always built, no ML deps)
 # ---------------------------------------------------------------------------
 
+set_source_files_properties(third_party/fftooura/fft4g.c PROPERTIES LANGUAGE CXX)
+
 add_library(speech_core
     src/pipeline/voice_pipeline.cpp
     src/pipeline/turn_detector.cpp
@@ -35,6 +37,8 @@ add_library(speech_core
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
     src/audio/fft.cpp
+    third_party/fftooura/ooura_fft_engine.cpp
+    third_party/fftooura/fft4g.c
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
@@ -49,6 +53,8 @@ target_include_directories(speech_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fftooura
 )
 
 if(MSVC)
