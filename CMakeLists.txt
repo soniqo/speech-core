@@ -235,6 +235,9 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/voxcpm2_c.cpp
         src/models/litert/hf_download.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
+        src/models/litert/chatterbox_tokenizer.cpp
+        src/models/litert/litert_chatterbox_tts.cpp
+        src/models/litert/chatterbox_c.cpp
         src/models/litert/litert_supertonic_tts.cpp
         src/models/litert/supertonic_tokenizer.cpp
         src/models/litert/supertonic_c.cpp
@@ -288,6 +291,34 @@ if(SPEECH_CORE_WITH_LITERT)
         target_link_libraries(speech_voxcpm2_clone PRIVATE speech_core_models_litert)
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox T3 LiteRT loop verification driver (prefill+step vs golden).
+        add_executable(chatterbox_t3_check examples/litert/chatterbox_t3_check.cpp)
+        target_link_libraries(chatterbox_t3_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_t3_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox flow-path verification driver (encoder_v2 -> Euler/CFG -> hift vs golden).
+        add_executable(chatterbox_flow_check examples/litert/chatterbox_flow_check.cpp)
+        target_link_libraries(chatterbox_flow_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_flow_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox tokenizer validation vs Python golden IDs.
+        add_executable(chatterbox_tok_check examples/litert/chatterbox_tok_check.cpp)
+        target_link_libraries(chatterbox_tok_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_tok_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox TTS CLI: text -> 24 kHz wav via the full wrapper.
+        add_executable(chatterbox_tts_cli examples/litert/chatterbox_tts_cli.cpp)
+        target_link_libraries(chatterbox_tts_cli PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_tts_cli PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
 
         # SupertonicTTS-3 smoke test / example CLI.
@@ -439,6 +470,7 @@ if(SPEECH_CORE_BUILD_TESTS)
         # test_litert_models.cpp / test_litert_voxcpm2_clone_cli.cpp need
         # LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
+           OR TEST_NAME STREQUAL "test_litert_chatterbox"
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
@@ -512,6 +544,13 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_litert_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_litert_models COMMAND test_litert_models)
+    endif()
+
+    # Chatterbox TTS smoke test (skips when SPEECH_CORE_CHATTERBOX_BUNDLE unset).
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_litert_chatterbox.cpp)
+        add_executable(test_litert_chatterbox tests/test_litert_chatterbox.cpp)
+        target_link_libraries(test_litert_chatterbox PRIVATE speech_core_models_litert)
+        add_test(NAME test_litert_chatterbox COMMAND test_litert_chatterbox)
 
         # CLI-boundary tests for speech_voxcpm2_clone — these spawn the real
         # executable so OS argv encoding is part of the test surface (a
