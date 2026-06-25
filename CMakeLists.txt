@@ -113,6 +113,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/kokoro/kokoro_multilingual.cpp
         src/models/deepfilter/deepfilter.cpp
         src/models/sidon/onnx_sidon_restorer.cpp
+        src/models/voxcpm/onnx_voxcpm_tts.cpp
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
         src/models/personaplex/onnx_personaplex.cpp
