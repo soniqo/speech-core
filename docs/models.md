@@ -11,6 +11,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
 | `OnnxSidonRestorer` | (own API; `EnhancerInterface` adapter) | `speech_core/models/onnx_sidon_restorer.h` | full — see [OnnxSidonRestorer](#onnxsidonrestorer) |
+| `OnnxVoxCPMTts` | `TTSInterface` | `speech_core/models/onnx_voxcpm_tts.h` | full |
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
 | `OnnxPersonaPlex` | `FullDuplexSpeechInterface` | `speech_core/models/onnx_personaplex.h` | structural — see [OnnxPersonaPlex](#onnxpersonaplex) |
@@ -72,6 +73,8 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 `DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`, implements `DiarizerInterface`) composes a segmenter + embedder + constrained clustering. It is pure C++ and ships in the **core** library (built always, no LiteRT dependency); pair it with the LiteRT segmenter + embedder above.
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
+
+`OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads one unified decoder graph plus audio encoder/decoder sidecars, outputs 16 kHz PCM, and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
@@ -186,6 +189,32 @@ auto result = stt.transcribe(audio, length, 16000);
 - Encoder INT8 weight-quantized (~595 MB on disk vs ~840 MB ONNX FP32), decoder-joint stays FP32 to avoid LSTM drift
 - Decoder-joint exposes `(encoder_out, target, h, c)` as four discrete tensors (ORT bundles `target_length` and uses suffix-`_1`/`_2` for h/c)
 - Model files: [soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) — `parakeet-encoder.tflite`, `parakeet-decoder-joint.tflite`, `vocab.json`
+
+## OnnxVoxCPMTts
+
+```cpp
+#include <speech_core/models/onnx_voxcpm_tts.h>
+
+speech_core::OnnxVoxCPMTts tts(
+    "/models/voxcpm-decoder.fp16w.onnx",
+    "/models/voxcpm-audio-encoder.onnx",
+    "/models/voxcpm-audio-decoder.onnx",
+    "/models/tokenizer.json");
+
+tts.set_reference(reference_pcm_16khz.data(), reference_pcm_16khz.size(), 16000);
+tts.set_reference_transcript("This is the exact sentence in the reference clip.");
+tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool is_final) {
+    // 16 kHz Float32 PCM, streamed in decoder chunks.
+});
+tts.clear_reference();
+```
+
+- VoxCPM 0.5B bilingual TTS, ONNX Runtime backend.
+- Serving bundle: [soniqo/VoxCPM-0.5B-ONNX](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX).
+- Loads three graphs: a unified `voxcpm-decoder*.onnx` prefill+token-step graph plus `voxcpm-audio-encoder.onnx` and `voxcpm-audio-decoder.onnx`.
+- Default cloud CPU deployment uses `voxcpm-decoder.fp16w.onnx`: FP16 external weights with FP32 compute tensors, keeping CPU RSS lower while preserving graph I/O shape.
+- Voice cloning is prompt-audio based. `set_reference()` encodes the 16 kHz prompt clip into latent frames; `set_reference_transcript()` is optional but recommended, and should be the exact transcript of that clip. Existing callers that only set audio still work.
+- End-to-end audio-quality validation is intentionally heavy because it downloads a multi-GB bundle and runs autoregressive synthesis. Keep ordinary CI to compile/smoke checks; run synth → ASR round-trips manually or from a weekly workflow when promoting a new bundle.
 
 ## LiteRTVoxCPM2Tts
 
