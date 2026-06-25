@@ -215,6 +215,7 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/voxcpm2_c.cpp
         src/models/litert/hf_download.cpp
         src/models/litert/voxcpm2_tokenizer.cpp
+        src/models/litert/chatterbox_tokenizer.cpp
         src/models/litert/litert_wespeaker_embedding.cpp
         src/models/litert/litert_pyannote_segmentation.cpp
         src/models/litert/litert_omnilingual_stt.cpp
@@ -273,6 +274,13 @@ if(SPEECH_CORE_WITH_LITERT)
         target_link_libraries(chatterbox_flow_check PRIVATE speech_core_models_litert)
         if(MSVC)
             target_compile_definitions(chatterbox_flow_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox tokenizer validation vs Python golden IDs.
+        add_executable(chatterbox_tok_check examples/litert/chatterbox_tok_check.cpp)
+        target_link_libraries(chatterbox_tok_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_tok_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
     endif()
 
