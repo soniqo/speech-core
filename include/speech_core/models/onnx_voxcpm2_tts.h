@@ -72,8 +72,8 @@ public:
     void set_instruction(std::string instruction) { instruction_ = std::move(instruction); }
 
     /// Cap the number of AR steps per synthesize() call. Defaults to 2048
-    /// (model max). Reducing it bounds latency and is useful in tests.
-    void set_max_steps(int max_steps) { max_steps_ = max_steps; }
+    /// (model max). Reducing it also shrinks the token-step KV-cache window.
+    void set_max_steps(int max_steps);
 
     /// Treat the model's stop signal as authoritative after this many steps.
     void set_min_steps_before_stop(int min_steps) { min_stop_steps_ = min_steps; }
@@ -128,6 +128,7 @@ private:
     // Query the prefill graph's max_text_tokens context window. The
     // audio_feats input is the rank-4 tensor [1, max_text, patch, feat].
     int query_prefill_context(OrtSession* session);
+    void configure_cache_geometry();
 
     const OrtApi* api_ = nullptr;
 

@@ -96,6 +96,20 @@ int OnnxVoxCPM2Tts::query_prefill_context(OrtSession* session) {
     return kDefault;
 }
 
+void OnnxVoxCPM2Tts::configure_cache_geometry() {
+    max_steps_ = std::clamp(max_steps_, 1, kMaxGenerated);
+    full_seq_ = max_text_ + max_steps_;
+    base_cache_floats_ = 2L * kBaseLayers * kKvHeads * full_seq_ * kHeadDim;
+    residual_cache_floats_ = 2L * kResidualLayers * kKvHeads * full_seq_ * kHeadDim;
+    base_prefill_floats_ = 2L * kBaseLayers * kKvHeads * max_text_ * kHeadDim;
+    residual_prefill_floats_ = 2L * kResidualLayers * kKvHeads * max_text_ * kHeadDim;
+}
+
+void OnnxVoxCPM2Tts::set_max_steps(int max_steps) {
+    max_steps_ = max_steps;
+    configure_cache_geometry();
+}
+
 // ---------------------------------------------------------------------------
 // Constructor / destructor
 // ---------------------------------------------------------------------------
@@ -137,12 +151,8 @@ OnnxVoxCPM2Tts::OnnxVoxCPM2Tts(const std::string& decoder_path,
     query_io_names(audio_decoder_session_, decoder_io_);
 
     // Context window comes from the prefill graph's rank-4 audio_feats input.
-    max_text_                = query_prefill_context(decoder_session_);
-    full_seq_                = max_text_ + kMaxGenerated;
-    base_cache_floats_       = 2L * kBaseLayers     * kKvHeads * full_seq_ * kHeadDim;
-    residual_cache_floats_   = 2L * kResidualLayers * kKvHeads * full_seq_ * kHeadDim;
-    base_prefill_floats_     = 2L * kBaseLayers     * kKvHeads * max_text_ * kHeadDim;
-    residual_prefill_floats_ = 2L * kResidualLayers * kKvHeads * max_text_ * kHeadDim;
+    max_text_ = query_prefill_context(decoder_session_);
+    configure_cache_geometry();
 
     tokenizer_         = std::make_unique<VoxCPM2Tokenizer>(tokenizer_path);
     audio_start_token_ = tokenizer_->token_id("<|audio_start|>");
@@ -469,24 +479,34 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
              rms(prefix_feat_cond));
     }
 
-    // --- 3. Grow caches from prefill window to full_seq_ by zero-padding axis 4.
-    auto pad_cache = [pref_seq = max_text_, full_seq = full_seq_](
+    // --- 3. Crop the padded prefill window to the real prompt, then leave
+    // room for this request's generation budget.
+    const int cache_context = std::max(1, context_length);
+    const int request_full_seq = cache_context + max_steps_;
+    const long request_base_cache_floats =
+        2L * kBaseLayers * kKvHeads * request_full_seq * kHeadDim;
+    const long request_residual_cache_floats =
+        2L * kResidualLayers * kKvHeads * request_full_seq * kHeadDim;
+
+    auto pad_cache = [pref_seq = max_text_, copy_seq = cache_context,
+                      full_seq = request_full_seq](
                          const std::vector<float>& src, std::vector<float>& dst,
                          int layers, int kv_heads, int head_dim) {
         std::fill(dst.begin(), dst.end(), 0.0f);
         const size_t per_kv  = static_cast<size_t>(layers) * kv_heads;
         const size_t src_row = static_cast<size_t>(pref_seq) * head_dim;
         const size_t dst_row = static_cast<size_t>(full_seq) * head_dim;
+        const size_t copy_row = static_cast<size_t>(copy_seq) * head_dim;
         for (int kv = 0; kv < 2; ++kv) {
             for (size_t i = 0; i < per_kv; ++i) {
                 const float* src_ptr = src.data() + (kv * per_kv + i) * src_row;
                 float*       dst_ptr = dst.data() + (kv * per_kv + i) * dst_row;
-                std::memcpy(dst_ptr, src_ptr, src_row * sizeof(float));
+                std::memcpy(dst_ptr, src_ptr, copy_row * sizeof(float));
             }
         }
     };
-    std::vector<float> base_cache    (static_cast<size_t>(base_cache_floats_));
-    std::vector<float> residual_cache(static_cast<size_t>(residual_cache_floats_));
+    std::vector<float> base_cache    (static_cast<size_t>(request_base_cache_floats));
+    std::vector<float> residual_cache(static_cast<size_t>(request_residual_cache_floats));
     pad_cache(base_prefill,     base_cache,     kBaseLayers,     kKvHeads, kHeadDim);
     pad_cache(residual_prefill, residual_cache, kResidualLayers, kKvHeads, kHeadDim);
     base_prefill    .clear(); base_prefill    .shrink_to_fit();
@@ -515,8 +535,8 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     const int64_t s_lm     [2] = {1, kHidden};
     const int64_t s_resid  [2] = {1, kHidden};
     const int64_t s_pfc    [3] = {1, kPatchSize, kFeatDim};
-    const int64_t s_bcache [6] = {2, kBaseLayers,     1, kKvHeads, full_seq_, kHeadDim};
-    const int64_t s_rcache [6] = {2, kResidualLayers, 1, kKvHeads, full_seq_, kHeadDim};
+    const int64_t s_bcache [6] = {2, kBaseLayers,     1, kKvHeads, request_full_seq, kHeadDim};
+    const int64_t s_rcache [6] = {2, kResidualLayers, 1, kKvHeads, request_full_seq, kHeadDim};
     const int64_t* s_pos       = nullptr;  // scalar
     const int64_t s_noise  [3] = {1, kFeatDim, kPatchSize};
     const int64_t s_dec_in [3] = {1, kFramesPerChunk, kPredFeatFloats};
