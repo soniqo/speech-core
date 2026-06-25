@@ -91,6 +91,13 @@ public:
     /// its stop signal (true) vs hitting max-steps / being cancelled (false).
     bool stopped_on_stop_token() const { return stopped_on_stop_token_; }
 
+    /// Wall-clock model stage timings from the most recent synthesize() call.
+    /// -1 before the first call; otherwise includes wrapper/ORT overhead for
+    /// the stage, which is the number operators need for production latency.
+    int64_t prefill_ms() const { return prefill_ms_; }
+    int64_t ar_ms() const { return ar_ms_; }
+    int64_t audio_decode_ms() const { return audio_decode_ms_; }
+
     /// Maximum number of text tokens the prefill graph accepts. 512 on the
     /// deployed bundle.
     int max_text_tokens() const { return max_text_; }
@@ -192,6 +199,9 @@ private:
     uint32_t          seed_used_             = 0;
     int               tokens_generated_      = 0;
     bool              stopped_on_stop_token_ = false;
+    int64_t           prefill_ms_            = -1;
+    int64_t           ar_ms_                 = -1;
+    int64_t           audio_decode_ms_       = -1;
 };
 
 }  // namespace speech_core

@@ -4,6 +4,7 @@
 #include "speech_core/models/onnx_engine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -284,6 +285,15 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
     tokens_generated_      = 0;
     stopped_on_stop_token_ = false;
     seed_used_             = 0;
+    prefill_ms_            = 0;
+    ar_ms_                 = 0;
+    audio_decode_ms_       = 0;
+
+    using Clock = std::chrono::steady_clock;
+    auto elapsed_ms = [](Clock::time_point start) -> int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now() - start).count();
+    };
 
     // --- 1. Build the prefill sequence. VoxCPM 0.5B conditions on a prompt
     // prefix: optional reference transcript tokens, then encoded prompt-audio
@@ -365,6 +375,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
     std::vector<float> base_prefill    (static_cast<size_t>(base_prefill_floats_));
     std::vector<float> residual_prefill(static_cast<size_t>(residual_prefill_floats_));
     {
+        const auto prefill_t0 = Clock::now();
         const int64_t s_text_tokens[2] = {1, max_text_};
         const int64_t s_text_mask  [2] = {1, max_text_};
         const int64_t s_audio_feats[4] = {1, max_text_, kPatchSize, kFeatDim};
@@ -444,6 +455,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
         api_->ReleaseValue(t_afeats);
         api_->ReleaseValue(t_tmask);
         api_->ReleaseValue(t_tokens);
+        prefill_ms_ = elapsed_ms(prefill_t0);
     }
 
     if (std::getenv("VOXCPM_DEBUG")) {
@@ -538,6 +550,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
             }
         }
 
+        const auto decode_t0 = Clock::now();
         const int64_t s_in[3] = {1, kFeatDim, kFramesPerChunk * kPatchSize};
         OrtValue* t_in = nullptr;
         ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
@@ -557,6 +570,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
 
         api_->ReleaseValue(dec_out[0]);
         api_->ReleaseValue(t_in);
+        audio_decode_ms_ += elapsed_ms(decode_t0);
 
         const size_t valid_samples = std::min<size_t>(
             static_cast<size_t>(valid_steps) * kSamplesPerStep, pcm.size());
@@ -635,6 +649,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
     for (int step = 0; step < max_steps_; ++step) {
         if (cancelled_.load(std::memory_order_relaxed)) break;
 
+        const auto step_t0 = Clock::now();
         for (float& v : noise) v = normal(rng);
         const int64_t position_id = static_cast<int64_t>(context_length + step);
 
@@ -823,6 +838,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
         std::swap(slot_in, slot_out);
       }
 
+        ar_ms_ += elapsed_ms(step_t0);
         feature_buffer.insert(feature_buffer.end(), pred_feat.begin(), pred_feat.end());
         ++steps_done;
         ++steps_in_chunk;
@@ -871,6 +887,14 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
 
     tokens_generated_      = steps_done;
     stopped_on_stop_token_ = stopped_by_model;
+    if (std::getenv("VOXCPM_PROFILE")) {
+        LOGI("VoxCPM (ORT) profile: prefill_ms=%lld ar_ms=%lld audio_decode_ms=%lld steps=%d stopped=%d",
+             static_cast<long long>(prefill_ms_),
+             static_cast<long long>(ar_ms_),
+             static_cast<long long>(audio_decode_ms_),
+             steps_done,
+             stopped_by_model ? 1 : 0);
+    }
 }
 
 }  // namespace speech_core
