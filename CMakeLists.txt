@@ -260,6 +260,20 @@ if(SPEECH_CORE_WITH_LITERT)
         if(MSVC)
             target_compile_definitions(speech_voxcpm2_clone PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
+
+        # Chatterbox T3 LiteRT loop verification driver (prefill+step vs golden).
+        add_executable(chatterbox_t3_check examples/litert/chatterbox_t3_check.cpp)
+        target_link_libraries(chatterbox_t3_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_t3_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Chatterbox flow-path verification driver (encoder_v2 -> Euler/CFG -> hift vs golden).
+        add_executable(chatterbox_flow_check examples/litert/chatterbox_flow_check.cpp)
+        target_link_libraries(chatterbox_flow_check PRIVATE speech_core_models_litert)
+        if(MSVC)
+            target_compile_definitions(chatterbox_flow_check PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
     endif()
 
     # Debug CLI for the HF downloader (resume/retry testing). Links the internal
