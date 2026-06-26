@@ -170,6 +170,7 @@ private:
     static constexpr int  kDecoderInputFloats  = kFramesPerChunk * kPredFeatFloats; // 8192
     static constexpr int  kDecoderOutputFloats = 81920;      // 5.12 s @ 16 kHz
     static constexpr int  kSamplesPerStep      = 1280;       // 80 ms @ 16 kHz
+    static constexpr int  kPromptWarmupStepsToDrop = 10;     // 0.8 s prompt tail
     static constexpr int  kBaseLayers          = 24;
     static constexpr int  kResidualLayers      = 6;
     static constexpr int  kKvHeads             = 2;

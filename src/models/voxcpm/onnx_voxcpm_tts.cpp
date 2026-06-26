@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -29,6 +30,15 @@ struct OrtStringHandle {
     OrtStringHandle(const OrtStringHandle&) = delete;
     OrtStringHandle& operator=(const OrtStringHandle&) = delete;
 };
+
+std::string prompt_prefix_for_target(const std::string& prompt_text,
+                                     const std::string& target_text) {
+    if (prompt_text.empty() || target_text.empty()) return prompt_text;
+    const unsigned char last = static_cast<unsigned char>(prompt_text.back());
+    const unsigned char first = static_cast<unsigned char>(target_text.front());
+    if (std::isspace(last) || std::isspace(first)) return prompt_text;
+    return prompt_text + " ";
+}
 
 }  // namespace
 
@@ -305,16 +315,53 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
             Clock::now() - start).count();
     };
 
-    // --- 1. Build the prefill sequence. VoxCPM 0.5B conditions on a prompt
-    // prefix: optional reference transcript tokens, then encoded prompt-audio
-    // frames, then the target text and audio_start generation cue.
-    std::vector<int> ref_text_ids;
+    // --- 1. Build the prefill sequence. Upstream VoxCPM 0.5B uses prompt
+    // cache layout:
+    //   text_token = tokenizer(prompt_text + target_text) + audio_start
+    //   text_token = cat(text_token, zeros(prompt_audio_frames))
+    //   audio_feat = cat(zeros(text_length), prompt_audio_feat)
+    // Audio frames must therefore come after all real text tokens, not between
+    // reference transcript and target text.
+    const std::string target_text =
+        instruction_.empty() ? text : "(" + instruction_ + ")" + text;
+    const int prompt_audio_slots = ref_frames_;
+    const int text_budget = std::max(1, max_text_ - prompt_audio_slots);
+
+    std::vector<int> text_ids;
     if (ref_frames_ > 0 && !ref_transcript_.empty()) {
-        ref_text_ids = tokenizer_->encode(ref_transcript_);
+        const std::string prompt_text =
+            prompt_prefix_for_target(ref_transcript_, target_text);
+        const std::string combined_text = prompt_text + target_text;
+        text_ids = tokenizer_->encode(combined_text);
+        text_ids.push_back(audio_start_token_);
+
+        // If the combined prompt overflows the fixed prefill window, keep the
+        // target utterance intact where possible and trim only reference text.
+        if (static_cast<int>(text_ids.size()) > text_budget) {
+            std::vector<int> target_ids = tokenizer_->encode(target_text);
+            target_ids.push_back(audio_start_token_);
+            if (static_cast<int>(target_ids.size()) > text_budget) {
+                target_ids.resize(static_cast<size_t>(text_budget));
+                target_ids.back() = audio_start_token_;
+                text_ids.swap(target_ids);
+            } else {
+                std::vector<int> ref_text_ids = tokenizer_->encode(prompt_text);
+                const int ref_budget = text_budget - static_cast<int>(target_ids.size());
+                if (static_cast<int>(ref_text_ids.size()) > ref_budget) {
+                    ref_text_ids.resize(static_cast<size_t>(ref_budget));
+                }
+                text_ids = std::move(ref_text_ids);
+                text_ids.insert(text_ids.end(), target_ids.begin(), target_ids.end());
+            }
+        }
+    } else {
+        text_ids = tokenizer_->encode(target_text);
+        text_ids.push_back(audio_start_token_);
+        if (static_cast<int>(text_ids.size()) > text_budget) {
+            text_ids.resize(static_cast<size_t>(text_budget));
+            text_ids.back() = audio_start_token_;
+        }
     }
-    std::string prompt = instruction_.empty() ? text : "(" + instruction_ + ")" + text;
-    std::vector<int> target_ids = tokenizer_->encode(prompt);
-    target_ids.push_back(audio_start_token_);
 
     std::vector<int64_t> text_tokens(max_text_, 0);
     std::vector<float>   text_mask  (max_text_, 0.0f);
@@ -322,22 +369,7 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
     std::vector<float>   audio_mask (max_text_, 0.0f);
 
     int pos = 0;
-    const int prompt_audio_slots = ref_frames_;
-    const int avail = std::max(1, max_text_ - prompt_audio_slots);
-    const int ref_text_budget =
-        ref_text_ids.empty() ? 0 : std::max(0, avail - static_cast<int>(target_ids.size()));
-    if (static_cast<int>(ref_text_ids.size()) > ref_text_budget) {
-        ref_text_ids.resize(static_cast<size_t>(ref_text_budget));
-    }
-    const int target_budget = std::max(1, avail - static_cast<int>(ref_text_ids.size()));
-    if (static_cast<int>(target_ids.size()) > target_budget) {
-        std::vector<int> trimmed;
-        trimmed.reserve(static_cast<size_t>(target_budget));
-        for (int i = 0; i < target_budget - 1; ++i) trimmed.push_back(target_ids[i]);
-        trimmed.push_back(audio_start_token_);
-        target_ids.swap(trimmed);
-    }
-    for (int id : ref_text_ids) {
+    for (int id : text_ids) {
         text_tokens[pos] = id;
         text_mask[pos]   = 1.0f;
         ++pos;
@@ -347,11 +379,6 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
         std::memcpy(audio_feats.data() + static_cast<size_t>(pos) * kPredFeatFloats,
                     ref_feats_.data()  + static_cast<size_t>(f)   * kPredFeatFloats,
                     kPredFeatFloats * sizeof(float));
-        ++pos;
-    }
-    for (int id : target_ids) {
-        text_tokens[pos] = id;
-        text_mask[pos]   = 1.0f;
         ++pos;
     }
     const int     context_length        = pos;
@@ -520,6 +547,10 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
     std::vector<float> feature_buffer; feature_buffer.reserve(kDecoderInputFloats);
     std::vector<float> decoder_input(kDecoderInputFloats, 0.0f);
     std::vector<float> pcm         (kDecoderOutputFloats);
+    size_t leading_samples_to_drop =
+        ref_frames_ > 0
+            ? static_cast<size_t>(kPromptWarmupStepsToDrop) * kSamplesPerStep
+            : 0;
 
     uint32_t rng_seed = seed_;
     if (rng_seed == 0) {
@@ -594,7 +625,13 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
 
         const size_t valid_samples = std::min<size_t>(
             static_cast<size_t>(valid_steps) * kSamplesPerStep, pcm.size());
-        on_chunk(pcm.data(), valid_samples, is_final);
+        const size_t drop = std::min(leading_samples_to_drop, valid_samples);
+        leading_samples_to_drop -= drop;
+        const size_t emit_samples = valid_samples - drop;
+        if (emit_samples > 0 || is_final) {
+            on_chunk(emit_samples > 0 ? pcm.data() + drop : nullptr,
+                     emit_samples, is_final);
+        }
 
         feature_buffer.clear();
     };
