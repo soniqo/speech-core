@@ -27,26 +27,32 @@ namespace speech_core {
 /// reads back from the returned OrtValues' GetTensorMutableData pointers —
 /// the same idiom ParakeetStt uses.
 ///
-/// Pipeline (three ONNX graphs orchestrated here):
+/// Pipeline (three or four ONNX graphs orchestrated here):
 ///   audio_encoder  : (audio [1, 102400] = 6.4 s @ 16 kHz)
 ///                    → (audio_feats [1, 80, 2, 64])    — prompt conditioning only
-///   decoder        : UNIFIED prefill + token-step graph (the merged export).
+///   decoder        : prefill + token-step graphs. If split
+///                    voxcpm-text-prefill*.onnx and voxcpm-token-step*.onnx
+///                    files sit beside decoder_path they are used directly;
+///                    otherwise decoder_path is treated as the legacy unified
+///                    graph and split by the ts_ I/O prefix.
 ///     prefill mode  : (text_tokens, text_mask, audio_feats, audio_mask, ctx_len)
 ///                     → (lm_hidden, residual_hidden, prefix_feat_cond, base_cache, residual_cache)
-///     token mode ×N : (ts_lm_hidden, ts_residual_hidden, ts_prefix_feat_cond, ts_base_cache,
-///                      ts_residual_cache, ts_position_id, ts_noise)
-///                     → (ts_pred_feat, ts_stop_logits, ts_next_lm, ts_next_resid,
-///                        ts_next_base_cache, ts_next_resid_cache)
+///     token mode ×N : (lm_hidden, residual_hidden, prefix_feat_cond, base_cache,
+///                      residual_cache, position_id, noise)
+///                     → (pred_feat, stop_logits, next_lm, next_resid,
+///                        next_base_cache, next_resid_cache)
 ///   audio_decoder  : (latent [1, 64, 128]) → PCM [1, 81920] (5.12 s @ 16 kHz)
 ///
-/// The prefill and token-step graphs share one transformer; exporting them as
-/// one graph stores those weights once. Both modes live in `decoder_session_`;
-/// each Run requests only its mode's outputs but must still supply every graph
-/// input, so the idle mode's inputs are fed cheap zero dummies.
+/// The legacy unified export stores weights once, but some ORT CPU builds still
+/// execute prefill-side nodes when only token-step outputs are requested. Split
+/// files avoid that ambiguity. The unified path remains a compatibility
+/// fallback and feeds cheap zero dummies for the idle mode's inputs.
 class OnnxVoxCPMTts : public TTSInterface {
 public:
-    /// `decoder_path` is the unified prefill+token-step graph
-    /// (voxcpm-decoder.onnx). audio_encoder/decoder + tokenizer as before.
+    /// `decoder_path` is the legacy unified prefill+token-step graph
+    /// (voxcpm-decoder*.onnx). Split voxcpm-text-prefill* and
+    /// voxcpm-token-step* siblings are auto-detected when present.
+    /// audio_encoder/decoder + tokenizer as before.
     OnnxVoxCPMTts(const std::string& decoder_path,
                    const std::string& audio_encoder_path,
                    const std::string& audio_decoder_path,
@@ -138,10 +144,15 @@ private:
 
     const OrtApi* api_ = nullptr;
 
-    // One session for the unified prefill+token graph (weights resident once).
+    // One session for the legacy unified prefill+token graph, or two sessions
+    // for the split prefill/token-step export when matching files are present
+    // beside decoder_path.
     OrtSession* decoder_session_       = nullptr;
+    OrtSession* prefill_session_       = nullptr;
+    OrtSession* step_session_          = nullptr;
     OrtSession* audio_encoder_session_ = nullptr;
     OrtSession* audio_decoder_session_ = nullptr;
+    bool        using_split_decoder_   = false;
 
     // The unified graph's I/O split by the "ts_" prefix: prefill_io_ holds the
     // prefill names (text_tokens…→lm_hidden…), step_io_ the token-step names

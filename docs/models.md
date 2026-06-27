@@ -74,7 +74,7 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
 
-`OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads one unified decoder graph plus audio encoder/decoder sidecars, outputs 16 kHz PCM, and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
+`OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
@@ -211,9 +211,17 @@ tts.clear_reference();
 
 - VoxCPM 0.5B bilingual TTS, ONNX Runtime backend.
 - Serving bundle: [soniqo/VoxCPM-0.5B-ONNX](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX).
-- Loads three graphs: a unified `voxcpm-decoder*.onnx` prefill+token-step graph plus `voxcpm-audio-encoder.onnx` and `voxcpm-audio-decoder.onnx`.
+- Loads four graphs when split decoder artifacts are present:
+  `voxcpm-text-prefill*.onnx`, `voxcpm-token-step*.onnx`,
+  `voxcpm-audio-encoder.onnx`, and `voxcpm-audio-decoder.onnx`.
+  Older bundles that only ship `voxcpm-decoder*.onnx` still work via the
+  legacy unified fallback. Set `SPEECH_CORE_VOXCPM_FORCE_UNIFIED=1` to force
+  that path for A/B testing.
 - Default cloud CPU deployment uses `voxcpm-decoder.fp16w.onnx`: FP16 external weights with FP32 compute tensors, keeping CPU RSS lower while preserving graph I/O shape.
 - Voice cloning is prompt-audio based. `set_reference()` encodes the 16 kHz prompt clip into latent frames; `set_reference_transcript()` is optional but recommended, and should be the exact transcript of that clip. Existing callers that only set audio still work.
+- For latency canaries, `SPEECH_CORE_VOXCPM_REF_MAX_FRAMES` (or the shorter
+  `VOXCPM_REF_MAX_FRAMES`) caps the prompt-audio frames consumed by
+  `set_reference()`. The default uses the full model cap.
 - End-to-end audio-quality validation is intentionally heavy because it downloads a multi-GB bundle and runs autoregressive synthesis. Keep ordinary CI to compile/smoke checks; run synth → ASR round-trips manually or from a weekly workflow when promoting a new bundle.
 
 ## LiteRTVoxCPM2Tts
