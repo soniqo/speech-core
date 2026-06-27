@@ -11,6 +11,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
 | `OnnxSidonRestorer` | (own API; `EnhancerInterface` adapter) | `speech_core/models/onnx_sidon_restorer.h` | full — see [OnnxSidonRestorer](#onnxsidonrestorer) |
+| `OnnxCosyVoice3Tts` | `TTSInterface` | `speech_core/models/onnx_cosyvoice3_tts.h` | staged — ONNX runtime + cached conditioning |
 | `OnnxVoxCPMTts` | `TTSInterface` | `speech_core/models/onnx_voxcpm_tts.h` | full |
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
@@ -75,6 +76,8 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
 
 `OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
+
+`OnnxCosyVoice3Tts` runs the CosyVoice3 0.5B ONNX deployment bundle (`llm_prefill`, `llm_step`, `flow_frontend`, flow estimator, `hift`) and outputs 24 kHz PCM. The current C++ contract expects zero-shot voice conditioning to be supplied explicitly through `set_conditioning()`: prompt text token IDs, prompt speech tokens, prompt mel features, and a 192-dim speaker embedding. This matches the cloud serving shape: compute conditioning once when a voice is created, persist the binary blob with the voice, then reuse it for synthesis without re-running the prompt frontend per request. The bundled `encode_conditioning_blob()` / `decode_conditioning_blob()` helpers define that persistence format.
 
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
@@ -222,6 +225,32 @@ tts.clear_reference();
   `VOXCPM_REF_MAX_FRAMES`) caps the prompt-audio frames consumed by
   `set_reference()`. The default uses the full model cap.
 - End-to-end audio-quality validation is intentionally heavy because it downloads a multi-GB bundle and runs autoregressive synthesis. Keep ordinary CI to compile/smoke checks; run synth → ASR round-trips manually or from a weekly workflow when promoting a new bundle.
+
+## OnnxCosyVoice3Tts
+
+```cpp
+#include <speech_core/models/onnx_cosyvoice3_tts.h>
+
+speech_core::OnnxCosyVoice3Tts tts("/models/cosyvoice3", /*hw_accel=*/false);
+
+auto conditioning =
+    speech_core::OnnxCosyVoice3Tts::decode_conditioning_blob(blob.data(), blob.size());
+tts.set_conditioning(std::move(conditioning));
+tts.set_seed(1986);
+tts.set_max_steps(80);
+tts.synthesize("Hello from CosyVoice3.", "", [](const float* samples,
+                                                 size_t length,
+                                                 bool is_final) {
+    // 24 kHz Float32 PCM.
+});
+tts.clear_conditioning();
+```
+
+- Serving bundle: [soniqo/CosyVoice3-0.5B-ONNX](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX).
+- Loads five inference graphs: `llm_prefill.onnx`, `llm_step.onnx`, `flow_frontend.onnx`, `flow.decoder.estimator.fp32.onnx`, and `hift.onnx`, plus `CosyVoice-BlankEN/{vocab.json,merges.txt}` for the Qwen text tokenizer.
+- Zero-shot voice cloning is intentionally a two-stage contract. This wrapper consumes cached conditioning tensors; it does not yet compute the frontend tensors from raw reference audio. Cloud and app callers should compute that conditioning at voice-create time and persist `encode_conditioning_blob()` output with the voice.
+- The conditioning blob contains prompt text token IDs, LLM prompt speech tokens, flow prompt speech tokens, prompt mel features `[frames,80]`, and a 192-dim speaker embedding. `prompt_text_from_transcript()` prepends the helper prompt prefix when the transcript does not already include `<|endofprompt|>`.
+- `tests/test_models.cpp` includes a load/blob smoke. Set `SPEECH_COSYVOICE3_ONNX_DIR=/path/to/CosyVoice3-0.5B-ONNX` to run it locally; otherwise it skips like the other heavyweight model tests.
 
 ## LiteRTVoxCPM2Tts
 
