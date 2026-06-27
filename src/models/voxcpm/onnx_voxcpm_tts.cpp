@@ -170,11 +170,8 @@ OnnxVoxCPMTts::OnnxVoxCPMTts(const std::string& decoder_path,
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
     const auto split_paths = split_decoder_paths(decoder_path);
-    const bool force_unified =
-        std::getenv("SPEECH_CORE_VOXCPM_FORCE_UNIFIED") != nullptr;
     using_split_decoder_ =
-        !force_unified
-        && !split_paths.first.empty()
+        !split_paths.first.empty()
         && file_exists(split_paths.first)
         && file_exists(split_paths.second);
 

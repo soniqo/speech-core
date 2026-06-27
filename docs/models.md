@@ -215,8 +215,7 @@ tts.clear_reference();
   `voxcpm-text-prefill*.onnx`, `voxcpm-token-step*.onnx`,
   `voxcpm-audio-encoder.onnx`, and `voxcpm-audio-decoder.onnx`.
   Older bundles that only ship `voxcpm-decoder*.onnx` still work via the
-  legacy unified fallback. Set `SPEECH_CORE_VOXCPM_FORCE_UNIFIED=1` to force
-  that path for A/B testing.
+  legacy unified fallback.
 - Default cloud CPU deployment uses `voxcpm-decoder.fp16w.onnx`: FP16 external weights with FP32 compute tensors, keeping CPU RSS lower while preserving graph I/O shape.
 - Voice cloning is prompt-audio based. `set_reference()` encodes the 16 kHz prompt clip into latent frames; `set_reference_transcript()` is optional but recommended, and should be the exact transcript of that clip. Existing callers that only set audio still work.
 - For latency canaries, `SPEECH_CORE_VOXCPM_REF_MAX_FRAMES` (or the shorter
