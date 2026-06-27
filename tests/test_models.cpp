@@ -19,6 +19,7 @@
 #include "speech_core/models/deepfilter.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_cosyvoice3_tts.h"
 #include "speech_core/models/onnx_sidon_restorer.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/onnx_personaplex.h"
@@ -36,6 +37,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -609,6 +611,70 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
                 tts.max_text_tokens(), tts.tokens_generated(), samples);
 }
 
+void test_onnx_cosyvoice3_load(const std::string& /*dir*/) {
+    const char* override_dir = std::getenv("SPEECH_COSYVOICE3_ONNX_DIR");
+    std::string cosy_dir = override_dir ? override_dir : "/tmp/cosyvoice3-onnx-bundle";
+    const std::string prefill = cosy_dir + "/llm_prefill.onnx";
+    const std::string step = cosy_dir + "/llm_step.onnx";
+    const std::string flow = cosy_dir + "/flow_frontend.onnx";
+    const std::string estimator = cosy_dir + "/flow.decoder.estimator.fp32.onnx";
+    const std::string hift = cosy_dir + "/hift.onnx";
+    const std::string vocab = cosy_dir + "/CosyVoice-BlankEN/vocab.json";
+    const std::string merges = cosy_dir + "/CosyVoice-BlankEN/merges.txt";
+    if (!file_exists(prefill) || !file_exists(step) || !file_exists(flow)
+        || !file_exists(estimator) || !file_exists(hift)
+        || !file_exists(vocab) || !file_exists(merges)) {
+        std::printf("  [skip] ONNX CosyVoice3 bundle not in %s "
+                    "(set SPEECH_COSYVOICE3_ONNX_DIR to override)\n",
+                    cosy_dir.c_str());
+        return;
+    }
+    std::printf("  test_onnx_cosyvoice3_load ... ");
+    speech_core::OnnxCosyVoice3Tts tts(cosy_dir, /*hw_accel=*/false);
+    REQUIRE(tts.output_sample_rate() == 24000);
+    REQUIRE(!tts.has_conditioning());
+
+    speech_core::OnnxCosyVoice3Tts::Conditioning c;
+    c.prompt_text_ids = {1446, 525, 264, 10950, 17847, 13, 151646};
+    c.llm_prompt_speech_tokens = {1, 2, 3, 4};
+    c.flow_prompt_speech_tokens = {1, 2, 3, 4};
+    c.prompt_speech_feat_frames = 4;
+    c.prompt_speech_feat.assign(4 * 80, 0.0f);
+    c.embedding.assign(192, 0.0f);
+    auto blob = speech_core::OnnxCosyVoice3Tts::encode_conditioning_blob(c);
+    auto decoded = speech_core::OnnxCosyVoice3Tts::decode_conditioning_blob(
+        blob.data(), blob.size());
+    REQUIRE(decoded.prompt_text_ids == c.prompt_text_ids);
+    REQUIRE(decoded.llm_prompt_speech_tokens == c.llm_prompt_speech_tokens);
+    REQUIRE(decoded.flow_prompt_speech_tokens == c.flow_prompt_speech_tokens);
+    REQUIRE(decoded.prompt_speech_feat.size() == c.prompt_speech_feat.size());
+    REQUIRE(decoded.embedding.size() == c.embedding.size());
+    tts.set_conditioning(std::move(decoded));
+    REQUIRE(tts.has_conditioning());
+    if (std::getenv("SPEECH_COSYVOICE3_E2E")) {
+        tts.set_seed(1986);
+        tts.set_max_steps(8);
+        size_t samples = 0;
+        bool got_final = false;
+        bool any_nonfinite = false;
+        tts.synthesize("hi", "",
+            [&](const float* s, size_t n, bool is_final) {
+                samples += n;
+                if (is_final) got_final = true;
+                for (size_t i = 0; i < n; ++i) {
+                    if (!std::isfinite(s[i])) any_nonfinite = true;
+                }
+            });
+        REQUIRE(got_final);
+        REQUIRE(samples > 0);
+        REQUIRE(!any_nonfinite);
+        std::printf("ok (e2e samples=%zu tokens=%d)\n",
+                    samples, tts.tokens_generated());
+    } else {
+        std::printf("ok\n");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // VoxCPM2 ONNX → Parakeet ORT round-trip — mirrors test_kokoro_parakeet_roundtrip.
 // Synthesizes the pangram via the ONNX VoxCPM2 wrapper, resamples to 16 kHz,
@@ -982,6 +1048,7 @@ int main() {
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_onnx_voxcpm2_load);
+    RUN(test_onnx_cosyvoice3_load);
     RUN(test_onnx_voxcpm2_parakeet_roundtrip);
     RUN(test_onnx_voxcpm2_wer_corpus);
     RUN(test_onnx_personaplex_load);
