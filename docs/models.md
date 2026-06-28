@@ -250,7 +250,8 @@ tts.clear_conditioning();
 - Loads five inference graphs: `llm_prefill.onnx`, `llm_step.onnx`, `flow_frontend.onnx`, `flow.decoder.estimator.fp32.onnx`, and `hift.onnx`, plus `CosyVoice-BlankEN/{vocab.json,merges.txt}` for the Qwen text tokenizer.
 - Zero-shot voice cloning is intentionally a two-stage contract. This wrapper consumes cached conditioning tensors; it does not yet compute the frontend tensors from raw reference audio. Cloud and app callers should compute that conditioning at voice-create time and persist `encode_conditioning_blob()` output with the voice.
 - The conditioning blob contains prompt text token IDs, LLM prompt speech tokens, flow prompt speech tokens, prompt mel features `[frames,80]`, and a 192-dim speaker embedding. `prompt_text_from_transcript()` prepends the helper prompt prefix when the transcript does not already include `<|endofprompt|>`.
-- `tests/test_models.cpp` includes a load/blob smoke. Set `SPEECH_COSYVOICE3_ONNX_DIR=/path/to/CosyVoice3-0.5B-ONNX` to run it locally; otherwise it skips like the other heavyweight model tests.
+- After each `synthesize()` call, `prefill_ms()`, `ar_ms()`, and `audio_decode_ms()` expose coarse stage timing. `flow_frontend_ms()`, `flow_estimator_ms()`, and `hift_ms()` split `audio_decode_ms()` into the Flow/HiFT sub-stages used by cloud observability.
+- `tests/test_models.cpp` includes a load/blob smoke. Set `SPEECH_COSYVOICE3_ONNX_DIR=/path/to/CosyVoice3-0.5B-ONNX` to run it locally; add `SPEECH_COSYVOICE3_E2E=1` to synthesize a short clip and assert populated stage timings. Without the bundle, it skips like the other heavyweight model tests.
 
 ## LiteRTVoxCPM2Tts
 

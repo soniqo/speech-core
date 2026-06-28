@@ -668,6 +668,12 @@ void test_onnx_cosyvoice3_load(const std::string& /*dir*/) {
         REQUIRE(got_final);
         REQUIRE(samples > 0);
         REQUIRE(!any_nonfinite);
+        REQUIRE(tts.prefill_ms() >= 0);
+        REQUIRE(tts.ar_ms() >= 0);
+        REQUIRE(tts.audio_decode_ms() >= 0);
+        REQUIRE(tts.flow_frontend_ms() >= 0);
+        REQUIRE(tts.flow_estimator_ms() >= 0);
+        REQUIRE(tts.hift_ms() >= 0);
         std::printf("ok (e2e samples=%zu tokens=%d)\n",
                     samples, tts.tokens_generated());
     } else {

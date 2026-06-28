@@ -58,6 +58,9 @@ public:
     int64_t prefill_ms() const { return prefill_ms_; }
     int64_t ar_ms() const { return ar_ms_; }
     int64_t audio_decode_ms() const { return audio_decode_ms_; }
+    int64_t flow_frontend_ms() const { return flow_frontend_ms_; }
+    int64_t flow_estimator_ms() const { return flow_estimator_ms_; }
+    int64_t hift_ms() const { return hift_ms_; }
 
     static std::string helper_prompt_prefix();
     static std::string prompt_text_from_transcript(const std::string& transcript);
@@ -79,6 +82,9 @@ private:
     int64_t prefill_ms_ = -1;
     int64_t ar_ms_ = -1;
     int64_t audio_decode_ms_ = -1;
+    int64_t flow_frontend_ms_ = -1;
+    int64_t flow_estimator_ms_ = -1;
+    int64_t hift_ms_ = -1;
 };
 
 }  // namespace speech_core
