@@ -50,6 +50,10 @@ public:
     uint32_t seed_used() const { return seed_used_; }
 
     void set_max_steps(int max_steps) { max_steps_ = max_steps; }
+    void set_flow_steps(int steps);
+    int flow_steps() const { return flow_steps_; }
+    void set_cfg_rate(float cfg_rate);
+    float cfg_rate() const { return cfg_rate_; }
     int tokens_generated() const { return tokens_generated_; }
     bool stopped_on_stop_token() const { return stopped_on_stop_token_; }
 
@@ -76,7 +80,9 @@ private:
     std::string instruction_;
     uint32_t seed_ = 0;
     uint32_t seed_used_ = 0;
-    int max_steps_ = 80;
+    int max_steps_ = 256;
+    int flow_steps_ = 10;
+    float cfg_rate_ = 0.7f;
     int tokens_generated_ = 0;
     bool stopped_on_stop_token_ = false;
     int64_t prefill_ms_ = -1;

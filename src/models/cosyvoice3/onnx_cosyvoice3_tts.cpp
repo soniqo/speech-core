@@ -361,6 +361,7 @@ struct OnnxCosyVoice3Tts::Impl {
     static constexpr int kLayers = 24;
     static constexpr int kKvFloats = 1 * 2 * kCacheSlots * 64;
     static constexpr int kSpeechTokenSize = 6561;
+    static constexpr int kSpeechTokenExtra = 200;
     static constexpr int kFlowTokenSlots = 512;
     static constexpr int kMelSlots = 1024;
     static constexpr int kHiftFrames = 512;
@@ -398,8 +399,19 @@ struct OnnxCosyVoice3Tts::Impl {
                      int top_k,
                      double top_p) const {
         std::vector<float> scores = logits;
+        const int vocab_size = static_cast<int>(scores.size());
+        const int suppress_end = std::min(vocab_size,
+                                          kSpeechTokenSize + kSpeechTokenExtra);
+        // CosyVoice reserves speech_token_size..speech_token_size+2 as stop
+        // tokens. The remaining extra rows are padding/post-stop ids and should
+        // never be sampled; keeping them live makes generation run to max cap.
+        for (int i = kSpeechTokenSize + 3; i < suppress_end; ++i) {
+            scores[static_cast<size_t>(i)] =
+                -std::numeric_limits<float>::infinity();
+        }
         if (static_cast<int>(generated.size()) < min_tokens) {
-            for (int i = kSpeechTokenSize; i < static_cast<int>(scores.size()); ++i) {
+            const int stop_end = std::min(vocab_size, kSpeechTokenSize + 3);
+            for (int i = kSpeechTokenSize; i < stop_end; ++i) {
                 scores[static_cast<size_t>(i)] = -std::numeric_limits<float>::infinity();
             }
         }
@@ -455,10 +467,12 @@ struct OnnxCosyVoice3Tts::Impl {
                                  int max_tokens,
                                  uint32_t seed,
                                  int* prefill_ms,
-                                 int* ar_ms) {
+                                 int* ar_ms,
+                                 bool* stopped_on_stop_token) {
         if (!has_conditioning) {
             throw std::runtime_error("CosyVoice3 conditioning is required");
         }
+        if (stopped_on_stop_token) *stopped_on_stop_token = false;
         std::vector<int64_t> text_tokens_all = conditioning.prompt_text_ids;
         text_tokens_all.insert(text_tokens_all.end(), target_ids.begin(), target_ids.end());
 
@@ -474,9 +488,11 @@ struct OnnxCosyVoice3Tts::Impl {
         int64_t prompt_len_v[1] = {prompt_len};
         const int target_text_len = std::max<int>(1, target_ids.size());
         const int min_tokens = std::max(1, target_text_len * 2);
+        const int scaled_max_tokens =
+            std::max(200, target_text_len * 10);
         const int max_decode = std::max(1, std::min(
             max_tokens,
-            std::min(std::max(min_tokens + 8, target_text_len * 20),
+            std::min(scaled_max_tokens,
                      kCacheSlots - text_len - prompt_len - 3)));
 
         const int64_t s_text[2] = {1, kTextSlots};
@@ -553,6 +569,10 @@ struct OnnxCosyVoice3Tts::Impl {
         for (int step_idx = 0; step_idx < max_decode; ++step_idx) {
             if (cancelled.load(std::memory_order_relaxed)) break;
             int tok = sample_token(logits, generated, min_tokens, rng, 25, 0.8);
+            if (tok >= kSpeechTokenSize && tok < kSpeechTokenSize + 3) {
+                if (stopped_on_stop_token) *stopped_on_stop_token = true;
+                break;
+            }
             if (tok >= kSpeechTokenSize) break;
             generated.push_back(tok);
 
@@ -616,6 +636,8 @@ struct OnnxCosyVoice3Tts::Impl {
     }
 
     std::vector<float> run_flow_hift(const std::vector<int64_t>& speech_tokens,
+                                     int flow_steps,
+                                     float cfg_rate,
                                      int* decode_ms,
                                      int* flow_frontend_ms,
                                      int* flow_estimator_ms,
@@ -623,6 +645,8 @@ struct OnnxCosyVoice3Tts::Impl {
         if (!has_conditioning) {
             throw std::runtime_error("CosyVoice3 conditioning is required");
         }
+        flow_steps = std::max(1, std::min(flow_steps, 32));
+        if (!std::isfinite(cfg_rate) || cfg_rate < 0.0f) cfg_rate = 0.0f;
         std::vector<int64_t> merged = conditioning.flow_prompt_speech_tokens;
         merged.insert(merged.end(), speech_tokens.begin(), speech_tokens.end());
         if (merged.size() > kFlowTokenSlots) {
@@ -702,9 +726,9 @@ struct OnnxCosyVoice3Tts::Impl {
         std::vector<float> x(static_cast<size_t>(80) * total_frames);
         for (float& v : x) v = normal(rng);
 
-        auto cosine_t = [](int i) {
+        auto cosine_t = [flow_steps](int i) {
             constexpr float kPi = 3.14159265358979323846f;
-            const float u = static_cast<float>(i) / 10.0f;
+            const float u = static_cast<float>(i) / static_cast<float>(flow_steps);
             return 1.0f - std::cos(u * kPi / 2.0f);
         };
         const int64_t s_dyn[3] = {2, 80, total_frames};
@@ -712,7 +736,7 @@ struct OnnxCosyVoice3Tts::Impl {
         const int64_t s_t[1] = {2};
         const int64_t s_spks[2] = {2, 80};
         auto flow_estimator_t0 = Clock::now();
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < flow_steps; ++i) {
             std::vector<float> x2(static_cast<size_t>(2) * 80 * total_frames);
             std::vector<float> mu2(x2.size());
             std::vector<float> cond2(x2.size(), 0.0f);
@@ -746,8 +770,9 @@ struct OnnxCosyVoice3Tts::Impl {
             std::vector<float> vel = copy_f32(est_out[0], x2.size());
             api->ReleaseValue(est_out[0]);
             const float dt = cosine_t(i + 1) - cosine_t(i);
+            const float cond_scale = 1.0f + cfg_rate;
             for (size_t j = 0; j < x.size(); ++j) {
-                const float guided = 1.7f * vel[j] - 0.7f * vel[j + x.size()];
+                const float guided = cond_scale * vel[j] - cfg_rate * vel[j + x.size()];
                 x[j] += dt * guided;
             }
         }
@@ -801,6 +826,14 @@ bool OnnxCosyVoice3Tts::has_conditioning() const {
     return impl_->has_conditioning;
 }
 
+void OnnxCosyVoice3Tts::set_flow_steps(int steps) {
+    flow_steps_ = std::max(1, std::min(steps, 32));
+}
+
+void OnnxCosyVoice3Tts::set_cfg_rate(float cfg_rate) {
+    cfg_rate_ = std::isfinite(cfg_rate) ? std::max(0.0f, cfg_rate) : 0.0f;
+}
+
 void OnnxCosyVoice3Tts::cancel() {
     impl_->cancelled.store(true, std::memory_order_relaxed);
 }
@@ -824,17 +857,20 @@ void OnnxCosyVoice3Tts::synthesize(const std::string& text,
     std::vector<int64_t> target = impl_->encode_text(prompt);
     int prefill_ms = 0;
     int ar_ms = 0;
+    bool stopped_on_stop_token = false;
     auto speech_tokens = impl_->run_llm(target, max_steps_, seed_used_,
-                                        &prefill_ms, &ar_ms);
+                                        &prefill_ms, &ar_ms,
+                                        &stopped_on_stop_token);
     tokens_generated_ = static_cast<int>(speech_tokens.size());
-    stopped_on_stop_token_ = tokens_generated_ < max_steps_;
+    stopped_on_stop_token_ = stopped_on_stop_token;
     prefill_ms_ = prefill_ms;
     ar_ms_ = ar_ms;
     int decode_ms = 0;
     int flow_frontend_ms = 0;
     int flow_estimator_ms = 0;
     int hift_ms = 0;
-    auto wav = impl_->run_flow_hift(speech_tokens, &decode_ms,
+    auto wav = impl_->run_flow_hift(speech_tokens, flow_steps_, cfg_rate_,
+                                    &decode_ms,
                                     &flow_frontend_ms,
                                     &flow_estimator_ms,
                                     &hift_ms);

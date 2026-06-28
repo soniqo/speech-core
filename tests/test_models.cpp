@@ -633,6 +633,14 @@ void test_onnx_cosyvoice3_load(const std::string& /*dir*/) {
     speech_core::OnnxCosyVoice3Tts tts(cosy_dir, /*hw_accel=*/false);
     REQUIRE(tts.output_sample_rate() == 24000);
     REQUIRE(!tts.has_conditioning());
+    tts.set_flow_steps(6);
+    REQUIRE(tts.flow_steps() == 6);
+    tts.set_flow_steps(0);
+    REQUIRE(tts.flow_steps() == 1);
+    tts.set_cfg_rate(0.0f);
+    REQUIRE(tts.cfg_rate() == 0.0f);
+    tts.set_cfg_rate(0.7f);
+    REQUIRE(tts.cfg_rate() > 0.69f && tts.cfg_rate() < 0.71f);
 
     speech_core::OnnxCosyVoice3Tts::Conditioning c;
     c.prompt_text_ids = {1446, 525, 264, 10950, 17847, 13, 151646};
