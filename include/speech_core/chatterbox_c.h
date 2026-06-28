@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "speech_core/tts_c.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -53,6 +55,16 @@ int sc_chatterbox_output_sample_rate(sc_chatterbox_t synth);
 int sc_chatterbox_synthesize(sc_chatterbox_t synth, const char* text,
                              const char* language,
                              sc_chatterbox_chunk_fn on_chunk, void* context);
+
+/// Synthesize with explicit delivery mode and offline postprocess flags.
+/// NULL options preserve Streaming + SC_TTS_POSTPROCESS_NONE behavior.
+int sc_chatterbox_synthesize_with_options(
+    sc_chatterbox_t synth,
+    const char* text,
+    const char* language,
+    const sc_tts_synthesis_options_t* options,
+    sc_chatterbox_chunk_fn on_chunk,
+    void* context);
 
 /// Cancel an in-progress synthesize() (thread-safe; checked between AR steps).
 void sc_chatterbox_cancel(sc_chatterbox_t synth);

@@ -212,7 +212,23 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
 tts.clear_reference();
 ```
 
+For offline post-processing, use buffered delivery:
+
+```cpp
+speech_core::TtsSynthesisOptions options;
+options.mode = speech_core::TtsSynthesisMode::Buffered;
+options.postprocess_flags = speech_core::kTtsPostProcessDeEsser;
+
+tts.synthesize_with_options("Hello world", "en", options,
+    [](const float* samples, size_t length, bool is_final) {
+        // One final callback with the full post-processed utterance.
+    });
+```
+
 - VoxCPM 0.5B bilingual TTS, ONNX Runtime backend.
+- `synthesize()` is the streaming path: the callback receives each decoder flush chunk.
+- `synthesize_with_options()` accepts `TtsSynthesisOptions`: `Streaming` preserves chunked delivery, while `Buffered` accumulates all PCM produced for the single submitted text input before invoking the callback once with `is_final=true`.
+- Offline post-processing requires `Buffered` mode so it runs on the complete synthesized result, not on decoder flush chunks.
 - Serving bundle: [soniqo/VoxCPM-0.5B-ONNX](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX).
 - Loads four graphs when split decoder artifacts are present:
   `voxcpm-text-prefill*.onnx`, `voxcpm-token-step*.onnx`,
@@ -271,7 +287,23 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool
 });
 ```
 
+For offline post-processing, such as spectral de-essing, use buffered delivery:
+
+```cpp
+speech_core::TtsSynthesisOptions options;
+options.mode = speech_core::TtsSynthesisMode::Buffered;
+options.postprocess_flags = speech_core::kTtsPostProcessDeEsser;
+
+tts.synthesize_with_options("Hello world", "en", options,
+    [](const float* samples, size_t length, bool is_final) {
+        // One final callback with the full post-processed utterance for this text input.
+    });
+```
+
 - 2B-parameter multilingual TTS, 48 kHz studio-quality output. Voice cloning and instruction-driven voice design supported by the upstream model.
+- `synthesize()` is the streaming path: the callback receives each decoder flush chunk, up to 64 AR steps / 10.24 s per chunk.
+- `synthesize_with_options()` accepts the same `TtsSynthesisOptions` contract as the other TTS wrappers: `Streaming` preserves chunked delivery, while `Buffered` accumulates all PCM produced for the single submitted text input before invoking the callback once with `is_final=true`. `VoxCPM2SynthesisOptions` remains as a compatibility alias.
+- Post-process flags currently include `kTtsPostProcessDeEsser`. Offline post-processing requires `Buffered` mode so it runs on the complete synthesized result, not on decoder flush chunks. If an app splits long text before calling VoxCPM2, buffering is scoped to each submitted text input.
 - Ships as **four** LiteRT graphs plus an HF BPE tokenizer:
   - `text-prefill`: text + (optional) reference-audio prefix → LM hidden + initial K/V cache
   - `token-step`: one autoregressive step (called up to 2048 times per generation), consumes and emits the K/V cache explicitly

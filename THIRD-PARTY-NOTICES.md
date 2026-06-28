@@ -2,8 +2,7 @@
 
 Binary distributions of the `speech` package (the `.deb` / `.tar.gz` packages published
 on GitHub Releases) bundle the following third-party runtime libraries. The
-speech-core source tree itself has no third-party code beyond the vendored
-LiteRT C API headers noted below.
+speech-core source tree also vendors the source-only components noted below.
 
 ## ONNX Runtime
 
@@ -45,6 +44,18 @@ for the complete texts.
 
 - **Files:** `third_party/litert/` (~44 LiteRT C API headers)
 - **License:** Apache License 2.0 (same as LiteRT above)
+
+## Vendored source (source tree)
+
+### Ooura FFT
+
+- **Files:** `third_party/fftooura/`
+- **Source:** local C++ port of Takuya Ooura's `fft4g`, plus a small C++ wrapper.
+- **License:** Ooura FFT license — permits use, copy, modification, and distribution
+  for any purpose, including commercial use, without fee; modified code should
+  refer to the package.
+- Copyright Takuya OOURA, 1996-2001.
+- **Used by:** `speech_core::audio::fft_real` / `speech_core::audio::ifft_real`
 
 ## Models
 

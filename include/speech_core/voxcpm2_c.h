@@ -24,6 +24,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "speech_core/tts_c.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,6 +37,16 @@ typedef struct sc_voxcpm2_s* sc_voxcpm2_t;
 /// (and may carry length 0). Do not retain `samples` past the call.
 typedef void (*sc_voxcpm2_chunk_fn)(const float* samples, size_t length,
                                     bool is_final, void* context);
+
+typedef sc_tts_synthesis_mode_t sc_voxcpm2_synthesis_mode_t;
+typedef sc_tts_postprocess_flags_t sc_voxcpm2_postprocess_flags_t;
+
+#define SC_VOXCPM2_SYNTHESIS_STREAMING SC_TTS_SYNTHESIS_STREAMING
+#define SC_VOXCPM2_SYNTHESIS_BUFFERED SC_TTS_SYNTHESIS_BUFFERED
+#define SC_VOXCPM2_POSTPROCESS_NONE SC_TTS_POSTPROCESS_NONE
+#define SC_VOXCPM2_POSTPROCESS_DEESSER SC_TTS_POSTPROCESS_DEESSER
+
+typedef sc_tts_synthesis_options_t sc_voxcpm2_synthesis_options_t;
 
 /// Create a synthesizer from a VoxCPM2 LiteRT bundle directory (holding
 /// voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite and
@@ -124,6 +136,21 @@ int sc_voxcpm2_output_sample_rate(sc_voxcpm2_t synth);
 /// non-zero on failure (see sc_voxcpm2_last_error).
 int sc_voxcpm2_synthesize(sc_voxcpm2_t synth, const char* text,
                           sc_voxcpm2_chunk_fn on_chunk, void* context);
+
+/// Synthesize `text` with explicit delivery mode and postprocess flags.
+///
+/// NULL options preserve streaming behavior:
+///   SC_VOXCPM2_SYNTHESIS_STREAMING + SC_VOXCPM2_POSTPROCESS_NONE.
+///
+/// Buffered mode accumulates all PCM for this one text input, applies the
+/// requested postprocess chain, then invokes `on_chunk` once with is_final=true.
+/// Postprocess flags are offline-only for now and require buffered mode.
+int sc_voxcpm2_synthesize_with_options(
+    sc_voxcpm2_t synth,
+    const char* text,
+    const sc_voxcpm2_synthesis_options_t* options,
+    sc_voxcpm2_chunk_fn on_chunk,
+    void* context);
 
 /// Cancel an in-progress synthesize() (thread-safe; checked between AR steps).
 void sc_voxcpm2_cancel(sc_voxcpm2_t synth);

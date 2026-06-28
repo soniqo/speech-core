@@ -35,6 +35,8 @@ add_library(speech_core
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
     src/audio/fft.cpp
+    third_party/fftooura/ooura_fft_engine.cpp
+    third_party/fftooura/fft4g.cpp
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
@@ -43,12 +45,15 @@ add_library(speech_core
     src/tools/tool_executor.cpp
     src/diarization/diarization_pipeline.cpp
     src/speech_core_c.cpp
+    src/tts_synthesis_options.cpp
 )
 
 target_include_directories(speech_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fftooura
 )
 
 if(MSVC)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "speech_core/tts_synthesis_options.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -124,6 +126,18 @@ public:
         const std::string& text,
         const std::string& language,
         TTSChunkCallback on_chunk) = 0;
+
+    /// Synthesize with explicit delivery and post-processing options.
+    ///
+    /// Default implementation preserves Streaming + no post-processing by
+    /// delegating to synthesize(). Buffered mode accumulates every emitted
+    /// chunk for this text input, applies the requested offline processing,
+    /// and invokes on_chunk once with is_final=true.
+    virtual void synthesize_with_options(
+        const std::string& text,
+        const std::string& language,
+        const TtsSynthesisOptions& options,
+        TTSChunkCallback on_chunk);
 
     /// Output sample rate in Hz.
     virtual int output_sample_rate() const = 0;
