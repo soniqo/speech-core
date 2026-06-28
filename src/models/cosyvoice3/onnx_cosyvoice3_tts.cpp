@@ -616,7 +616,10 @@ struct OnnxCosyVoice3Tts::Impl {
     }
 
     std::vector<float> run_flow_hift(const std::vector<int64_t>& speech_tokens,
-                                     int* decode_ms) {
+                                     int* decode_ms,
+                                     int* flow_frontend_ms,
+                                     int* flow_estimator_ms,
+                                     int* hift_ms) {
         if (!has_conditioning) {
             throw std::runtime_error("CosyVoice3 conditioning is required");
         }
@@ -663,8 +666,10 @@ struct OnnxCosyVoice3Tts::Impl {
         const char* out_names[4] = {"mu", "mask", "spks", "cond"};
         OrtValue* outs[4] = {nullptr, nullptr, nullptr, nullptr};
         auto t0 = Clock::now();
+        auto flow_frontend_t0 = Clock::now();
         ort_check(api, api->Run(flow_frontend, nullptr,
             in_names, in, 5, out_names, 4, outs));
+        *flow_frontend_ms = static_cast<int>(elapsed_ms(flow_frontend_t0));
         for (auto* v : in) api->ReleaseValue(v);
 
         const int generated_frames =
@@ -706,6 +711,7 @@ struct OnnxCosyVoice3Tts::Impl {
         const int64_t s_mask[3] = {2, 1, total_frames};
         const int64_t s_t[1] = {2};
         const int64_t s_spks[2] = {2, 80};
+        auto flow_estimator_t0 = Clock::now();
         for (int i = 0; i < 10; ++i) {
             std::vector<float> x2(static_cast<size_t>(2) * 80 * total_frames);
             std::vector<float> mu2(x2.size());
@@ -745,6 +751,7 @@ struct OnnxCosyVoice3Tts::Impl {
                 x[j] += dt * guided;
             }
         }
+        *flow_estimator_ms = static_cast<int>(elapsed_ms(flow_estimator_t0));
 
         std::vector<float> hift_in(static_cast<size_t>(80) * kHiftFrames, 0.0f);
         for (int c = 0; c < 80; ++c) {
@@ -757,11 +764,13 @@ struct OnnxCosyVoice3Tts::Impl {
         const char* hift_in_names[1] = {"speech_feat"};
         const char* hift_out_names[1] = {"wav"};
         OrtValue* hift_out[1] = {nullptr};
+        auto hift_t0 = Clock::now();
         ort_check(api, api->Run(hift, nullptr,
             hift_in_names, &hift_in_v, 1, hift_out_names, 1, hift_out));
         api->ReleaseValue(hift_in_v);
         std::vector<float> wav = copy_f32(hift_out[0], static_cast<size_t>(kHiftFrames) * 480);
         api->ReleaseValue(hift_out[0]);
+        *hift_ms = static_cast<int>(elapsed_ms(hift_t0));
         wav.resize(static_cast<size_t>(generated_frames) * 480);
         *decode_ms = static_cast<int>(elapsed_ms(t0));
         return wav;
@@ -807,6 +816,9 @@ void OnnxCosyVoice3Tts::synthesize(const std::string& text,
     prefill_ms_ = -1;
     ar_ms_ = -1;
     audio_decode_ms_ = -1;
+    flow_frontend_ms_ = -1;
+    flow_estimator_ms_ = -1;
+    hift_ms_ = -1;
 
     std::string prompt = instruction_.empty() ? text : instruction_ + " " + text;
     std::vector<int64_t> target = impl_->encode_text(prompt);
@@ -819,8 +831,17 @@ void OnnxCosyVoice3Tts::synthesize(const std::string& text,
     prefill_ms_ = prefill_ms;
     ar_ms_ = ar_ms;
     int decode_ms = 0;
-    auto wav = impl_->run_flow_hift(speech_tokens, &decode_ms);
+    int flow_frontend_ms = 0;
+    int flow_estimator_ms = 0;
+    int hift_ms = 0;
+    auto wav = impl_->run_flow_hift(speech_tokens, &decode_ms,
+                                    &flow_frontend_ms,
+                                    &flow_estimator_ms,
+                                    &hift_ms);
     audio_decode_ms_ = decode_ms;
+    flow_frontend_ms_ = flow_frontend_ms;
+    flow_estimator_ms_ = flow_estimator_ms;
+    hift_ms_ = hift_ms;
     on_chunk(wav.data(), wav.size(), true);
 }
 
