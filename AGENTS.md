@@ -78,6 +78,9 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 
 | File | Purpose |
 |---|---|
+| `include/speech_core/audio/offline_spectral_de_esser.h` | Offline spectral de-esser used by buffered VoxCPM2 post-processing |
+| `include/speech_core/voxcpm2_c.h` | Standalone VoxCPM2 LiteRT C ABI, including synthesis delivery options and post-process flags |
+| `include/speech_core/models/voxcpm2_synthesis_options.h` | VoxCPM2 streaming/buffered delivery mode and post-process flag contract |
 | `include/speech_core/interfaces.h` | Abstract STT / TTS / VAD / Enhancer / AEC / LLM + Segmentation / Embedding / Diarizer interfaces |
 | `include/speech_core/pipeline/voice_pipeline.h` | Main orchestrator |
 | `include/speech_core/pipeline/turn_detector.h` | VAD-driven turn boundaries + interruption logic |
@@ -120,6 +123,7 @@ Known: `test_pipeline_e2e` is intermittently flaky (SIGTRAP under load) — not 
 
 ## Guidelines
 
+- **VoxCPM2 delivery modes and post-processing.** Keep default `TTSInterface::synthesize()` and `sc_voxcpm2_synthesize()` behavior streaming. Any offline post-processing must run only through VoxCPM2 `Buffered` synthesis options after accumulating all PCM for the single submitted text input. Do not apply offline processing to individual decoder flush chunks. `Streaming` plus non-zero postprocess flags is invalid unless a future flag is explicitly streaming-safe.
 - **C++17 only.** No external dependencies in the orchestration core. ONNX Runtime is the only third-party dep, and only in `speech_core_models`.
 - **No platform-specific code in `speech_core`.** Platform features (NNAPI, QNN, `__system_property_get`) live in `models/` and are gated by `__ANDROID__` ifdefs inside `onnx_engine.h`.
 - **Interfaces are the contract.** Public headers in `include/speech_core/` are the API surface — minimize churn. Add to `interfaces.h` only when the abstraction is needed; don't anticipate.

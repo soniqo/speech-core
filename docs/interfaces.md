@@ -78,6 +78,8 @@ using TTSChunkCallback = std::function<void(
 
 The callback is invoked for each audio chunk during synthesis. `is_final=true` marks the last chunk. Implementations that aren't streaming-capable can emit a single chunk with `is_final=true`.
 
+Model-specific TTS options stay outside this base interface. For example, VoxCPM2 exposes explicit streaming vs buffered delivery and post-process flags in `speech_core/models/voxcpm2_synthesis_options.h`; the plain `TTSInterface::synthesize()` contract remains chunk-callback oriented. Any offline post-processing belongs on the complete buffered result for a submitted text input, not on individual streaming chunks.
+
 **Reference implementation:** `KokoroTts` (Kokoro 82M via ONNX Runtime, single-chunk output).
 
 **Swift counterpart:** `SpeechGenerationModel`.

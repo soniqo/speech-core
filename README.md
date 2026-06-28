@@ -177,6 +177,22 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is
 });
 ```
 
+For offline post-processing (for example spectral de-essing), use VoxCPM2
+buffered delivery. `synthesize()` remains streaming; buffered mode accumulates
+all PCM for that one submitted text input, applies the requested offline
+processing chain, then calls the callback once with `is_final=true`.
+
+```cpp
+speech_core::VoxCPM2SynthesisOptions opts;
+opts.mode = speech_core::VoxCPM2SynthesisMode::Buffered;
+opts.postprocess_flags = speech_core::kVoxCPM2PostProcessDeEsser;
+
+tts.synthesize_with_options("Hello world", "en", opts,
+    [](const float* samples, size_t len, bool is_final) {
+        // Full post-processed utterance for this text input.
+    });
+```
+
 ### Speech restoration (Sidon)
 
 Combined denoise + dereverb. A w2v-BERT 2.0 predictor (with a C++ SeamlessM4T

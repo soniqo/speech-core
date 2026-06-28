@@ -212,6 +212,40 @@ sc_pipeline_set_echo_canceller(pipeline, aec);
 
 Processing chain: `mic → AEC → enhance → VAD → STT`. Implementations can use SpeexDSP, WebRTC AEC, or platform-native echo cancellation.
 
+## VoxCPM2 one-shot C ABI
+
+`include/speech_core/voxcpm2_c.h` exposes the standalone LiteRT VoxCPM2 API used
+by apps that want direct TTS/voice-cloning access instead of the vtable-based
+pipeline adapter above.
+
+`sc_voxcpm2_synthesize()` is the legacy streaming call and is equivalent to
+`Streaming + SC_VOXCPM2_POSTPROCESS_NONE`. The callback receives decoder flush
+chunks and `is_final` marks the last chunk.
+
+Use `sc_voxcpm2_synthesize_with_options()` when the caller needs explicit
+delivery mode or offline post-processing:
+
+```c
+sc_voxcpm2_synthesis_options_t opts = {0};
+opts.struct_size = sizeof(opts);
+opts.mode = SC_VOXCPM2_SYNTHESIS_BUFFERED;
+opts.postprocess_flags = SC_VOXCPM2_POSTPROCESS_DEESSER;
+
+int rc = sc_voxcpm2_synthesize_with_options(
+    synth,
+    "Hello world",
+    &opts,
+    on_chunk,
+    user_context);
+```
+
+`Buffered` mode accumulates all PCM produced for the single submitted text input,
+applies the requested offline processing chain, then calls `on_chunk` once with
+`is_final=true`. Offline post-process flags require `Buffered` mode; the current
+flag set includes `SC_VOXCPM2_POSTPROCESS_DEESSER`. Passing `NULL` for `options`
+preserves the legacy streaming behavior. Always set `struct_size` to
+`sizeof(sc_voxcpm2_synthesis_options_t)`.
+
 ## Null safety
 
 All API functions handle `NULL` pipeline gracefully — they are no-ops. `sc_pipeline_state(NULL)` returns `SC_STATE_IDLE`, `sc_pipeline_is_running(NULL)` returns `false`. `sc_pipeline_clear_tools(NULL)` and `sc_pipeline_load_tools_json(NULL, ...)` are safe no-ops.

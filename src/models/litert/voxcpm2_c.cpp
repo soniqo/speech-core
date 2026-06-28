@@ -8,12 +8,15 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <string>
 #include <vector>
 
 using speech_core::LiteRTVoxCPM2Tts;
+using speech_core::VoxCPM2SynthesisMode;
+using speech_core::VoxCPM2SynthesisOptions;
 
 struct sc_voxcpm2_s {
     std::unique_ptr<LiteRTVoxCPM2Tts> tts;
@@ -75,6 +78,35 @@ constexpr const char* kBundleSubdir = "fp32-p16";
 #else
 constexpr const char* kBundleSubdir = "";
 #endif
+
+bool convert_options(sc_voxcpm2_t s,
+                     const sc_voxcpm2_synthesis_options_t* options,
+                     VoxCPM2SynthesisOptions& out) {
+    out = VoxCPM2SynthesisOptions {};
+    if (options == nullptr) {
+        return true;
+    }
+
+    if (options->struct_size < sizeof(sc_voxcpm2_synthesis_options_t)) {
+        if (s) s->last_error = "invalid VoxCPM2 synthesis options struct_size";
+        return false;
+    }
+
+    switch (options->mode) {
+    case SC_VOXCPM2_SYNTHESIS_STREAMING:
+        out.mode = VoxCPM2SynthesisMode::Streaming;
+        break;
+    case SC_VOXCPM2_SYNTHESIS_BUFFERED:
+        out.mode = VoxCPM2SynthesisMode::Buffered;
+        break;
+    default:
+        if (s) s->last_error = "unsupported VoxCPM2 synthesis mode";
+        return false;
+    }
+
+    out.postprocess_flags = options->postprocess_flags;
+    return true;
+}
 
 }  // namespace
 
@@ -185,13 +217,26 @@ int sc_voxcpm2_output_sample_rate(sc_voxcpm2_t s) {
 
 int sc_voxcpm2_synthesize(sc_voxcpm2_t s, const char* text,
                           sc_voxcpm2_chunk_fn on_chunk, void* context) {
+    return sc_voxcpm2_synthesize_with_options(s, text, nullptr, on_chunk, context);
+}
+
+int sc_voxcpm2_synthesize_with_options(
+    sc_voxcpm2_t s,
+    const char* text,
+    const sc_voxcpm2_synthesis_options_t* options,
+    sc_voxcpm2_chunk_fn on_chunk,
+    void* context) {
     if (!s || !s->tts) return -1;
     if (!text || !on_chunk) {
         if (s) s->last_error = "null text or callback";
         return -1;
     }
+    VoxCPM2SynthesisOptions cpp_options;
+    if (!convert_options(s, options, cpp_options)) {
+        return -1;
+    }
     try {
-        s->tts->synthesize(text, "auto",
+        s->tts->synthesize_with_options(text, "auto", cpp_options,
             [on_chunk, context](const float* samples, size_t length, bool is_final) {
                 on_chunk(samples, length, is_final, context);
             });

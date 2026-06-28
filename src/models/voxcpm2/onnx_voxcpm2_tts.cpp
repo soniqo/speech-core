@@ -1,15 +1,18 @@
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 
+#include "speech_core/audio/offline_spectral_de_esser.h"
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/onnx_engine.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace speech_core {
@@ -28,6 +31,41 @@ struct OrtStringHandle {
     OrtStringHandle(const OrtStringHandle&) = delete;
     OrtStringHandle& operator=(const OrtStringHandle&) = delete;
 };
+
+bool has_postprocess_flag(VoxCPM2PostProcessFlags flags, VoxCPM2PostProcessFlags flag) {
+    return (flags & flag) != 0;
+}
+
+void validate_synthesis_options(const VoxCPM2SynthesisOptions& options) {
+    constexpr VoxCPM2PostProcessFlags kSupportedPostprocess =
+        kVoxCPM2PostProcessDeEsser;
+
+    if ((options.postprocess_flags & ~kSupportedPostprocess) != 0) {
+        throw std::invalid_argument("VoxCPM2: unsupported postprocess flags");
+    }
+
+    if (options.mode != VoxCPM2SynthesisMode::Streaming
+        && options.mode != VoxCPM2SynthesisMode::Buffered) {
+        throw std::invalid_argument("VoxCPM2: unsupported synthesis mode");
+    }
+
+    if (options.mode == VoxCPM2SynthesisMode::Streaming
+        && options.postprocess_flags != kVoxCPM2PostProcessNone) {
+        throw std::invalid_argument("VoxCPM2: postprocess flags require buffered synthesis mode");
+    }
+}
+
+std::vector<float> apply_postprocess(
+    std::vector<float> audio,
+    int sample_rate,
+    VoxCPM2PostProcessFlags flags) {
+    if (has_postprocess_flag(flags, kVoxCPM2PostProcessDeEsser)) {
+        audio = audio::OfflineSpectralDeEsser::process_mono(
+            audio.data(), audio.size(), sample_rate);
+    }
+
+    return audio;
+}
 
 }  // namespace
 
@@ -291,10 +329,19 @@ void OnnxVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample_r
 // ---------------------------------------------------------------------------
 
 void OnnxVoxCPM2Tts::synthesize(const std::string& text,
-                                 const std::string& /*language*/,
+                                 const std::string& language,
                                  TTSChunkCallback on_chunk)
 {
+    synthesize_with_options(text, language, VoxCPM2SynthesisOptions{}, std::move(on_chunk));
+}
+
+void OnnxVoxCPM2Tts::synthesize_with_options(const std::string& text,
+                                              const std::string& /*language*/,
+                                              const VoxCPM2SynthesisOptions& options,
+                                              TTSChunkCallback on_chunk)
+{
     if (!on_chunk) return;
+    validate_synthesis_options(options);
     cancelled_.store(false, std::memory_order_relaxed);
 
     tokens_generated_      = 0;
@@ -558,6 +605,8 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
     make_dummy(pd_amask,  2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, prefill_dummy_bufs, prefill_dummy_vals);
     make_dummy(pd_ctx,    0, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, prefill_dummy_bufs, prefill_dummy_vals);
 
+    std::vector<float> synthesized_pcm;
+
     auto flush_decoder = [&](size_t valid_steps, bool is_final) {
         std::fill(decoder_input.begin(), decoder_input.end(), 0.0f);
         const size_t cap_steps = std::min<size_t>(
@@ -596,7 +645,17 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
 
         const size_t valid_samples = std::min<size_t>(
             static_cast<size_t>(valid_steps) * kSamplesPerStep, pcm.size());
-        on_chunk(pcm.data(), valid_samples, is_final);
+
+        if (valid_samples > 0) {
+            if (options.mode == VoxCPM2SynthesisMode::Buffered) {
+                synthesized_pcm.insert(
+                    synthesized_pcm.end(),
+                    pcm.begin(),
+                    pcm.begin() + static_cast<std::ptrdiff_t>(valid_samples));
+            } else {
+                on_chunk(pcm.data(), valid_samples, is_final);
+            }
+        }
 
         feature_buffer.clear();
     };
@@ -901,8 +960,20 @@ void OnnxVoxCPM2Tts::synthesize(const std::string& text,
 
     if (steps_in_chunk > 0) {
         flush_decoder(static_cast<size_t>(steps_in_chunk), /*is_final=*/true);
-    } else {
+    } else if (options.mode == VoxCPM2SynthesisMode::Streaming) {
         on_chunk(nullptr, 0, /*is_final=*/true);
+    }
+
+    if (options.mode == VoxCPM2SynthesisMode::Buffered) {
+        if (!synthesized_pcm.empty()) {
+            std::vector<float> processed_pcm = apply_postprocess(
+                std::move(synthesized_pcm),
+                output_sample_rate(),
+                options.postprocess_flags);
+            on_chunk(processed_pcm.data(), processed_pcm.size(), /*is_final=*/true);
+        } else {
+            on_chunk(nullptr, 0, /*is_final=*/true);
+        }
     }
 
     tokens_generated_      = steps_done;

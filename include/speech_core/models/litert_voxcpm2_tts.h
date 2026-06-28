@@ -2,6 +2,7 @@
 
 #include "speech_core/interfaces.h"
 #include "speech_core/models/litert_engine.h"
+#include "speech_core/models/voxcpm2_synthesis_options.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <atomic>
@@ -56,6 +57,10 @@ public:
     void synthesize(const std::string& text,
                     const std::string& language,
                     TTSChunkCallback on_chunk) override;
+    void synthesize_with_options(const std::string& text,
+                                 const std::string& language,
+                                 const VoxCPM2SynthesisOptions& options,
+                                 TTSChunkCallback on_chunk);
     int output_sample_rate() const override { return 48000; }
     void cancel() override;
 
