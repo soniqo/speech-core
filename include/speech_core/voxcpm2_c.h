@@ -24,6 +24,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "speech_core/tts_c.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,24 +38,15 @@ typedef struct sc_voxcpm2_s* sc_voxcpm2_t;
 typedef void (*sc_voxcpm2_chunk_fn)(const float* samples, size_t length,
                                     bool is_final, void* context);
 
-typedef enum sc_voxcpm2_synthesis_mode {
-    SC_VOXCPM2_SYNTHESIS_STREAMING = 0,
-    SC_VOXCPM2_SYNTHESIS_BUFFERED = 1,
-} sc_voxcpm2_synthesis_mode_t;
+typedef sc_tts_synthesis_mode_t sc_voxcpm2_synthesis_mode_t;
+typedef sc_tts_postprocess_flags_t sc_voxcpm2_postprocess_flags_t;
 
-typedef uint32_t sc_voxcpm2_postprocess_flags_t;
+#define SC_VOXCPM2_SYNTHESIS_STREAMING SC_TTS_SYNTHESIS_STREAMING
+#define SC_VOXCPM2_SYNTHESIS_BUFFERED SC_TTS_SYNTHESIS_BUFFERED
+#define SC_VOXCPM2_POSTPROCESS_NONE SC_TTS_POSTPROCESS_NONE
+#define SC_VOXCPM2_POSTPROCESS_DEESSER SC_TTS_POSTPROCESS_DEESSER
 
-enum {
-    SC_VOXCPM2_POSTPROCESS_NONE = 0u,
-    SC_VOXCPM2_POSTPROCESS_DEESSER = 1u << 0,
-};
-
-typedef struct sc_voxcpm2_synthesis_options {
-    /// Set to sizeof(sc_voxcpm2_synthesis_options_t). Allows future fields.
-    uint32_t struct_size;
-    sc_voxcpm2_synthesis_mode_t mode;
-    sc_voxcpm2_postprocess_flags_t postprocess_flags;
-} sc_voxcpm2_synthesis_options_t;
+typedef sc_tts_synthesis_options_t sc_voxcpm2_synthesis_options_t;
 
 /// Create a synthesizer from a VoxCPM2 LiteRT bundle directory (holding
 /// voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite and

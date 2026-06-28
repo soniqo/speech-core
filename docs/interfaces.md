@@ -68,6 +68,11 @@ public:
         const std::string& text,
         const std::string& language,
         TTSChunkCallback on_chunk) = 0;
+    virtual void synthesize_with_options(
+        const std::string& text,
+        const std::string& language,
+        const TtsSynthesisOptions& options,
+        TTSChunkCallback on_chunk);
     virtual int output_sample_rate() const = 0;
     virtual void cancel() {}
 };
@@ -78,7 +83,7 @@ using TTSChunkCallback = std::function<void(
 
 The callback is invoked for each audio chunk during synthesis. `is_final=true` marks the last chunk. Implementations that aren't streaming-capable can emit a single chunk with `is_final=true`.
 
-Model-specific TTS options stay outside this base interface. For example, VoxCPM2 exposes explicit streaming vs buffered delivery and post-process flags in `speech_core/models/voxcpm2_synthesis_options.h`; the plain `TTSInterface::synthesize()` contract remains chunk-callback oriented. Any offline post-processing belongs on the complete buffered result for a submitted text input, not on individual streaming chunks.
+`synthesize_with_options()` is the uniform delivery/post-processing API for all TTS implementations. `Streaming` with no post-processing delegates to `synthesize()`. `Buffered` accumulates all PCM for the submitted text input, applies the requested offline post-processing chain, then invokes the callback once with `is_final=true`. Any offline post-processing belongs on the complete buffered result, not on individual streaming chunks or internal text chunks.
 
 **Reference implementation:** `KokoroTts` (Kokoro 82M via ONNX Runtime, single-chunk output).
 

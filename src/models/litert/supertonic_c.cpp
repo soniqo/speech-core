@@ -1,12 +1,15 @@
 #include "speech_core/supertonic_c.h"
 
 #include "speech_core/models/litert_supertonic_tts.h"
+#include "speech_core/tts_synthesis_options.h"
 
 #include <filesystem>
 #include <new>
 #include <string>
 
 using speech_core::LiteRTSupertonicTts;
+using speech_core::TtsSynthesisMode;
+using speech_core::TtsSynthesisOptions;
 
 struct sc_supertonic_s {
     LiteRTSupertonicTts engine;
@@ -23,6 +26,35 @@ namespace {
 std::string& creation_error() {
     static std::string err;
     return err;
+}
+
+bool convert_options(sc_supertonic_t synth,
+                     const sc_tts_synthesis_options_t* options,
+                     TtsSynthesisOptions& out) {
+    out = TtsSynthesisOptions {};
+    if (options == nullptr) {
+        return true;
+    }
+
+    if (options->struct_size < sizeof(sc_tts_synthesis_options_t)) {
+        if (synth) synth->last_error = "invalid TTS synthesis options struct_size";
+        return false;
+    }
+
+    switch (options->mode) {
+    case SC_TTS_SYNTHESIS_STREAMING:
+        out.mode = TtsSynthesisMode::Streaming;
+        break;
+    case SC_TTS_SYNTHESIS_BUFFERED:
+        out.mode = TtsSynthesisMode::Buffered;
+        break;
+    default:
+        if (synth) synth->last_error = "unsupported TTS synthesis mode";
+        return false;
+    }
+
+    out.postprocess_flags = options->postprocess_flags;
+    return true;
 }
 }  // namespace
 
@@ -87,9 +119,24 @@ int sc_supertonic_output_sample_rate(sc_supertonic_t synth) {
 
 int sc_supertonic_synthesize(sc_supertonic_t synth, const char* text, const char* language,
                              sc_supertonic_chunk_fn on_chunk, void* user) {
+    return sc_supertonic_synthesize_with_options(
+        synth, text, language, nullptr, on_chunk, user);
+}
+
+int sc_supertonic_synthesize_with_options(
+    sc_supertonic_t synth,
+    const char* text,
+    const char* language,
+    const sc_tts_synthesis_options_t* options,
+    sc_supertonic_chunk_fn on_chunk,
+    void* user) {
     if (!synth || !text || !language || !on_chunk) return 1;
+    TtsSynthesisOptions cpp_options;
+    if (!convert_options(synth, options, cpp_options)) {
+        return 1;
+    }
     try {
-        synth->engine.synthesize(text, language,
+        synth->engine.synthesize_with_options(text, language, cpp_options,
             [on_chunk, user](const float* samples, size_t length, bool is_final) {
                 on_chunk(samples, length, is_final, user);
             });

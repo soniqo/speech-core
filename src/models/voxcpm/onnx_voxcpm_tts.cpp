@@ -76,6 +76,18 @@ int env_ref_frame_cap(int max_frames) {
     return std::clamp(static_cast<int>(n), 1, max_frames);
 }
 
+void validate_synthesis_options(const TtsSynthesisOptions& options,
+                                const char* model_name) {
+    validate_tts_synthesis_options(options, model_name);
+}
+
+std::vector<float> apply_postprocess(const float* samples,
+                                     size_t length,
+                                     int sample_rate,
+                                     TtsPostProcessFlags flags) {
+    return apply_tts_postprocess(samples, length, sample_rate, flags);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -368,10 +380,19 @@ void OnnxVoxCPMTts::set_reference(const float* pcm, size_t length, int sample_ra
 // ---------------------------------------------------------------------------
 
 void OnnxVoxCPMTts::synthesize(const std::string& text,
-                                 const std::string& /*language*/,
-                                 TTSChunkCallback on_chunk)
+                               const std::string& language,
+                               TTSChunkCallback on_chunk)
+{
+    synthesize_with_options(text, language, TtsSynthesisOptions{}, std::move(on_chunk));
+}
+
+void OnnxVoxCPMTts::synthesize_with_options(const std::string& text,
+                                            const std::string& /*language*/,
+                                            const TtsSynthesisOptions& options,
+                                            TTSChunkCallback on_chunk)
 {
     if (!on_chunk) return;
+    validate_synthesis_options(options, "ONNX VoxCPM");
     cancelled_.store(false, std::memory_order_relaxed);
 
     tokens_generated_      = 0;
@@ -631,6 +652,10 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
         ref_frames_ > 0
             ? static_cast<size_t>(kPromptWarmupStepsToDrop) * kSamplesPerStep
             : 0;
+    std::vector<float> synthesized_pcm;
+    if (options.mode == TtsSynthesisMode::Buffered) {
+        synthesized_pcm.reserve(static_cast<size_t>(max_steps_) * kSamplesPerStep);
+    }
 
     uint32_t rng_seed = seed_;
     if (rng_seed == 0) {
@@ -713,7 +738,14 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
         const size_t drop = std::min(leading_samples_to_drop, valid_samples);
         leading_samples_to_drop -= drop;
         const size_t emit_samples = valid_samples - drop;
-        if (emit_samples > 0 || is_final) {
+        if (options.mode == TtsSynthesisMode::Buffered) {
+            if (emit_samples > 0) {
+                synthesized_pcm.insert(
+                    synthesized_pcm.end(),
+                    pcm.data() + drop,
+                    pcm.data() + drop + emit_samples);
+            }
+        } else if (emit_samples > 0 || is_final) {
             on_chunk(emit_samples > 0 ? pcm.data() + drop : nullptr,
                      emit_samples, is_final);
         }
@@ -1027,8 +1059,21 @@ void OnnxVoxCPMTts::synthesize(const std::string& text,
 
     if (steps_in_chunk > 0) {
         flush_decoder(static_cast<size_t>(steps_in_chunk), /*is_final=*/true);
-    } else {
+    } else if (options.mode == TtsSynthesisMode::Streaming) {
         on_chunk(nullptr, 0, /*is_final=*/true);
+    }
+
+    if (options.mode == TtsSynthesisMode::Buffered) {
+        if (!synthesized_pcm.empty()) {
+            std::vector<float> processed_pcm = apply_postprocess(
+                synthesized_pcm.data(),
+                synthesized_pcm.size(),
+                output_sample_rate(),
+                options.postprocess_flags);
+            on_chunk(processed_pcm.data(), processed_pcm.size(), /*is_final=*/true);
+        } else {
+            on_chunk(nullptr, 0, /*is_final=*/true);
+        }
     }
 
     tokens_generated_      = steps_done;

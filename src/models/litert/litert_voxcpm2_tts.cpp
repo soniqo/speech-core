@@ -1,6 +1,5 @@
 #include "speech_core/models/litert_voxcpm2_tts.h"
 
-#include "speech_core/audio/offline_spectral_de_esser.h"
 #include "speech_core/audio/resampler.h"
 
 #include <algorithm>
@@ -43,39 +42,15 @@ int query_prefill_context(LiteRtModel model) {
     return kDefault;
 }
 
-bool has_postprocess_flag(VoxCPM2PostProcessFlags flags, VoxCPM2PostProcessFlags flag) {
-    return (flags & flag) != 0;
-}
-
 void validate_synthesis_options(const VoxCPM2SynthesisOptions& options) {
-    constexpr VoxCPM2PostProcessFlags kSupportedPostprocess =
-        kVoxCPM2PostProcessDeEsser;
-
-    if ((options.postprocess_flags & ~kSupportedPostprocess) != 0) {
-        throw std::invalid_argument("VoxCPM2: unsupported postprocess flags");
-    }
-
-    if (options.mode != VoxCPM2SynthesisMode::Streaming
-        && options.mode != VoxCPM2SynthesisMode::Buffered) {
-        throw std::invalid_argument("VoxCPM2: unsupported synthesis mode");
-    }
-
-    if (options.mode == VoxCPM2SynthesisMode::Streaming
-        && options.postprocess_flags != kVoxCPM2PostProcessNone) {
-        throw std::invalid_argument("VoxCPM2: postprocess flags require buffered synthesis mode");
-    }
+    validate_tts_synthesis_options(options, "VoxCPM2");
 }
 
 std::vector<float> apply_postprocess(
     std::vector<float> audio,
     int sample_rate,
     VoxCPM2PostProcessFlags flags) {
-    if (has_postprocess_flag(flags, kVoxCPM2PostProcessDeEsser)) {
-        audio = audio::OfflineSpectralDeEsser::process_mono(
-            audio.data(), audio.size(), sample_rate);
-    }
-
-    return audio;
+    return apply_tts_postprocess(audio.data(), audio.size(), sample_rate, flags);
 }
 
 }  // namespace

@@ -20,6 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "speech_core/tts_c.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,6 +68,16 @@ int sc_supertonic_output_sample_rate(sc_supertonic_t synth);
 /// non-zero on failure (see sc_supertonic_last_error).
 int sc_supertonic_synthesize(sc_supertonic_t synth, const char* text, const char* language,
                              sc_supertonic_chunk_fn on_chunk, void* user);
+
+/// Synthesize with explicit delivery mode and offline postprocess flags.
+/// NULL options preserve the legacy Streaming + SC_TTS_POSTPROCESS_NONE behavior.
+int sc_supertonic_synthesize_with_options(
+    sc_supertonic_t synth,
+    const char* text,
+    const char* language,
+    const sc_tts_synthesis_options_t* options,
+    sc_supertonic_chunk_fn on_chunk,
+    void* user);
 
 /// Request cancellation of an in-flight synthesize() (callable from another thread).
 void sc_supertonic_cancel(sc_supertonic_t synth);

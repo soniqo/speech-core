@@ -69,7 +69,7 @@ public:
     void synthesize_with_options(const std::string& text,
                                  const std::string& language,
                                  const VoxCPM2SynthesisOptions& options,
-                                 TTSChunkCallback on_chunk);
+                                 TTSChunkCallback on_chunk) override;
     int output_sample_rate() const override { return 48000; }
     void cancel() override;
 

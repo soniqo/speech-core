@@ -212,24 +212,21 @@ sc_pipeline_set_echo_canceller(pipeline, aec);
 
 Processing chain: `mic → AEC → enhance → VAD → STT`. Implementations can use SpeexDSP, WebRTC AEC, or platform-native echo cancellation.
 
-## VoxCPM2 one-shot C ABI
+## Standalone TTS C APIs
 
-`include/speech_core/voxcpm2_c.h` exposes the standalone LiteRT VoxCPM2 API used
-by apps that want direct TTS/voice-cloning access instead of the vtable-based
-pipeline adapter above.
+Standalone TTS wrappers such as `voxcpm2_c.h`, `chatterbox_c.h`, and
+`supertonic_c.h` expose direct model APIs for apps that want TTS access instead
+of the vtable-based pipeline adapter above. Their legacy `sc_*_synthesize()`
+calls remain streaming and are equivalent to `Streaming + SC_TTS_POSTPROCESS_NONE`.
 
-`sc_voxcpm2_synthesize()` is the legacy streaming call and is equivalent to
-`Streaming + SC_VOXCPM2_POSTPROCESS_NONE`. The callback receives decoder flush
-chunks and `is_final` marks the last chunk.
-
-Use `sc_voxcpm2_synthesize_with_options()` when the caller needs explicit
-delivery mode or offline post-processing:
+Use each wrapper's `sc_*_synthesize_with_options()` when the caller needs
+explicit delivery mode or offline post-processing:
 
 ```c
-sc_voxcpm2_synthesis_options_t opts = {0};
+sc_tts_synthesis_options_t opts = {0};
 opts.struct_size = sizeof(opts);
-opts.mode = SC_VOXCPM2_SYNTHESIS_BUFFERED;
-opts.postprocess_flags = SC_VOXCPM2_POSTPROCESS_DEESSER;
+opts.mode = SC_TTS_SYNTHESIS_BUFFERED;
+opts.postprocess_flags = SC_TTS_POSTPROCESS_DEESSER;
 
 int rc = sc_voxcpm2_synthesize_with_options(
     synth,
@@ -242,9 +239,10 @@ int rc = sc_voxcpm2_synthesize_with_options(
 `Buffered` mode accumulates all PCM produced for the single submitted text input,
 applies the requested offline processing chain, then calls `on_chunk` once with
 `is_final=true`. Offline post-process flags require `Buffered` mode; the current
-flag set includes `SC_VOXCPM2_POSTPROCESS_DEESSER`. Passing `NULL` for `options`
+flag set includes `SC_TTS_POSTPROCESS_DEESSER`. Passing `NULL` for `options`
 preserves the legacy streaming behavior. Always set `struct_size` to
-`sizeof(sc_voxcpm2_synthesis_options_t)`.
+`sizeof(sc_tts_synthesis_options_t)`. VoxCPM2 keeps `SC_VOXCPM2_*` aliases for
+source compatibility.
 
 ## Null safety
 

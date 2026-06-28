@@ -177,15 +177,15 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is
 });
 ```
 
-For offline post-processing (for example spectral de-essing), use VoxCPM2
-buffered delivery. `synthesize()` remains streaming; buffered mode accumulates
-all PCM for that one submitted text input, applies the requested offline
-processing chain, then calls the callback once with `is_final=true`.
+For offline post-processing (for example spectral de-essing), use buffered
+delivery. `synthesize()` remains the legacy streaming call; buffered mode
+accumulates all PCM for that one submitted text input, applies the requested
+offline processing chain, then calls the callback once with `is_final=true`.
 
 ```cpp
-speech_core::VoxCPM2SynthesisOptions opts;
-opts.mode = speech_core::VoxCPM2SynthesisMode::Buffered;
-opts.postprocess_flags = speech_core::kVoxCPM2PostProcessDeEsser;
+speech_core::TtsSynthesisOptions opts;
+opts.mode = speech_core::TtsSynthesisMode::Buffered;
+opts.postprocess_flags = speech_core::kTtsPostProcessDeEsser;
 
 tts.synthesize_with_options("Hello world", "en", opts,
     [](const float* samples, size_t len, bool is_final) {

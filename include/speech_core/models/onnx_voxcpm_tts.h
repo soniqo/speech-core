@@ -1,6 +1,7 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
+#include "speech_core/tts_synthesis_options.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <onnxruntime_c_api.h>
@@ -64,6 +65,10 @@ public:
     void synthesize(const std::string& text,
                     const std::string& language,
                     TTSChunkCallback on_chunk) override;
+    void synthesize_with_options(const std::string& text,
+                                 const std::string& language,
+                                 const TtsSynthesisOptions& options,
+                                 TTSChunkCallback on_chunk) override;
     int output_sample_rate() const override { return 16000; }
     void cancel() override;
 
