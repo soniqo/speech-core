@@ -11,6 +11,7 @@
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/onnx_cosyvoice3_tts.h"
 #include "speech_core/models/onnx_nemotron_streaming_stt.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/parakeet_stt.h"
@@ -251,6 +252,94 @@ void bench_kokoro(const std::string& dir) {
     std::snprintf(ex, sizeof(ex), "p50=%.0fms p95=%.0fms audio=%.2fs",
                   pct(runs, 50), pct(runs, 95), audio_s);
     emit("kokoro-tts", "synth", load_ms, med, audio_s / (med / 1000.0), peak_rss_mb(), ex);
+}
+
+void bench_cosyvoice3(const std::string& /*dir*/) {
+    const char* override_dir = std::getenv("SPEECH_COSYVOICE3_ONNX_DIR");
+    std::string cosy = override_dir ? override_dir : "/tmp/cosyvoice3-onnx-bundle";
+    std::string prefill = cosy + "/llm_prefill.onnx";
+    std::string step = cosy + "/llm_step.onnx";
+    std::string flow = cosy + "/flow_frontend.onnx";
+    std::string estimator = cosy + "/flow.decoder.estimator.fp32.onnx";
+    std::string hift = cosy + "/hift.onnx";
+    std::string vocab = cosy + "/CosyVoice-BlankEN/vocab.json";
+    std::string merges = cosy + "/CosyVoice-BlankEN/merges.txt";
+    if (!file_exists(prefill) || !file_exists(step) || !file_exists(flow)
+        || !file_exists(estimator) || !file_exists(hift)
+        || !file_exists(vocab) || !file_exists(merges)) {
+        std::fprintf(stderr, "[skip] cosyvoice3 bundle in %s\n", cosy.c_str());
+        return;
+    }
+
+    auto t_load = clk::now();
+    speech_core::OnnxCosyVoice3Tts tts(cosy, /*hw_accel=*/true);
+    double load_ms = ms_since(t_load);
+
+    speech_core::OnnxCosyVoice3Tts::Conditioning c;
+    c.prompt_text_ids = {1446, 525, 264, 10950, 17847, 13, 151646};
+    c.llm_prompt_speech_tokens = {1, 2, 3, 4};
+    c.flow_prompt_speech_tokens = {1, 2, 3, 4};
+    c.prompt_speech_feat_frames = 4;
+    c.prompt_speech_feat.assign(4 * 80, 0.0f);
+    c.embedding.assign(192, 0.0f);
+    tts.set_conditioning(std::move(c));
+    tts.set_seed(1986);
+    tts.set_max_steps(64);
+    tts.set_flow_steps(4);
+    tts.set_cfg_rate(0.7f);
+
+    const std::string text = "The quick brown fox jumps over the lazy dog.";
+
+    // Warmup: populate ORT kernels and allocator state.
+    {
+        size_t samples = 0;
+        tts.synthesize(text, "en",
+                       [&](const float*, size_t n, bool) { samples += n; });
+        (void)samples;
+    }
+
+    std::vector<double> walls;
+    size_t last_samples = 0;
+    int last_tokens = 0;
+    bool last_stopped = false;
+    int64_t prefill_ms = 0;
+    int64_t ar_ms = 0;
+    int64_t decode_ms = 0;
+    int64_t flow_frontend_ms = 0;
+    int64_t flow_estimator_ms = 0;
+    int64_t hift_ms = 0;
+    for (int i = 0; i < 3; ++i) {
+        size_t samples = 0;
+        auto t = clk::now();
+        tts.synthesize(text, "en",
+                       [&](const float*, size_t n, bool) { samples += n; });
+        walls.push_back(ms_since(t));
+        last_samples = samples;
+        last_tokens = tts.tokens_generated();
+        last_stopped = tts.stopped_on_stop_token();
+        prefill_ms = tts.prefill_ms();
+        ar_ms = tts.ar_ms();
+        decode_ms = tts.audio_decode_ms();
+        flow_frontend_ms = tts.flow_frontend_ms();
+        flow_estimator_ms = tts.flow_estimator_ms();
+        hift_ms = tts.hift_ms();
+    }
+    double med = pct(walls, 50);
+    double audio_s = static_cast<double>(last_samples) / 24000.0;
+    double ms_per_token = (last_tokens > 0) ? static_cast<double>(ar_ms) / last_tokens : 0.0;
+    char ex[320];
+    std::snprintf(ex, sizeof(ex),
+                  "p50=%.0fms p95=%.0fms audio=%.2fs tokens=%d stopped=%d ms_per_token=%.1f prefill=%.0fms ar=%.0fms decode=%.0fms flow_frontend=%.0fms flow_estimator=%.0fms hift=%.0fms",
+                  med, pct(walls, 95), audio_s, last_tokens,
+                  last_stopped ? 1 : 0, ms_per_token,
+                  static_cast<double>(prefill_ms),
+                  static_cast<double>(ar_ms),
+                  static_cast<double>(decode_ms),
+                  static_cast<double>(flow_frontend_ms),
+                  static_cast<double>(flow_estimator_ms),
+                  static_cast<double>(hift_ms));
+    emit("cosyvoice3-tts", "synth", load_ms, med,
+         audio_s / (med / 1000.0), peak_rss_mb(), ex);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +688,7 @@ int main(int argc, char** argv) {
     bench_silero(dir);
     bench_parakeet(dir);
     bench_kokoro(dir);
+    bench_cosyvoice3(dir);
     bench_voxcpm2(dir);
     bench_nemotron(dir);
     return 0;

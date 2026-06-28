@@ -331,10 +331,14 @@ struct OnnxCosyVoice3Tts::Impl {
         flow_frontend = engine.load(bundle_dir + "/flow_frontend.onnx", hw_accel);
         flow_estimator = engine.load(bundle_dir + "/flow.decoder.estimator.fp32.onnx", hw_accel);
         hift = engine.load(bundle_dir + "/hift.onnx", hw_accel);
+        hift_128 = load_optional(engine, bundle_dir + "/hift_128.onnx", hw_accel);
+        hift_256 = load_optional(engine, bundle_dir + "/hift_256.onnx", hw_accel);
     }
 
     ~Impl() {
         if (api) {
+            if (hift_256) api->ReleaseSession(hift_256);
+            if (hift_128) api->ReleaseSession(hift_128);
             if (hift) api->ReleaseSession(hift);
             if (flow_estimator) api->ReleaseSession(flow_estimator);
             if (flow_frontend) api->ReleaseSession(flow_frontend);
@@ -350,6 +354,8 @@ struct OnnxCosyVoice3Tts::Impl {
     OrtSession* flow_frontend = nullptr;
     OrtSession* flow_estimator = nullptr;
     OrtSession* hift = nullptr;
+    OrtSession* hift_128 = nullptr;
+    OrtSession* hift_256 = nullptr;
     std::unique_ptr<QwenBpeTokenizer> tokenizer;
     Conditioning conditioning;
     bool has_conditioning = false;
@@ -364,7 +370,17 @@ struct OnnxCosyVoice3Tts::Impl {
     static constexpr int kSpeechTokenExtra = 200;
     static constexpr int kFlowTokenSlots = 512;
     static constexpr int kMelSlots = 1024;
+    static constexpr int kHiftFrames128 = 128;
+    static constexpr int kHiftFrames256 = 256;
     static constexpr int kHiftFrames = 512;
+
+    OrtSession* load_optional(OnnxEngine& engine,
+                              const std::string& path,
+                              bool hw_accel) {
+        std::ifstream f(path);
+        if (!f.good()) return nullptr;
+        return engine.load(path, hw_accel);
+    }
 
     OrtValue* make_i64(const int64_t* data, size_t n, const int64_t* shape, size_t rank) {
         OrtValue* v = nullptr;
@@ -778,22 +794,32 @@ struct OnnxCosyVoice3Tts::Impl {
         }
         *flow_estimator_ms = static_cast<int>(elapsed_ms(flow_estimator_t0));
 
-        std::vector<float> hift_in(static_cast<size_t>(80) * kHiftFrames, 0.0f);
+        OrtSession* hift_session = hift;
+        int hift_frames = kHiftFrames;
+        if (generated_frames <= kHiftFrames128 && hift_128) {
+            hift_session = hift_128;
+            hift_frames = kHiftFrames128;
+        } else if (generated_frames <= kHiftFrames256 && hift_256) {
+            hift_session = hift_256;
+            hift_frames = kHiftFrames256;
+        }
+
+        std::vector<float> hift_in(static_cast<size_t>(80) * hift_frames, 0.0f);
         for (int c = 0; c < 80; ++c) {
             const float* src = x.data() + static_cast<size_t>(c) * total_frames + src_frames;
-            float* dst = hift_in.data() + static_cast<size_t>(c) * kHiftFrames;
+            float* dst = hift_in.data() + static_cast<size_t>(c) * hift_frames;
             std::copy_n(src, generated_frames, dst);
         }
-        const int64_t s_hift[3] = {1, 80, kHiftFrames};
+        const int64_t s_hift[3] = {1, 80, hift_frames};
         OrtValue* hift_in_v = make_f32(hift_in.data(), hift_in.size(), s_hift, 3);
         const char* hift_in_names[1] = {"speech_feat"};
         const char* hift_out_names[1] = {"wav"};
         OrtValue* hift_out[1] = {nullptr};
         auto hift_t0 = Clock::now();
-        ort_check(api, api->Run(hift, nullptr,
+        ort_check(api, api->Run(hift_session, nullptr,
             hift_in_names, &hift_in_v, 1, hift_out_names, 1, hift_out));
         api->ReleaseValue(hift_in_v);
-        std::vector<float> wav = copy_f32(hift_out[0], static_cast<size_t>(kHiftFrames) * 480);
+        std::vector<float> wav = copy_f32(hift_out[0], static_cast<size_t>(hift_frames) * 480);
         api->ReleaseValue(hift_out[0]);
         *hift_ms = static_cast<int>(elapsed_ms(hift_t0));
         wav.resize(static_cast<size_t>(generated_frames) * 480);
