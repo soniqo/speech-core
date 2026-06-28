@@ -35,6 +35,7 @@ add_library(speech_core
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
     src/audio/fft.cpp
+    src/audio/offline_spectral_de_esser.cpp
     third_party/fftooura/ooura_fft_engine.cpp
     third_party/fftooura/fft4g.cpp
     src/audio/mel.cpp

@@ -1,15 +1,16 @@
 #include "speech_core/supertonic_c.h"
 
 #include "speech_core/models/litert_supertonic_tts.h"
-#include "speech_core/tts_synthesis_options.h"
+
+#include "tts_c_options.h"
 
 #include <filesystem>
 #include <new>
 #include <string>
 
 using speech_core::LiteRTSupertonicTts;
-using speech_core::TtsSynthesisMode;
 using speech_core::TtsSynthesisOptions;
+using speech_core::convert_c_tts_synthesis_options;
 
 struct sc_supertonic_s {
     LiteRTSupertonicTts engine;
@@ -28,34 +29,6 @@ std::string& creation_error() {
     return err;
 }
 
-bool convert_options(sc_supertonic_t synth,
-                     const sc_tts_synthesis_options_t* options,
-                     TtsSynthesisOptions& out) {
-    out = TtsSynthesisOptions {};
-    if (options == nullptr) {
-        return true;
-    }
-
-    if (options->struct_size < sizeof(sc_tts_synthesis_options_t)) {
-        if (synth) synth->last_error = "invalid TTS synthesis options struct_size";
-        return false;
-    }
-
-    switch (options->mode) {
-    case SC_TTS_SYNTHESIS_STREAMING:
-        out.mode = TtsSynthesisMode::Streaming;
-        break;
-    case SC_TTS_SYNTHESIS_BUFFERED:
-        out.mode = TtsSynthesisMode::Buffered;
-        break;
-    default:
-        if (synth) synth->last_error = "unsupported TTS synthesis mode";
-        return false;
-    }
-
-    out.postprocess_flags = options->postprocess_flags;
-    return true;
-}
 }  // namespace
 
 extern "C" {
@@ -132,7 +105,9 @@ int sc_supertonic_synthesize_with_options(
     void* user) {
     if (!synth || !text || !language || !on_chunk) return 1;
     TtsSynthesisOptions cpp_options;
-    if (!convert_options(synth, options, cpp_options)) {
+    std::string error;
+    if (!convert_c_tts_synthesis_options(options, cpp_options, error, "TTS")) {
+        synth->last_error = error;
         return 1;
     }
     try {

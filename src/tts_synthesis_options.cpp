@@ -40,15 +40,23 @@ std::vector<float> apply_tts_postprocess(const float* samples,
         throw std::invalid_argument("TTS postprocess input is null");
     }
 
-    std::vector<float> processed(samples, samples + length);
+    return apply_tts_postprocess(
+        std::vector<float>(samples, samples + length),
+        sample_rate,
+        flags);
+}
+
+std::vector<float> apply_tts_postprocess(std::vector<float> samples,
+                                         int sample_rate,
+                                         TtsPostProcessFlags flags) {
     if ((flags & kTtsPostProcessDeEsser) != 0) {
-        processed = audio::OfflineSpectralDeEsser::process_mono(
-            processed.data(),
-            processed.size(),
+        samples = audio::OfflineSpectralDeEsser::process_mono(
+            samples.data(),
+            samples.size(),
             sample_rate,
             audio::OfflineSpectralDeEsser::cli_default_parameters());
     }
-    return processed;
+    return samples;
 }
 
 void TTSInterface::synthesize_with_options(const std::string& text,
@@ -79,8 +87,7 @@ void TTSInterface::synthesize_with_options(const std::string& text,
 
     if (!synthesized_pcm.empty()) {
         std::vector<float> processed_pcm = apply_tts_postprocess(
-            synthesized_pcm.data(),
-            synthesized_pcm.size(),
+            std::move(synthesized_pcm),
             output_sample_rate(),
             options.postprocess_flags);
         on_chunk(processed_pcm.data(), processed_pcm.size(), true);

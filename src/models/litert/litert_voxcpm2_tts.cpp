@@ -50,7 +50,7 @@ std::vector<float> apply_postprocess(
     std::vector<float> audio,
     int sample_rate,
     VoxCPM2PostProcessFlags flags) {
-    return apply_tts_postprocess(audio.data(), audio.size(), sample_rate, flags);
+    return apply_tts_postprocess(std::move(audio), sample_rate, flags);
 }
 
 }  // namespace
