@@ -216,8 +216,8 @@ Processing chain: `mic → AEC → enhance → VAD → STT`. Implementations can
 
 Standalone TTS wrappers such as `voxcpm2_c.h`, `chatterbox_c.h`, and
 `supertonic_c.h` expose direct model APIs for apps that want TTS access instead
-of the vtable-based pipeline adapter above. Their legacy `sc_*_synthesize()`
-calls remain streaming and are equivalent to `Streaming + SC_TTS_POSTPROCESS_NONE`.
+of the vtable-based pipeline adapter above. Their `sc_*_synthesize()` calls are
+the streaming APIs and are equivalent to `Streaming + SC_TTS_POSTPROCESS_NONE`.
 
 Use each wrapper's `sc_*_synthesize_with_options()` when the caller needs
 explicit delivery mode or offline post-processing:
@@ -240,9 +240,13 @@ int rc = sc_voxcpm2_synthesize_with_options(
 applies the requested offline processing chain, then calls `on_chunk` once with
 `is_final=true`. Offline post-process flags require `Buffered` mode; the current
 flag set includes `SC_TTS_POSTPROCESS_DEESSER`. Passing `NULL` for `options`
-preserves the legacy streaming behavior. Always set `struct_size` to
+preserves streaming behavior. Always set `struct_size` to
 `sizeof(sc_tts_synthesis_options_t)`. VoxCPM2 keeps `SC_VOXCPM2_*` aliases for
 source compatibility.
+
+The main pipeline C ABI is still vtable-based and currently calls the streaming
+TTS path; synthesis options are exposed only on the standalone direct TTS
+wrappers listed above.
 
 ## Null safety
 

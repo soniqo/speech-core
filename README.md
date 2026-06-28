@@ -178,7 +178,7 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is
 ```
 
 For offline post-processing (for example spectral de-essing), use buffered
-delivery. `synthesize()` remains the legacy streaming call; buffered mode
+delivery. `synthesize()` is the streaming call; buffered mode
 accumulates all PCM for that one submitted text input, applies the requested
 offline processing chain, then calls the callback once with `is_final=true`.
 

@@ -70,7 +70,7 @@ int sc_supertonic_synthesize(sc_supertonic_t synth, const char* text, const char
                              sc_supertonic_chunk_fn on_chunk, void* user);
 
 /// Synthesize with explicit delivery mode and offline postprocess flags.
-/// NULL options preserve the legacy Streaming + SC_TTS_POSTPROCESS_NONE behavior.
+/// NULL options preserve Streaming + SC_TTS_POSTPROCESS_NONE behavior.
 int sc_supertonic_synthesize_with_options(
     sc_supertonic_t synth,
     const char* text,

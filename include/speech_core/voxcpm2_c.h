@@ -139,7 +139,7 @@ int sc_voxcpm2_synthesize(sc_voxcpm2_t synth, const char* text,
 
 /// Synthesize `text` with explicit delivery mode and postprocess flags.
 ///
-/// NULL options preserve the legacy behavior:
+/// NULL options preserve streaming behavior:
 ///   SC_VOXCPM2_SYNTHESIS_STREAMING + SC_VOXCPM2_POSTPROCESS_NONE.
 ///
 /// Buffered mode accumulates all PCM for this one text input, applies the

@@ -50,7 +50,11 @@ for the complete texts.
 ### Ooura FFT
 
 - **Files:** `third_party/fftooura/`
-- **Source:** local `fftooura` copy of Takuya Ooura's `fft4g.c`, plus a small C++ wrapper.
+- **Source:** local C++ port of Takuya Ooura's `fft4g`, plus a small C++ wrapper.
+- **License:** Ooura FFT license — permits use, copy, modification, and distribution
+  for any purpose, including commercial use, without fee; modified code should
+  refer to the package.
+- Copyright Takuya OOURA, 1996-2001.
 - **Used by:** `speech_core::audio::fft_real` / `speech_core::audio::ifft_real`
 
 ## Models

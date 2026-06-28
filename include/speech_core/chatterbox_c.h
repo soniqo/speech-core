@@ -57,7 +57,7 @@ int sc_chatterbox_synthesize(sc_chatterbox_t synth, const char* text,
                              sc_chatterbox_chunk_fn on_chunk, void* context);
 
 /// Synthesize with explicit delivery mode and offline postprocess flags.
-/// NULL options preserve the legacy Streaming + SC_TTS_POSTPROCESS_NONE behavior.
+/// NULL options preserve Streaming + SC_TTS_POSTPROCESS_NONE behavior.
 int sc_chatterbox_synthesize_with_options(
     sc_chatterbox_t synth,
     const char* text,
