@@ -1,5 +1,6 @@
 #pragma once
 
+#include "speech_core/models/voxcpm2_prompt.h"
 #include "speech_core/models/voxcpm2_tokenizer.h"
 
 #include <cstdio>
@@ -18,6 +19,12 @@ inline void print_ids(const std::vector<int>& ids) {
 
 inline bool run_voxcpm2_tokenizer_reference_cases(const std::string& tok_path) {
     std::printf("  test_voxcpm2_tokenizer ... ");
+
+    if (speech_core::format_voxcpm2_prompt("hello", "") != "hello" ||
+        speech_core::format_voxcpm2_prompt("hello", "calm") != "(calm)hello") {
+        std::printf("bad prompt formatting ");
+        return false;
+    }
 
     speech_core::VoxCPM2Tokenizer t(tok_path);
     if (t.bos_id() != 1 || t.eos_id() != 2 || t.unk_id() != 0 || t.vocab_size() <= 73000) {

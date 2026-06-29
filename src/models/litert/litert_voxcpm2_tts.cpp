@@ -1,6 +1,7 @@
 #include "speech_core/models/litert_voxcpm2_tts.h"
 
 #include "speech_core/audio/resampler.h"
+#include "speech_core/models/voxcpm2_prompt.h"
 #include "tts_postprocess_internal.h"
 
 #include <algorithm>
@@ -338,13 +339,14 @@ void LiteRTVoxCPM2Tts::synthesize_with_options(const std::string& text,
     stopped_on_stop_token_ = false;
     seed_used_             = 0;
 
-    // --- 1. Build the prefill sequence. The target text is
-    // "({instruction}){text}" followed by <|audio_start|> (the cue to begin
-    // generating audio). When a reference clip is set, a
+    // --- 1. Build the prefill sequence. The target text is either the raw
+    // text, or "({instruction}){text}" when an instruction is present,
+    // followed by <|audio_start|> (the cue to begin generating audio). When a
+    // reference clip is set, a
     // [<|ref_audio_start|>, latents…, <|ref_audio_end|>] block is prepended and
     // its latents fill audio_feats (audio_mask=1), conditioning the output on
     // the reference speaker. Mirrors the MLX ICL clone path in speech-swift.
-    std::string prompt = "(" + instruction_ + ")" + text;
+    std::string prompt = format_voxcpm2_prompt(text, instruction_);
     std::vector<int> target_ids = tokenizer_->encode(prompt);
     target_ids.push_back(audio_start_token_);
 

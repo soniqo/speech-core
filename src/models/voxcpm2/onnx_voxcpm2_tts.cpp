@@ -2,6 +2,7 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/models/voxcpm2_prompt.h"
 #include "tts_postprocess_internal.h"
 
 #include <algorithm>
@@ -365,7 +366,7 @@ void OnnxVoxCPM2Tts::synthesize_with_options(const std::string& text,
     seed_used_             = 0;
 
     // --- 1. Build the prefill sequence (same layout as the LiteRT wrapper).
-    std::string prompt = "(" + instruction_ + ")" + text;
+    std::string prompt = format_voxcpm2_prompt(text, instruction_);
     std::vector<int> target_ids = tokenizer_->encode(prompt);
     target_ids.push_back(audio_start_token_);
 
