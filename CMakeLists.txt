@@ -35,6 +35,7 @@ add_library(speech_core
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
     src/audio/fft.cpp
+    src/audio/offline_spectral_de_esser.cpp
     third_party/fftooura/ooura_fft_engine.cpp
     third_party/fftooura/fft4g.cpp
     src/audio/mel.cpp
@@ -53,6 +54,7 @@ target_include_directories(speech_core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fftooura
 )
 
@@ -139,6 +141,8 @@ if(SPEECH_CORE_WITH_ONNX)
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
 
     if(MSVC)
@@ -258,6 +262,8 @@ if(SPEECH_CORE_WITH_LITERT)
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
 
     if(MSVC)

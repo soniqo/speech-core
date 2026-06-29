@@ -5,6 +5,7 @@
 #include "speech_core/models/litert_voxcpm2_tts.h"
 
 #include "hf_download.h"
+#include "tts_c_options.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,8 +16,8 @@
 #include <vector>
 
 using speech_core::LiteRTVoxCPM2Tts;
-using speech_core::VoxCPM2SynthesisMode;
 using speech_core::VoxCPM2SynthesisOptions;
+using speech_core::convert_c_tts_synthesis_options;
 
 struct sc_voxcpm2_s {
     std::unique_ptr<LiteRTVoxCPM2Tts> tts;
@@ -78,35 +79,6 @@ constexpr const char* kBundleSubdir = "fp32-p16";
 #else
 constexpr const char* kBundleSubdir = "";
 #endif
-
-bool convert_options(sc_voxcpm2_t s,
-                     const sc_voxcpm2_synthesis_options_t* options,
-                     VoxCPM2SynthesisOptions& out) {
-    out = VoxCPM2SynthesisOptions {};
-    if (options == nullptr) {
-        return true;
-    }
-
-    if (options->struct_size < sizeof(sc_voxcpm2_synthesis_options_t)) {
-        if (s) s->last_error = "invalid VoxCPM2 synthesis options struct_size";
-        return false;
-    }
-
-    switch (options->mode) {
-    case SC_VOXCPM2_SYNTHESIS_STREAMING:
-        out.mode = VoxCPM2SynthesisMode::Streaming;
-        break;
-    case SC_VOXCPM2_SYNTHESIS_BUFFERED:
-        out.mode = VoxCPM2SynthesisMode::Buffered;
-        break;
-    default:
-        if (s) s->last_error = "unsupported VoxCPM2 synthesis mode";
-        return false;
-    }
-
-    out.postprocess_flags = options->postprocess_flags;
-    return true;
-}
 
 }  // namespace
 
@@ -232,7 +204,9 @@ int sc_voxcpm2_synthesize_with_options(
         return -1;
     }
     VoxCPM2SynthesisOptions cpp_options;
-    if (!convert_options(s, options, cpp_options)) {
+    std::string error;
+    if (!convert_c_tts_synthesis_options(options, cpp_options, error, "VoxCPM2")) {
+        s->last_error = error;
         return -1;
     }
     try {

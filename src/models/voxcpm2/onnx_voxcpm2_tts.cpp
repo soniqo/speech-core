@@ -2,6 +2,7 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/onnx_engine.h"
+#include "tts_postprocess_internal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -39,7 +40,7 @@ std::vector<float> apply_postprocess(
     std::vector<float> audio,
     int sample_rate,
     VoxCPM2PostProcessFlags flags) {
-    return apply_tts_postprocess(audio.data(), audio.size(), sample_rate, flags);
+    return internal::apply_tts_postprocess_owned(std::move(audio), sample_rate, flags);
 }
 
 }  // namespace

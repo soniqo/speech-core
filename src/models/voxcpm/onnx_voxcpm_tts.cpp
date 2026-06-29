@@ -2,6 +2,7 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/onnx_engine.h"
+#include "tts_postprocess_internal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,11 +82,10 @@ void validate_synthesis_options(const TtsSynthesisOptions& options,
     validate_tts_synthesis_options(options, model_name);
 }
 
-std::vector<float> apply_postprocess(const float* samples,
-                                     size_t length,
+std::vector<float> apply_postprocess(std::vector<float> samples,
                                      int sample_rate,
                                      TtsPostProcessFlags flags) {
-    return apply_tts_postprocess(samples, length, sample_rate, flags);
+    return internal::apply_tts_postprocess_owned(std::move(samples), sample_rate, flags);
 }
 
 }  // namespace
@@ -1066,8 +1066,7 @@ void OnnxVoxCPMTts::synthesize_with_options(const std::string& text,
     if (options.mode == TtsSynthesisMode::Buffered) {
         if (!synthesized_pcm.empty()) {
             std::vector<float> processed_pcm = apply_postprocess(
-                synthesized_pcm.data(),
-                synthesized_pcm.size(),
+                std::move(synthesized_pcm),
                 output_sample_rate(),
                 options.postprocess_flags);
             on_chunk(processed_pcm.data(), processed_pcm.size(), /*is_final=*/true);
