@@ -1,6 +1,7 @@
 #include "speech_core/interfaces.h"
 
 #include "speech_core/audio/offline_spectral_de_esser.h"
+#include "tts_postprocess_internal.h"
 
 #include <stdexcept>
 #include <string>
@@ -40,15 +41,17 @@ std::vector<float> apply_tts_postprocess(const float* samples,
         throw std::invalid_argument("TTS postprocess input is null");
     }
 
-    return apply_tts_postprocess(
+    return internal::apply_tts_postprocess_owned(
         std::vector<float>(samples, samples + length),
         sample_rate,
         flags);
 }
 
-std::vector<float> apply_tts_postprocess(std::vector<float> samples,
-                                         int sample_rate,
-                                         TtsPostProcessFlags flags) {
+namespace internal {
+
+std::vector<float> apply_tts_postprocess_owned(std::vector<float> samples,
+                                               int sample_rate,
+                                               TtsPostProcessFlags flags) {
     if ((flags & kTtsPostProcessDeEsser) != 0) {
         samples = audio::OfflineSpectralDeEsser::process_mono(
             samples.data(),
@@ -58,6 +61,8 @@ std::vector<float> apply_tts_postprocess(std::vector<float> samples,
     }
     return samples;
 }
+
+}  // namespace internal
 
 void TTSInterface::synthesize_with_options(const std::string& text,
                                            const std::string& language,
@@ -86,7 +91,7 @@ void TTSInterface::synthesize_with_options(const std::string& text,
         });
 
     if (!synthesized_pcm.empty()) {
-        std::vector<float> processed_pcm = apply_tts_postprocess(
+        std::vector<float> processed_pcm = internal::apply_tts_postprocess_owned(
             std::move(synthesized_pcm),
             output_sample_rate(),
             options.postprocess_flags);

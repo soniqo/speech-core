@@ -29,8 +29,4 @@ std::vector<float> apply_tts_postprocess(const float* samples,
                                          int sample_rate,
                                          TtsPostProcessFlags flags);
 
-std::vector<float> apply_tts_postprocess(std::vector<float> samples,
-                                         int sample_rate,
-                                         TtsPostProcessFlags flags);
-
 }  // namespace speech_core

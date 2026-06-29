@@ -2,6 +2,7 @@
 
 #include "speech_core/audio/resampler.h"
 #include "speech_core/models/onnx_engine.h"
+#include "tts_postprocess_internal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -84,7 +85,7 @@ void validate_synthesis_options(const TtsSynthesisOptions& options,
 std::vector<float> apply_postprocess(std::vector<float> samples,
                                      int sample_rate,
                                      TtsPostProcessFlags flags) {
-    return apply_tts_postprocess(std::move(samples), sample_rate, flags);
+    return internal::apply_tts_postprocess_owned(std::move(samples), sample_rate, flags);
 }
 
 }  // namespace
