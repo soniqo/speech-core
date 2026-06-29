@@ -126,6 +126,13 @@ int sc_voxcpm2_max_text_tokens(sc_voxcpm2_t synth);
 int sc_voxcpm2_set_reference(sc_voxcpm2_t synth, const float* pcm,
                              size_t length, int sample_rate);
 
+/// Optional exact transcript for the current reference clip. When non-empty,
+/// VoxCPM2 uses combined reference + continuation cloning on subsequent
+/// synthesize() calls. Call after sc_voxcpm2_set_reference(); cleared by
+/// sc_voxcpm2_clear_reference().
+void sc_voxcpm2_set_reference_transcript(sc_voxcpm2_t synth,
+                                         const char* transcript);
+
 /// Drop any reference clip set by sc_voxcpm2_set_reference().
 void sc_voxcpm2_clear_reference(sc_voxcpm2_t synth);
 

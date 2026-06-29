@@ -85,11 +85,13 @@ for GPU deployments; the split export is useful for CPU serving where unified
 peak RSS can exceed the pod memory budget. Both layouts use the same
 `voxcpm2-audio-encoder.onnx`, `voxcpm2-audio-decoder.onnx`, and
 `tokenizer.json` files, and both support reference-audio cloning through
-`set_reference()`.
+`set_reference()`. When the exact words spoken in the reference clip are known,
+call `set_reference_transcript()` after `set_reference()` to use VoxCPM2's
+combined reference + continuation clone mode.
 
 `OnnxCosyVoice3Tts` runs the CosyVoice3 0.5B ONNX deployment bundle (`llm_prefill`, `llm_step`, `flow_frontend`, flow estimator, `hift`) and outputs 24 kHz PCM. The current C++ contract expects zero-shot voice conditioning to be supplied explicitly through `set_conditioning()`: prompt text token IDs, prompt speech tokens, prompt mel features, and a 192-dim speaker embedding. This matches the cloud serving shape: compute conditioning once when a voice is created, persist the binary blob with the voice, then reuse it for synthesis without re-running the prompt frontend per request. The bundled `encode_conditioning_blob()` / `decode_conditioning_blob()` helpers define that persistence format. If the bundle also contains `hift_128.onnx` or `hift_256.onnx`, the wrapper uses the smallest fitting HiFT bucket for shorter clips and falls back to `hift.onnx`.
 
-`LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
+`LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning is surfaced through `set_reference()`. Supplying `set_reference_transcript()` additionally uses VoxCPM2's upstream combined reference + continuation prompt layout. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
 All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. All LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`) which currently configures CPU-only inference with a configurable thread count. NNAPI / GPU / Hexagon delegates are not yet wired through the C API in this version.
 
@@ -291,6 +293,8 @@ speech_core::LiteRTVoxCPM2Tts tts(
     "/models/voxcpm2-audio-decoder.tflite",
     "/models/tokenizer.json");
 
+tts.set_reference(reference_pcm_16khz.data(), reference_pcm_16khz.size(), 16000);
+tts.set_reference_transcript("Exact words spoken in the reference clip.");
 tts.synthesize("Hello world", "en", [](const float* samples, size_t length, bool is_final) {
     // 48 kHz Float32 PCM, streamed in 64-step chunks (10.24 s each).
     // is_final marks the last chunk of the utterance.
@@ -311,15 +315,16 @@ tts.synthesize_with_options("Hello world", "en", options,
 ```
 
 - 2B-parameter multilingual TTS, 48 kHz studio-quality output. Voice cloning and instruction-driven voice design supported by the upstream model.
+- `set_reference()` enables reference-audio cloning. `set_reference_transcript()` is optional but recommended when the exact reference words are known; it switches the prompt layout to the upstream combined reference + continuation clone mode.
 - `synthesize()` is the streaming path: the callback receives each decoder flush chunk, up to 64 AR steps / 10.24 s per chunk.
 - `synthesize_with_options()` accepts the same `TtsSynthesisOptions` contract as the other TTS wrappers: `Streaming` preserves chunked delivery, while `Buffered` accumulates all PCM produced for the single submitted text input before invoking the callback once with `is_final=true`. `VoxCPM2SynthesisOptions` remains as a compatibility alias.
 - Post-process flags currently include `kTtsPostProcessDeEsser`. Offline post-processing requires `Buffered` mode so it runs on the complete synthesized result, not on decoder flush chunks. If an app splits long text before calling VoxCPM2, buffering is scoped to each submitted text input.
 - Ships as **four** LiteRT graphs plus an HF BPE tokenizer:
-  - `text-prefill`: text + (optional) reference-audio prefix → LM hidden + initial K/V cache
+  - `text-prefill`: text + optional reference-audio prefix + optional prompt transcript/audio continuation → LM hidden + initial K/V cache
   - `token-step`: one autoregressive step (called up to 2048 times per generation), consumes and emits the K/V cache explicitly
   - `audio-encoder`: 16 kHz PCM reference clip → conditioning features
   - `audio-decoder`: latent → 48 kHz PCM output
-- **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h). Reference-audio voice cloning isn't yet surfaced through `TTSInterface` (see the paragraph above).
+- **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h).
 - **Precision variants**: the repo *root* holds the `selective` bundle — fp16 weights except the **fp32 LocDiT** diffusion estimator, which needs full precision for clean cloned-voice sibilants (~8.7 GB; the ARM default). On **x86_64** the `fp32-p16/` subdir holds an **fp32 token-step** bundle (fp16 prefill, fp32 token-step + audio, ~13 GB): the fp16 token-step *over-generates* on x86 — its stop-margin (`stop_logits[1] > stop_logits[0]`) rounds the wrong way under x86 XNNPACK so the stop token never fires and the AR loop runs to the cap; the fp32 token-step computes that margin precisely and stops cleanly. `sc_voxcpm2_create_from_pretrained` picks the variant by architecture automatically. Download with `scripts/download_voxcpm2_litert.sh` (arch-aware); kept out of `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — root (ARM / `selective`) and the `fp32-p16/` subdir (x86), each with `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
 

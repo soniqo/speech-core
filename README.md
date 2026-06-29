@@ -172,6 +172,8 @@ speech_core::LiteRTVoxCPM2Tts tts(
     "voxcpm2-text-prefill.tflite", "voxcpm2-token-step.tflite",
     "voxcpm2-audio-encoder.tflite", "voxcpm2-audio-decoder.tflite", "tokenizer.json");
 
+tts.set_reference(reference_pcm_16khz.data(), reference_pcm_16khz.size(), 16000);
+tts.set_reference_transcript("Exact words spoken in the reference clip.");
 tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is_final) {
     // 48 kHz Float32 PCM, streamed in chunks
 });

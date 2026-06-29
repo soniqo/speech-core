@@ -5,6 +5,7 @@
 #include "tts_postprocess_internal.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,15 @@
 namespace speech_core {
 
 namespace {
+
+std::string prompt_prefix_for_target(const std::string& prompt_text,
+                                     const std::string& target_text) {
+    if (prompt_text.empty() || target_text.empty()) return prompt_text;
+    const unsigned char last = static_cast<unsigned char>(prompt_text.back());
+    const unsigned char first = static_cast<unsigned char>(target_text.front());
+    if (std::isspace(last) || std::isspace(first)) return prompt_text;
+    return prompt_text + " ";
+}
 
 // Read the prefill context window (max_text_tokens) from the loaded graph: its
 // audio_feats input is the only rank-4 tensor, shaped [1, max_text, patch,
@@ -200,7 +210,11 @@ void LiteRTVoxCPM2Tts::cancel() {
 void LiteRTVoxCPM2Tts::clear_reference() {
     ref_feats_.clear();
     ref_feats_.shrink_to_fit();
-    ref_frames_ = 0;
+    prompt_feats_.clear();
+    prompt_feats_.shrink_to_fit();
+    ref_transcript_.clear();
+    ref_frames_    = 0;
+    prompt_frames_ = 0;
 }
 
 void LiteRTVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample_rate) {
@@ -273,43 +287,64 @@ void LiteRTVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample
         }
     }
 
-    // Frames backed by *real* (pre-pad) audio. The encoder always emits
-    // kMaxRefFrames, but trailing frames over zero-padding carry silence — we
-    // condition only on the real ones (matches the MLX dynamic-length path).
-    const size_t real_samples = std::min<size_t>(mono.size(), kRefAudioSamples);
-    int real_frames = static_cast<int>((real_samples + kRefFrameStride - 1) / kRefFrameStride);
-    real_frames = std::clamp(real_frames, 1, kMaxRefFrames);
-
-    // The audio_encoder graph has a fixed-length input — pad/truncate to it.
-    mono.resize(kRefAudioSamples, 0.0f);
-
     auto env = LiteRTEngine::get().env();
     auto t_in  = make_type(kLiteRtElementTypeFloat32, {1, kRefAudioSamples});
     auto t_out = make_type(kLiteRtElementTypeFloat32,
                            {1, kMaxRefFrames, kPatchSize, kFeatDim});
 
-    LiteRtHostBuffer in_audio(env, t_in, mono.size() * sizeof(float), mono.data());
-    std::vector<float> enc_out(static_cast<size_t>(kMaxRefFrames) * kPredFeatFloats);
-    LiteRtHostBuffer out_feats(env, t_out, enc_out.size() * sizeof(float));
+    auto encode = [&](bool left_pad, std::vector<float>& feats_out,
+                      int& frames_out) {
+        const size_t real_samples =
+            std::min<size_t>(mono.size(), kRefAudioSamples);
+        int real_frames = static_cast<int>(
+            (real_samples + kRefFrameStride - 1) / kRefFrameStride);
+        real_frames = std::clamp(real_frames, 1, kMaxRefFrames);
 
-    LiteRtTensorBuffer ins[1]  = { in_audio.raw() };
-    LiteRtTensorBuffer outs[1] = { out_feats.raw() };
-    litert_check(LiteRtRunCompiledModel(audio_encoder_compiled_, 0, 1, ins, 1, outs),
-                 "audio_encoder Run");
-    out_feats.read(enc_out.data(), enc_out.size() * sizeof(float));
+        std::vector<float> input(kRefAudioSamples, 0.0f);
+        if (left_pad) {
+            if (mono.size() >= kRefAudioSamples) {
+                std::copy(mono.end() - static_cast<std::ptrdiff_t>(kRefAudioSamples),
+                          mono.end(), input.begin());
+            } else {
+                std::copy(mono.begin(), mono.end(),
+                          input.begin() + static_cast<std::ptrdiff_t>(
+                              kRefAudioSamples - mono.size()));
+            }
+        } else {
+            const size_t n = std::min<size_t>(mono.size(), kRefAudioSamples);
+            std::copy(mono.begin(), mono.begin() + static_cast<std::ptrdiff_t>(n),
+                      input.begin());
+        }
 
-    // Keep the first real_frames frames; each is one audio_feats slot.
-    ref_feats_.assign(enc_out.begin(),
-                      enc_out.begin() + static_cast<size_t>(real_frames) * kPredFeatFloats);
-    ref_frames_ = real_frames;
+        LiteRtHostBuffer in_audio(env, t_in, input.size() * sizeof(float), input.data());
+        std::vector<float> enc_out(static_cast<size_t>(kMaxRefFrames) * kPredFeatFloats);
+        LiteRtHostBuffer out_feats(env, t_out, enc_out.size() * sizeof(float));
+
+        LiteRtTensorBuffer ins[1]  = { in_audio.raw() };
+        LiteRtTensorBuffer outs[1] = { out_feats.raw() };
+        litert_check(LiteRtRunCompiledModel(audio_encoder_compiled_, 0, 1, ins, 1, outs),
+                     "audio_encoder Run");
+        out_feats.read(enc_out.data(), enc_out.size() * sizeof(float));
+
+        const int start_frame = left_pad ? (kMaxRefFrames - real_frames) : 0;
+        const auto begin = enc_out.begin() +
+            static_cast<std::ptrdiff_t>(start_frame * kPredFeatFloats);
+        const auto end = begin +
+            static_cast<std::ptrdiff_t>(real_frames * kPredFeatFloats);
+        feats_out.assign(begin, end);
+        frames_out = real_frames;
+    };
+
+    encode(/*left_pad=*/false, ref_feats_, ref_frames_);
+    encode(/*left_pad=*/true, prompt_feats_, prompt_frames_);
 
     if (std::getenv("VOXCPM2_DEBUG")) {
         double ss = 0.0;
         for (float v : ref_feats_) ss += static_cast<double>(v) * v;
         const double rms = ref_feats_.empty() ? 0.0 : std::sqrt(ss / ref_feats_.size());
-        LOGI("VoxCPM2 reference: %d frames (%zu real samples), feats rms=%.4f "
+        LOGI("VoxCPM2 reference: %d ref frames, %d prompt frames, feats rms=%.4f "
              "[tokens: audio_start=%d ref_start=%d ref_end=%d]",
-             ref_frames_, real_samples, rms,
+             ref_frames_, prompt_frames_, rms,
              audio_start_token_, ref_audio_start_token_, ref_audio_end_token_);
     }
 }
@@ -339,26 +374,13 @@ void LiteRTVoxCPM2Tts::synthesize_with_options(const std::string& text,
     stopped_on_stop_token_ = false;
     seed_used_             = 0;
 
-    // --- 1. Build the prefill sequence. The target text is either the raw
-    // text, or "({instruction}){text}" when an instruction is present,
-    // followed by <|audio_start|> (the cue to begin generating audio). When a
-    // reference clip is set, a
-    // [<|ref_audio_start|>, latents…, <|ref_audio_end|>] block is prepended and
-    // its latents fill audio_feats (audio_mask=1), conditioning the output on
-    // the reference speaker. Mirrors the MLX ICL clone path in speech-swift.
-    std::string prompt = format_voxcpm2_prompt(text, instruction_);
-    std::vector<int> target_ids = tokenizer_->encode(prompt);
-    target_ids.push_back(audio_start_token_);
-
-    // With a reference block, the target text must not carry the leading BOS
-    // that encode() prepends: the model was trained on
-    // [ref_block, text, <|audio_start|>] with no sentence-start marker after
-    // the reference. A stray <s> there makes it stop early and emit silence.
-    // (The MLX clone path tokenizes without a BOS for the same reason.)
-    if (ref_frames_ > 0 && !target_ids.empty()
-        && target_ids.front() == tokenizer_->bos_id()) {
-        target_ids.erase(target_ids.begin());
-    }
+    // --- 1. Build the prefill sequence. Reference-only mode follows upstream's
+    // isolated reference prefix. When the exact transcript is available, switch
+    // to VoxCPM2's combined mode: reference isolation prefix + continuation
+    // suffix (prompt transcript text and left-aligned prompt audio).
+    const std::string target_text = format_voxcpm2_prompt(text, instruction_);
+    const bool use_prompt =
+        ref_frames_ > 0 && prompt_frames_ > 0 && !ref_transcript_.empty();
 
     std::vector<int64_t> text_tokens(max_text_, 0);
     std::vector<float>   text_mask  (max_text_, 0.0f);
@@ -387,20 +409,75 @@ void LiteRTVoxCPM2Tts::synthesize_with_options(const std::string& text,
         ++pos;
     }
 
-    // Target text fills the rest of the window. If it would overflow, drop from
-    // the front but always keep the trailing <|audio_start|> cue.
-    const int avail = max_text_ - pos;
-    if (static_cast<int>(target_ids.size()) > avail) {
-        std::vector<int> trimmed;
-        trimmed.reserve(static_cast<size_t>(avail));
-        for (int i = 0; i < avail - 1; ++i) trimmed.push_back(target_ids[i]);
-        trimmed.push_back(audio_start_token_);
-        target_ids.swap(trimmed);
+    const int prompt_audio_slots = use_prompt ? prompt_frames_ : 0;
+    int text_budget = max_text_ - pos - prompt_audio_slots;
+    if (text_budget <= 0) {
+        throw std::runtime_error(
+            "LiteRT VoxCPM2: reference and prompt-audio blocks do not fit the context window");
     }
-    for (int id : target_ids) {
+
+    std::vector<int> text_ids;
+    if (use_prompt) {
+        const std::string prompt_text =
+            prompt_prefix_for_target(ref_transcript_, target_text);
+        const std::string combined_text = prompt_text + target_text;
+        text_ids = tokenizer_->encode(combined_text);
+        if (!text_ids.empty() && text_ids.front() == tokenizer_->bos_id()) {
+            text_ids.erase(text_ids.begin());
+        }
+        text_ids.push_back(audio_start_token_);
+
+        // Preserve target text first; trim only the reference transcript when
+        // the fixed 512-token prefill window is tight.
+        if (static_cast<int>(text_ids.size()) > text_budget) {
+            std::vector<int> target_ids = tokenizer_->encode(target_text);
+            if (!target_ids.empty() && target_ids.front() == tokenizer_->bos_id()) {
+                target_ids.erase(target_ids.begin());
+            }
+            target_ids.push_back(audio_start_token_);
+            if (static_cast<int>(target_ids.size()) > text_budget) {
+                target_ids.resize(static_cast<size_t>(text_budget));
+                target_ids.back() = audio_start_token_;
+                text_ids.swap(target_ids);
+            } else {
+                std::vector<int> prompt_ids = tokenizer_->encode(prompt_text);
+                if (!prompt_ids.empty() && prompt_ids.front() == tokenizer_->bos_id()) {
+                    prompt_ids.erase(prompt_ids.begin());
+                }
+                const int prompt_budget =
+                    text_budget - static_cast<int>(target_ids.size());
+                if (static_cast<int>(prompt_ids.size()) > prompt_budget) {
+                    prompt_ids.resize(static_cast<size_t>(prompt_budget));
+                }
+                text_ids = std::move(prompt_ids);
+                text_ids.insert(text_ids.end(), target_ids.begin(), target_ids.end());
+            }
+        }
+    } else {
+        text_ids = tokenizer_->encode(target_text);
+        if (ref_frames_ > 0 && !text_ids.empty()
+            && text_ids.front() == tokenizer_->bos_id()) {
+            text_ids.erase(text_ids.begin());
+        }
+        text_ids.push_back(audio_start_token_);
+        if (static_cast<int>(text_ids.size()) > text_budget) {
+            text_ids.resize(static_cast<size_t>(text_budget));
+            text_ids.back() = audio_start_token_;
+        }
+    }
+    for (int id : text_ids) {
         text_tokens[pos] = id;
         text_mask[pos]   = 1.0f;
         ++pos;
+    }
+    if (use_prompt) {
+        for (int f = 0; f < prompt_frames_ && pos < max_text_; ++f) {
+            audio_mask[pos] = 1.0f;
+            std::memcpy(audio_feats.data() + static_cast<size_t>(pos) * kPredFeatFloats,
+                        prompt_feats_.data() + static_cast<size_t>(f) * kPredFeatFloats,
+                        kPredFeatFloats * sizeof(float));
+            ++pos;
+        }
     }
     const int     context_length        = pos;
     const int64_t context_length_scalar = context_length;

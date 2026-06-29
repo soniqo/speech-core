@@ -179,6 +179,13 @@ int sc_voxcpm2_set_reference(sc_voxcpm2_t s, const float* pcm,
     }
 }
 
+void sc_voxcpm2_set_reference_transcript(sc_voxcpm2_t s,
+                                         const char* transcript) {
+    if (s && s->tts) {
+        s->tts->set_reference_transcript(transcript ? transcript : "");
+    }
+}
+
 void sc_voxcpm2_clear_reference(sc_voxcpm2_t s) {
     if (s && s->tts) s->tts->clear_reference();
 }

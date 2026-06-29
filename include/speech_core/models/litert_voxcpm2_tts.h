@@ -20,7 +20,9 @@ namespace speech_core {
 /// VoxCPM2 — 2B-parameter multilingual TTS via LiteRT.
 /// 48 kHz output. Plain TTS by default; voice cloning when a reference clip is
 /// set via set_reference() — that runs the audio_encoder graph and conditions
-/// the prefill on the encoded reference latents.
+/// the prefill on the encoded reference latents. Supplying the exact transcript
+/// for that clip via set_reference_transcript() enables VoxCPM2's upstream
+/// combined reference + continuation clone mode.
 /// Model: https://huggingface.co/soniqo/VoxCPM2-LiteRT
 ///
 /// Pipeline (four LiteRT graphs orchestrated here):
@@ -135,6 +137,12 @@ public:
     /// Throws if the bundle's tokenizer lacks the reference boundary tokens.
     void set_reference(const float* pcm, size_t length, int sample_rate);
 
+    /// Optional exact transcript of the current reference clip. Call after
+    /// set_reference(); clear_reference() clears it with the audio prompt.
+    void set_reference_transcript(std::string transcript) {
+        ref_transcript_ = std::move(transcript);
+    }
+
     /// Drop any reference clip; synthesize() falls back to plain (uncloned) TTS.
     void clear_reference();
 
@@ -202,7 +210,10 @@ private:
     // ref_frames_ consecutive [patch, feat] frames (kPredFeatFloats each),
     // matching one audio_feats slot per frame. Empty ⇒ plain TTS.
     std::vector<float> ref_feats_;
-    int                ref_frames_ = 0;
+    std::vector<float> prompt_feats_;
+    std::string        ref_transcript_;
+    int                ref_frames_    = 0;
+    int                prompt_frames_ = 0;
 
     // Bundle-invariant shape constants (same across every VoxCPM2 export).
     static constexpr int  kMaxGenerated        = 2048;

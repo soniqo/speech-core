@@ -645,6 +645,7 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
         ref[i] = 0.05f * std::sin(2.0f * kPi * 220.0f * static_cast<float>(i) / 16000.0f);
     }
     tts->set_reference(ref.data(), ref.size(), 16000);
+    tts->set_reference_transcript("This is the exact reference sentence.");
     REQUIRE(tts->has_reference());
 
     // Decoder Run: cap the AR loop tight so the test stays bounded.

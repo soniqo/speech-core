@@ -20,8 +20,12 @@ inline void print_ids(const std::vector<int>& ids) {
 inline bool run_voxcpm2_tokenizer_reference_cases(const std::string& tok_path) {
     std::printf("  test_voxcpm2_tokenizer ... ");
 
+    const std::string fw_open = "\xEF\xBC\x88";
+    const std::string fw_close = "\xEF\xBC\x89";
     if (speech_core::format_voxcpm2_prompt("hello", "") != "hello" ||
-        speech_core::format_voxcpm2_prompt("hello", "calm") != "(calm)hello") {
+        speech_core::format_voxcpm2_prompt("hello", "calm") != "(calm)hello" ||
+        speech_core::format_voxcpm2_prompt("hello", "(calm)") != "(calm)hello" ||
+        speech_core::format_voxcpm2_prompt("hello", fw_open + "calm" + fw_close) != "(calm)hello") {
         std::printf("bad prompt formatting ");
         return false;
     }

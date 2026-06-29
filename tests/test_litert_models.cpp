@@ -871,6 +871,7 @@ void test_voxcpm2_c_api(const std::string& dir) {
                                       wav.sample_rate);
     if (rc != 0) std::printf("\n    set_reference: %s ", sc_voxcpm2_last_error(v));
     REQUIRE(rc == 0);
+    sc_voxcpm2_set_reference_transcript(v, "This is the exact reference sentence.");
 
     std::vector<float> audio;
     rc = sc_voxcpm2_synthesize(v, "The quick brown fox jumps over the lazy dog",

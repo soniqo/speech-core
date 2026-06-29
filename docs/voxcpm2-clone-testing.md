@@ -14,6 +14,12 @@ previous behaviour and with upstream `openbmb/VoxCPM2` (whose canonical
 fixture `examples/reference_speaker.wav` measures RMS 0.0896; our 0.08 target
 matches that distribution).
 
+If the exact words spoken in the reference clip are known, call
+`set_reference_transcript()` after `set_reference()`. VoxCPM2 then uses its
+combined reference + continuation clone mode: the reference clip is encoded as
+both an isolated timbre reference and a left-aligned prompt-audio continuation.
+Without a transcript, the wrappers stay in reference-only clone mode.
+
 This doc shows how to verify the behaviour on any machine, two ways: via the
 clone CLI (listening test) and via the regression test (automated).
 
