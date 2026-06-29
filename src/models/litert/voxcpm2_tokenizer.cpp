@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -81,6 +82,65 @@ std::vector<std::string> utf8_chars(const std::string& s) {
         if (i + len > s.size()) len = s.size() - i;
         out.emplace_back(s.substr(i, len));
         i += len;
+    }
+    return out;
+}
+
+bool utf8_codepoint(const std::string& ch, uint32_t& cp) {
+    if (ch.empty()) return false;
+    const unsigned char c0 = static_cast<unsigned char>(ch[0]);
+    if ((c0 & 0x80) == 0x00) {
+        if (ch.size() != 1) return false;
+        cp = c0;
+        return true;
+    }
+    if ((c0 & 0xE0) == 0xC0) {
+        if (ch.size() != 2) return false;
+        const unsigned char c1 = static_cast<unsigned char>(ch[1]);
+        if ((c1 & 0xC0) != 0x80) return false;
+        cp = ((c0 & 0x1F) << 6) | (c1 & 0x3F);
+        return true;
+    }
+    if ((c0 & 0xF0) == 0xE0) {
+        if (ch.size() != 3) return false;
+        const unsigned char c1 = static_cast<unsigned char>(ch[1]);
+        const unsigned char c2 = static_cast<unsigned char>(ch[2]);
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) return false;
+        cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+        return true;
+    }
+    if ((c0 & 0xF8) == 0xF0) {
+        if (ch.size() != 4) return false;
+        const unsigned char c1 = static_cast<unsigned char>(ch[1]);
+        const unsigned char c2 = static_cast<unsigned char>(ch[2]);
+        const unsigned char c3 = static_cast<unsigned char>(ch[3]);
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return false;
+        cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        return true;
+    }
+    return false;
+}
+
+bool is_multichar_basic_han(const std::string& token) {
+    int count = 0;
+    for (const auto& ch : utf8_chars(token)) {
+        uint32_t cp = 0;
+        if (!utf8_codepoint(ch, cp)) return false;
+        if (cp < 0x4E00 || cp > 0x9FFF) return false;
+        ++count;
+    }
+    return count >= 2;
+}
+
+std::string remove_space_markers(const std::string& token) {
+    std::string out;
+    out.reserve(token.size());
+    for (size_t i = 0; i < token.size(); ) {
+        if (i + 3 <= token.size() && std::memcmp(&token[i], kSpaceMarker, 3) == 0) {
+            i += 3;
+        } else {
+            out += token[i++];
+        }
     }
     return out;
 }
@@ -190,6 +250,12 @@ VoxCPM2Tokenizer::VoxCPM2Tokenizer(const std::string& path) {
         }
     }
 
+    for (const auto& kv : vocab_) {
+        if (is_multichar_basic_han(kv.first)) {
+            multichar_chinese_tokens_.insert(kv.first);
+        }
+    }
+
     // merges: ["left right", ...]  (lower index = higher merge priority)
     size_t merges_pos = find_member(text, model_inner, model_end, "merges");
     if (merges_pos == std::string::npos || text[merges_pos] != '[') {
@@ -284,12 +350,23 @@ std::vector<int> VoxCPM2Tokenizer::bpe(const std::string& word) const {
         tokens.erase(tokens.begin() + best_idx + 1);
     }
 
-    // Resolve each token to its ID; missing → <unk>.
+    // VoxCPM2 wraps its tokenizer with mask_multichar_chinese_tokens(): after
+    // BPE, pure multi-character Chinese vocab tokens are split back into
+    // single characters before ID conversion. Without this, Chinese synthesis
+    // degrades badly even though raw tokenizer parity tests pass.
     std::vector<int> ids;
     ids.reserve(tokens.size());
     for (const auto& t : tokens) {
-        auto it = vocab_.find(t);
-        ids.push_back(it != vocab_.end() ? it->second : unk_id_);
+        const std::string clean = remove_space_markers(t);
+        if (multichar_chinese_tokens_.count(clean)) {
+            for (const auto& ch : utf8_chars(clean)) {
+                auto it = vocab_.find(ch);
+                ids.push_back(it != vocab_.end() ? it->second : unk_id_);
+            }
+        } else {
+            auto it = vocab_.find(t);
+            ids.push_back(it != vocab_.end() ? it->second : unk_id_);
+        }
     }
     return ids;
 }
