@@ -26,6 +26,8 @@
 #include "speech_core/vad/streaming_vad.h"
 #include "speech_core/voxcpm2_c.h"
 
+#include "voxcpm2_tokenizer_test_util.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -570,10 +572,9 @@ void test_litert_voxcpm2_synthesize(const std::string& dir) {
 }
 
 // ---------------------------------------------------------------------------
-// VoxCPM2 tokenizer — pins encode/decode to the reference output from the
-// Python HuggingFace `tokenizers` library against the published
-// tokenizer.json. Only requires the tokenizer file, not the .tflite graphs,
-// so it runs whenever tokenizer.json is present.
+// VoxCPM2 tokenizer — pins encode/decode to upstream VoxCPM2's tokenizer
+// wrapper. Only requires tokenizer.json, not the .tflite graphs, so it runs
+// whenever tokenizer.json is present.
 // ---------------------------------------------------------------------------
 
 void test_voxcpm2_tokenizer(const std::string& dir) {
@@ -582,45 +583,7 @@ void test_voxcpm2_tokenizer(const std::string& dir) {
         std::printf("  [skip] tokenizer.json not in %s\n", dir.c_str());
         return;
     }
-    std::printf("  test_voxcpm2_tokenizer ... ");
-
-    speech_core::VoxCPM2Tokenizer t(tok_path);
-    REQUIRE(t.bos_id() == 1);
-    REQUIRE(t.eos_id() == 2);
-    REQUIRE(t.unk_id() == 0);
-    REQUIRE(t.vocab_size() > 73000);
-
-    // Reference outputs from python `tokenizers.Tokenizer.from_file(...).encode(s).ids`.
-    // The trailing roundtrip check exercises the decoder (skip-specials,
-    // ▁→space, byte fallback collapse, strip leading space).
-    struct Case { std::string text; std::vector<int> ids; };
-    const std::vector<Case> cases = {
-        {"Hello world",                    {1, 21045, 2809}},
-        {"The quick brown fox jumps over the lazy dog.",
-                                           {1, 1507, 4766, 13329, 49712, 43384, 1865, 1358, 29117, 6595, 72}},
-        {"Hello, world!",                  {1, 21045, 59342, 2809, 73}},
-        {"\xE4\xBD\xA0\xE5\xA5\xBD",       {1, 59320, 23523}},   // "你好"
-        {"caf\xC3\xA9",                    {1, 33903, 60025}},   // "café"
-        {"",                               {1}},
-        {" ",                              {1, 1345}},
-        {"a b  c",                         {1, 1348, 1376, 1345, 59333}},
-        // Byte-fallback path — rare CJK U+20BB7 encodes to F0 A0 AE B7
-        {"\xF0\xA0\xAE\xB7",               {1, 59320, 1329, 1249, 1263, 1272}},
-    };
-    for (const auto& c : cases) {
-        auto got = t.encode(c.text);
-        if (got != c.ids) {
-            std::printf("\n    encode(\"%s\"): got [", c.text.c_str());
-            for (size_t i = 0; i < got.size(); ++i) std::printf("%s%d", i ? "," : "", got[i]);
-            std::printf("], want [");
-            for (size_t i = 0; i < c.ids.size(); ++i) std::printf("%s%d", i ? "," : "", c.ids[i]);
-            std::printf("] ");
-        }
-        REQUIRE(got == c.ids);
-        // Roundtrip: encode then decode should return the original text.
-        REQUIRE(t.decode(got) == c.text);
-    }
-    std::printf("ok\n");
+    REQUIRE(speech_core_test::run_voxcpm2_tokenizer_reference_cases(tok_path));
 }
 
 // ---------------------------------------------------------------------------

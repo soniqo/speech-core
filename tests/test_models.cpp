@@ -28,6 +28,8 @@
 #include "speech_core/models/silero_vad.h"
 #include "speech_core/vad/streaming_vad.h"
 
+#include "voxcpm2_tokenizer_test_util.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -582,6 +584,23 @@ void test_onnx_engine_provider_resolution(const std::string& /*dir*/) {
 }
 
 // ---------------------------------------------------------------------------
+// VoxCPM2 tokenizer parity — independent of the ONNX graphs, but lives in the
+// ONNX test binary because speech_core_models owns the shared tokenizer in
+// ONNX-only builds.
+// ---------------------------------------------------------------------------
+
+void test_voxcpm2_tokenizer(const std::string& /*dir*/) {
+    OnnxVoxCPM2Bundle bundle = onnx_voxcpm2_bundle();
+    if (!file_exists(bundle.tokenizer)) {
+        std::printf("  [skip] tokenizer.json not in %s "
+                    "(set SPEECH_VOXCPM2_ONNX_DIR to override)\n",
+                    bundle.dir.c_str());
+        return;
+    }
+    REQUIRE(speech_core_test::run_voxcpm2_tokenizer_reference_cases(bundle.tokenizer));
+}
+
+// ---------------------------------------------------------------------------
 // ONNX VoxCPM2 load smoke — constructs the wrapper from the random-init
 // exported graphs at /tmp/voxcpm2-onnx/ (the tiny-init bundle from
 // speech-models, used until the real-weights text_prefill export lands).
@@ -1083,6 +1102,7 @@ int main() {
     RUN(test_deepfilter);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
+    RUN(test_voxcpm2_tokenizer);
     RUN(test_onnx_voxcpm2_load);
     RUN(test_onnx_cosyvoice3_load);
     RUN(test_onnx_voxcpm2_parakeet_roundtrip);

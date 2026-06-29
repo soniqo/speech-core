@@ -16,7 +16,9 @@ namespace speech_core {
 ///     1. Normalize: prepend ▁, replace each ' ' with ▁ (SentencePiece-style)
 ///     2. BPE on Unicode codepoints with byte fallback (<0xXX> for codepoints
 ///        absent from the vocab)
-///     3. Post-process: prepend BOS (<s>, id=1)
+///     3. Split multi-character Chinese tokens into individual Han characters,
+///        matching VoxCPM2's upstream tokenizer wrapper
+///     4. Post-process: prepend BOS (<s>, id=1)
 ///
 ///   decode(ids):
 ///     1. Skip special tokens
@@ -59,6 +61,10 @@ private:
 
     // Special tokens are skipped during decode and never participate in BPE.
     std::unordered_set<int> special_ids_;
+
+    // Pure multi-character Han vocab entries. VoxCPM2's upstream Python wrapper
+    // splits these after tokenization because merged Chinese words degrade TTS.
+    std::unordered_set<std::string> multichar_chinese_tokens_;
 
     int  bos_id_         = 1;
     int  eos_id_         = 2;
