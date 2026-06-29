@@ -19,7 +19,7 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
+- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, VoxCPM2 TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
 - **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
@@ -35,7 +35,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |
-| [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-LiteRT) | Text-to-speech (48 kHz, voice cloning) | — | ✓ |
+| [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) | Text-to-speech (48 kHz, voice cloning) | ✓ | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) | Speech restoration — denoise + dereverb (16 kHz → 48 kHz) | ✓ | — |
@@ -176,6 +176,12 @@ tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is
     // 48 kHz Float32 PCM, streamed in chunks
 });
 ```
+
+The ONNX wrapper exposes the same TTS interface via
+`speech_core::OnnxVoxCPM2Tts`. It accepts either a unified
+`voxcpm2-decoder.onnx` graph or split `voxcpm2-text-prefill.onnx` and
+`voxcpm2-token-step.onnx` graphs, plus the shared audio encoder/decoder and
+tokenizer files.
 
 For offline post-processing (for example spectral de-essing), use buffered
 delivery. `synthesize()` is the streaming call; buffered mode

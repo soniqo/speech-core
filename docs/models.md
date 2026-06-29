@@ -77,6 +77,16 @@ Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-mod
 
 `OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
+`OnnxVoxCPM2Tts` runs the VoxCPM2 2B ONNX deployment bundle and outputs 48 kHz
+PCM. It supports two decoder layouts: a unified `voxcpm2-decoder.onnx` graph,
+or split `voxcpm2-text-prefill.onnx` and `voxcpm2-token-step.onnx` graphs. The
+unified export keeps shared transformer weights resident once, which is useful
+for GPU deployments; the split export is useful for CPU serving where unified
+peak RSS can exceed the pod memory budget. Both layouts use the same
+`voxcpm2-audio-encoder.onnx`, `voxcpm2-audio-decoder.onnx`, and
+`tokenizer.json` files, and both support reference-audio cloning through
+`set_reference()`.
+
 `OnnxCosyVoice3Tts` runs the CosyVoice3 0.5B ONNX deployment bundle (`llm_prefill`, `llm_step`, `flow_frontend`, flow estimator, `hift`) and outputs 24 kHz PCM. The current C++ contract expects zero-shot voice conditioning to be supplied explicitly through `set_conditioning()`: prompt text token IDs, prompt speech tokens, prompt mel features, and a 192-dim speaker embedding. This matches the cloud serving shape: compute conditioning once when a voice is created, persist the binary blob with the voice, then reuse it for synthesis without re-running the prompt frontend per request. The bundled `encode_conditioning_blob()` / `decode_conditioning_blob()` helpers define that persistence format. If the bundle also contains `hift_128.onnx` or `hift_256.onnx`, the wrapper uses the smallest fitting HiFT bucket for shorter clips and falls back to `hift.onnx`.
 
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning via the `audio_encoder` is supported by the graph but not yet surfaced through `TTSInterface` — `synthesize()` always feeds zero audio_feats today; adding a `set_reference_audio()` method is a follow-up. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
