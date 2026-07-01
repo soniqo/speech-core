@@ -186,12 +186,36 @@ speech_core::OnnxWhisperStt stt(
     "/models/whisper-turbo/turbo-tokens.txt");
 
 auto result = stt.transcribe(audio, length, 16000);
+auto profile = stt.last_profile();
 ```
 
 - OpenAI Whisper small, medium, large-v3, and large-v3-turbo exported through the sherpa-onnx encoder/decoder graph contract.
 - Native ONNX Runtime implementation in `speech_core_models`: Whisper log-mel frontend, encoder cross-attention KV, greedy decoder self-KV cache, metadata-driven language detection, and base64 token-table decoding.
 - Fixed language prompts are available with `Config.language` or `set_language("de")`; empty language auto-detects on multilingual models.
 - The default chunk size leaves room for sherpa-style tail padding, so long audio is processed in approximately 29.5 second windows.
+- `last_profile()` reports the most recent transcription's total, feature, encoder, language-detection, first-token, and decoder timings.
+- CPU Whisper uses larger encoder matmuls than the short-call ONNX models. Keep the global `SPEECH_CORE_ORT_THREADS` default conservative for those models, and tune Whisper separately with `Config.intra_threads` or `SPEECH_CORE_WHISPER_ORT_THREADS`.
+- Low-latency fixed-language usage typically sets `Config.language`, lowers `Config.tail_padding_frames` after WER validation, and raises `Config.intra_threads` on CPU:
+
+```cpp
+speech_core::OnnxWhisperStt::Config cfg;
+cfg.language = "en";
+cfg.tail_padding_frames = 50;
+cfg.intra_threads = 16;
+speech_core::OnnxWhisperStt stt(enc, dec, tok, cfg);
+```
+
+- Whisper benchmark:
+
+```bash
+SPEECH_MODEL_DIR=/models/whisper-turbo \
+SPEECH_WHISPER_ONNX_DIR=/models/whisper-turbo \
+SPEECH_BENCH_ONLY=whisper \
+SPEECH_WHISPER_BENCH_CONFIG=en-tail50 \
+SPEECH_CORE_WHISPER_ORT_THREADS=16 \
+./build/bench_ort_models
+```
+
 - Download helper:
 
 ```bash
