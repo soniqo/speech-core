@@ -1,4 +1,5 @@
-// Micro-benchmark for the ORT models (Silero VAD, Parakeet STT, Kokoro TTS).
+// Micro-benchmark for the ORT models (Silero VAD, Parakeet STT, Whisper,
+// Kokoro TTS).
 // Runs each model on the test fixture, reports load time / latency / RTF /
 // peak RSS.
 //
@@ -14,6 +15,7 @@
 #include "speech_core/models/onnx_cosyvoice3_tts.h"
 #include "speech_core/models/onnx_nemotron_streaming_stt.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
+#include "speech_core/models/onnx_whisper_stt.h"
 #include "speech_core/models/parakeet_stt.h"
 #include "speech_core/models/silero_vad.h"
 
@@ -34,8 +36,11 @@
 #include <windows.h>
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
+#elif defined(__APPLE__)
+#include <mach/mach.h>
 #else
 #include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -60,6 +65,36 @@ double peak_rss_mb() {
 #else
     return static_cast<double>(r.ru_maxrss) / 1024.0;
 #endif
+#endif
+}
+
+double current_rss_mb() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
+    }
+    return 0.0;
+#elif defined(__APPLE__)
+    mach_task_basic_info info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+        return static_cast<double>(info.resident_size) / (1024.0 * 1024.0);
+    }
+    return 0.0;
+#else
+    FILE* f = std::fopen("/proc/self/statm", "r");
+    if (!f) return 0.0;
+    long pages = 0;
+    long resident = 0;
+    if (std::fscanf(f, "%ld %ld", &pages, &resident) != 2) {
+        std::fclose(f);
+        return 0.0;
+    }
+    std::fclose(f);
+    long page_size = sysconf(_SC_PAGESIZE);
+    return static_cast<double>(resident) * page_size / (1024.0 * 1024.0);
 #endif
 }
 
@@ -218,6 +253,126 @@ void bench_parakeet(const std::string& dir) {
     std::snprintf(ex, sizeof(ex), "p50=%.0fms p95=%.0fms text=\"%s\"",
                   pct(runs, 50), pct(runs, 95), last_text.c_str());
     emit("parakeet-tdt", "batch", load_ms, med, audio_s / (med / 1000.0), peak_rss_mb(), ex);
+}
+
+struct WhisperBundle {
+    std::string encoder;
+    std::string decoder;
+    std::string tokens;
+    std::string label;
+};
+
+bool find_whisper_bundle(const std::string& dir, WhisperBundle* out) {
+    const char* override_dir = std::getenv("SPEECH_WHISPER_ONNX_DIR");
+    std::string root = override_dir ? override_dir : dir;
+
+    struct Candidate { const char* prefix; const char* suffix; const char* label; };
+    const Candidate candidates[] = {
+        {"turbo", ".int8", "turbo-int8"},
+        {"large-v3", ".int8", "large-v3-int8"},
+        {"medium", ".int8", "medium-int8"},
+        {"small", ".int8", "small-int8"},
+        {"turbo", ".fp16", "turbo-fp16"},
+        {"large-v3", ".fp16", "large-v3-fp16"},
+        {"medium", ".fp16", "medium-fp16"},
+        {"small", ".fp16", "small-fp16"},
+        {"turbo", "", "turbo-fp32"},
+        {"large-v3", "", "large-v3-fp32"},
+        {"medium", "", "medium-fp32"},
+        {"small", "", "small-fp32"},
+    };
+    for (const auto& c : candidates) {
+        std::string e = root + "/" + c.prefix + "-encoder" + c.suffix + ".onnx";
+        std::string d = root + "/" + c.prefix + "-decoder" + c.suffix + ".onnx";
+        std::string t = root + "/" + c.prefix + "-tokens.txt";
+        if (file_exists(e) && file_exists(d) && file_exists(t)) {
+            out->encoder = std::move(e);
+            out->decoder = std::move(d);
+            out->tokens = std::move(t);
+            out->label = c.label;
+            return true;
+        }
+    }
+    std::fprintf(stderr, "[skip] whisper ONNX bundle in %s\n", root.c_str());
+    return false;
+}
+
+void emit_whisper_profile(const std::string& metric,
+                          const WhisperBundle& bundle,
+                          const speech_core::OnnxWhisperStt::Profile& p,
+                          double load_ms,
+                          double audio_s,
+                          const std::string& text) {
+    std::string transcript = text;
+    for (char& c : transcript) if (c == ',') c = ' ';
+    if (transcript.size() > 80) transcript.resize(80);
+    char ex[512];
+    std::snprintf(ex, sizeof(ex),
+                  "variant=%s current_rss=%.1fMB first_token=%.1fms feature=%.1fms encoder=%.1fms language=%.1fms prompt=%.1fms decoder=%.1fms chunks=%d feature_frames=%d encoded_frames=%d prompt_tokens=%d generated_tokens=%d text=\"%s\"",
+                  bundle.label.c_str(), current_rss_mb(), p.first_token_ms,
+                  p.feature_ms, p.encoder_ms, p.language_ms,
+                  p.decoder_prompt_ms, p.decoder_ms, p.chunks,
+                  p.feature_frames, p.encoded_frames, p.prompt_tokens,
+                  p.generated_tokens, transcript.c_str());
+    emit("whisper", metric, load_ms, p.total_ms,
+         audio_s / (p.total_ms / 1000.0), peak_rss_mb(), ex);
+}
+
+void bench_whisper_config(const WhisperBundle& bundle,
+                          const std::string& metric,
+                          speech_core::OnnxWhisperStt::Config cfg,
+                          const std::vector<float>& audio) {
+    auto t_load = clk::now();
+    speech_core::OnnxWhisperStt stt(
+        bundle.encoder, bundle.decoder, bundle.tokens, cfg, /*hw_accel=*/true);
+    double load_ms = ms_since(t_load);
+    double audio_s = static_cast<double>(audio.size()) / 16000.0;
+
+    auto cold = stt.transcribe(audio.data(), audio.size(), 16000);
+    emit_whisper_profile(metric + "-cold", bundle, stt.last_profile(),
+                         load_ms, audio_s, cold.text);
+
+    std::vector<double> walls;
+    speech_core::OnnxWhisperStt::Profile last_profile;
+    std::string last_text;
+    for (int i = 0; i < 3; ++i) {
+        auto r = stt.transcribe(audio.data(), audio.size(), 16000);
+        last_profile = stt.last_profile();
+        walls.push_back(last_profile.total_ms);
+        last_text = r.text;
+    }
+    double med = pct(walls, 50);
+    (void)med;
+    emit_whisper_profile(metric, bundle, last_profile, load_ms, audio_s, last_text);
+}
+
+void bench_whisper(const std::string& dir) {
+    WhisperBundle bundle;
+    if (!find_whisper_bundle(dir, &bundle)) return;
+    auto audio = load_audio_16k();
+    if (audio.empty()) { std::fprintf(stderr, "[skip] no fixture\n"); return; }
+
+    const char* mode_env = std::getenv("SPEECH_WHISPER_BENCH_CONFIG");
+    std::string mode = mode_env ? mode_env : "";
+
+    if (mode.empty() || mode == "auto") {
+        speech_core::OnnxWhisperStt::Config default_cfg;
+        bench_whisper_config(bundle, "batch-auto", default_cfg, audio);
+    }
+
+    if (mode.empty() || mode == "en-tail50") {
+        speech_core::OnnxWhisperStt::Config low_latency_cfg;
+        low_latency_cfg.language = "en";
+        low_latency_cfg.tail_padding_frames = 50;
+        bench_whisper_config(bundle, "batch-en-tail50", low_latency_cfg, audio);
+    }
+
+    if (mode == "en-tail0") {
+        speech_core::OnnxWhisperStt::Config low_latency_cfg;
+        low_latency_cfg.language = "en";
+        low_latency_cfg.tail_padding_frames = 0;
+        bench_whisper_config(bundle, "batch-en-tail0", low_latency_cfg, audio);
+    }
 }
 
 void bench_kokoro(const std::string& dir) {
@@ -685,8 +840,15 @@ int main(int argc, char** argv) {
     if (!nemotron_manifest.empty()) return run_corpus_nemotron(dir, nemotron_manifest);
     if (!manifest.empty()) return run_corpus(dir, manifest, batch_size);
     std::printf("#model,provider,metric,load_ms,wall_ms,rtf,rss_mb,extra\n");
+    if (const char* only = std::getenv("SPEECH_BENCH_ONLY")) {
+        if (std::string(only) == "whisper") {
+            bench_whisper(dir);
+            return 0;
+        }
+    }
     bench_silero(dir);
     bench_parakeet(dir);
+    bench_whisper(dir);
     bench_kokoro(dir);
     bench_cosyvoice3(dir);
     bench_voxcpm2(dir);

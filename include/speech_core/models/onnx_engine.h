@@ -95,7 +95,8 @@ public:
     ///   intra=16 CPU 24.25x RTF / CUDA 26.49x RTF (15–20% slower)
     /// The env var stays available for long-utterance / large-batch
     /// workloads where the parallel win does dominate.
-    static int resolve_intra_threads() {
+    static int resolve_intra_threads(int override_threads = 0) {
+        if (override_threads > 0) return override_threads;
         if (const char* env = std::getenv("SPEECH_CORE_ORT_THREADS")) {
             int v = std::atoi(env);
             if (v > 0) return v;
@@ -104,7 +105,7 @@ public:
     }
 
     OrtSession* load(const std::string& path, bool nnapi = true,
-                     bool capture_hint = false) {
+                     bool capture_hint = false, int intra_threads = 0) {
         OrtSessionOptions* opts = nullptr;
         ort_check(api_, api_->CreateSessionOptions(&opts));
         // Optimization level — default ORT_ENABLE_ALL, lowered via
@@ -123,8 +124,9 @@ public:
             else if (v == "extended")  opt_level = ORT_ENABLE_EXTENDED;
             else if (v == "all")       opt_level = ORT_ENABLE_ALL;
         }
-        api_->SetSessionGraphOptimizationLevel(opts, opt_level);
-        api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+        ort_check(api_, api_->SetSessionGraphOptimizationLevel(opts, opt_level));
+        ort_check(api_, api_->SetIntraOpNumThreads(
+            opts, resolve_intra_threads(intra_threads)));
         // EXPERIMENT: share a single CPU arena across all sessions. Each
         // session.use_env_allocators=1 routes its CPU allocations through
         // the env's registered arena instead of creating a per-session one.
@@ -247,8 +249,9 @@ public:
 
             opts = nullptr;
             ort_check(api_, api_->CreateSessionOptions(&opts));
-            api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
-            api_->SetIntraOpNumThreads(opts, resolve_intra_threads());
+            ort_check(api_, api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL));
+            ort_check(api_, api_->SetIntraOpNumThreads(
+                opts, resolve_intra_threads(intra_threads)));
             ort_check(api_, api_->AddSessionConfigEntry(
                 opts, "session.use_env_allocators", "1"));
             if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {

@@ -307,6 +307,16 @@ scripts/download_models_litert.sh            # public soniqo/* models, no token
 scripts/download_whisper_onnx.sh turbo int8  # optional large Whisper bundle
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cmake --build build
 SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
+
+# Optional Whisper ONNX CPU latency/RSS benchmark.
+cmake -B build-onnx -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime
+cmake --build build-onnx --target bench_ort_models
+SPEECH_MODEL_DIR=scripts/models/whisper-turbo \
+SPEECH_WHISPER_ONNX_DIR=scripts/models/whisper-turbo \
+SPEECH_BENCH_ONLY=whisper \
+SPEECH_WHISPER_BENCH_CONFIG=en-tail50 \
+SPEECH_CORE_WHISPER_ORT_THREADS=16 \
+./build-onnx/bench_ort_models
 ```
 
 CI builds + tests across **Linux, Windows, and macOS** (LiteRT on Linux + Windows, ONNX on Linux), plus an **aarch64** cross-compile; a **nightly** lane runs the model integration tests against the public model files.

@@ -332,6 +332,10 @@ void test_onnx_whisper_stt(const std::string& dir) {
         {"large-v3", ".int8"},
         {"medium", ".int8"},
         {"small", ".int8"},
+        {"turbo", ".fp16"},
+        {"large-v3", ".fp16"},
+        {"medium", ".fp16"},
+        {"small", ".fp16"},
         {"turbo", ""},
         {"large-v3", ""},
         {"medium", ""},
@@ -367,8 +371,12 @@ void test_onnx_whisper_stt(const std::string& dir) {
 
     std::vector<float> silence(16000, 0.0f);
     auto result = stt.transcribe(silence.data(), silence.size(), 16000);
+    auto profile = stt.last_profile();
     REQUIRE(result.confidence >= 0.0f && result.confidence <= 1.0f);
     REQUIRE(result.language.empty() || result.language == "en");
+    REQUIRE(profile.chunks == 1);
+    REQUIRE(profile.total_ms >= 0.0);
+    REQUIRE(profile.feature_frames > 0);
 
     std::printf("ok (silence text=\"%.40s\" lang=%s)\n",
                 result.text.c_str(), result.language.c_str());

@@ -38,6 +38,26 @@ public:
 
         // 0 uses sherpa's heuristic: min(audio_seconds * 6, n_text_ctx / 2).
         int max_decode_tokens = 0;
+
+        // 0 uses SPEECH_CORE_WHISPER_ORT_THREADS when set, otherwise the
+        // engine default. CPU Whisper benefits from more threads than the
+        // short-call STT/TTS wrappers.
+        int intra_threads = 0;
+    };
+
+    struct Profile {
+        double total_ms = 0.0;
+        double feature_ms = 0.0;
+        double encoder_ms = 0.0;
+        double language_ms = 0.0;
+        double decoder_prompt_ms = 0.0;
+        double decoder_ms = 0.0;
+        double first_token_ms = 0.0;
+        int chunks = 0;
+        int feature_frames = 0;
+        int encoded_frames = 0;
+        int prompt_tokens = 0;
+        int generated_tokens = 0;
     };
 
     OnnxWhisperStt(const std::string& encoder_path,
@@ -57,6 +77,8 @@ public:
         const float* audio, size_t length, int sample_rate) override;
 
     int input_sample_rate() const override { return cfg_.sample_rate; }
+
+    Profile last_profile() const;
 
     /// Set a fixed language prompt. Passing an empty string re-enables
     /// auto-detection on multilingual models.
@@ -86,10 +108,12 @@ private:
         std::string text;
         std::string language;
         float confidence = 1.0f;
+        Profile profile;
     };
 
     void load_metadata();
     void load_tokens(const std::string& path);
+    void prepare_feature_tables();
 
     std::vector<float> compute_features(
         const float* audio, size_t length, int* out_frames) const;
@@ -107,6 +131,11 @@ private:
     Config cfg_;
     Metadata meta_;
     std::vector<std::string> token_table_;
+    std::vector<float> window_;
+    std::vector<float> cos_table_;
+    std::vector<float> sin_table_;
+    std::vector<float> mel_filterbank_;
+    Profile last_profile_;
 };
 
 }  // namespace speech_core

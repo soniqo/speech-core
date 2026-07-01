@@ -5,9 +5,11 @@
 #include "speech_core/util/json.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -19,6 +21,11 @@ namespace speech_core {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+using Clock = std::chrono::steady_clock;
+
+double ms_since(Clock::time_point t0) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+}
 
 struct OrtValueHandle {
     const OrtApi* api = nullptr;
@@ -193,6 +200,15 @@ int argmax(const float* values, int n) {
     return best;
 }
 
+int resolve_whisper_threads(int config_threads) {
+    if (config_threads > 0) return config_threads;
+    if (const char* env = std::getenv("SPEECH_CORE_WHISPER_ORT_THREADS")) {
+        int v = std::atoi(env);
+        if (v > 0) return v;
+    }
+    return 0;
+}
+
 }  // namespace
 
 OnnxWhisperStt::OnnxWhisperStt(
@@ -212,12 +228,14 @@ OnnxWhisperStt::OnnxWhisperStt(
 {
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
-    encoder_ = engine.load(encoder_path, hw_accel);
+    const int intra_threads = resolve_whisper_threads(cfg_.intra_threads);
+    encoder_ = engine.load(encoder_path, hw_accel, false, intra_threads);
     // Without IO binding, each decoder step would copy the full self-KV cache
     // between host and accelerator. Keep the AR decoder on CPU by default.
-    decoder_ = engine.load(decoder_path, false);
+    decoder_ = engine.load(decoder_path, false, false, intra_threads);
 
     load_metadata();
+    prepare_feature_tables();
     load_tokens(tokens_path);
 
     if (cfg_.max_audio_samples == 0) {
@@ -237,6 +255,10 @@ OnnxWhisperStt::OnnxWhisperStt(
 OnnxWhisperStt::~OnnxWhisperStt() {
     if (decoder_) api_->ReleaseSession(decoder_);
     if (encoder_) api_->ReleaseSession(encoder_);
+}
+
+OnnxWhisperStt::Profile OnnxWhisperStt::last_profile() const {
+    return last_profile_;
 }
 
 bool OnnxWhisperStt::set_language(const std::string& language) {
@@ -381,6 +403,27 @@ std::vector<float> OnnxWhisperStt::make_mel_filterbank() const {
     return fb;
 }
 
+void OnnxWhisperStt::prepare_feature_tables() {
+    window_.resize(static_cast<size_t>(cfg_.win_length));
+    for (int i = 0; i < cfg_.win_length; ++i) {
+        window_[static_cast<size_t>(i)] =
+            0.5f * (1.0f - std::cos(2.0f * kPi * i / cfg_.win_length));
+    }
+
+    const int n_bins = cfg_.n_fft / 2 + 1;
+    cos_table_.resize(static_cast<size_t>(n_bins) * cfg_.n_fft);
+    sin_table_.resize(cos_table_.size());
+    for (int k = 0; k < n_bins; ++k) {
+        for (int n = 0; n < cfg_.n_fft; ++n) {
+            float angle = 2.0f * kPi * static_cast<float>(k * n) / cfg_.n_fft;
+            cos_table_[static_cast<size_t>(k) * cfg_.n_fft + n] = std::cos(angle);
+            sin_table_[static_cast<size_t>(k) * cfg_.n_fft + n] = std::sin(angle);
+        }
+    }
+
+    mel_filterbank_ = make_mel_filterbank();
+}
+
 std::vector<float> OnnxWhisperStt::compute_features(
     const float* audio, size_t length, int* out_frames) const {
     *out_frames = 0;
@@ -406,22 +449,6 @@ std::vector<float> OnnxWhisperStt::compute_features(
 
     const int n_bins = cfg_.n_fft / 2 + 1;
     const int n_mels = meta_.n_mels;
-    std::vector<float> window(cfg_.win_length);
-    for (int i = 0; i < cfg_.win_length; ++i) {
-        window[i] = 0.5f * (1.0f - std::cos(2.0f * kPi * i / cfg_.win_length));
-    }
-
-    std::vector<float> cos_table(n_bins * cfg_.n_fft);
-    std::vector<float> sin_table(n_bins * cfg_.n_fft);
-    for (int k = 0; k < n_bins; ++k) {
-        for (int n = 0; n < cfg_.n_fft; ++n) {
-            float angle = 2.0f * kPi * static_cast<float>(k * n) / cfg_.n_fft;
-            cos_table[k * cfg_.n_fft + n] = std::cos(angle);
-            sin_table[k * cfg_.n_fft + n] = std::sin(angle);
-        }
-    }
-
-    auto fb = make_mel_filterbank();
     std::vector<float> frame(cfg_.n_fft, 0.0f);
     std::vector<float> power(n_bins, 0.0f);
     std::vector<float> mel(n_frames * n_mels, 0.0f);
@@ -430,12 +457,12 @@ std::vector<float> OnnxWhisperStt::compute_features(
         std::fill(frame.begin(), frame.end(), 0.0f);
         size_t start = static_cast<size_t>(t * cfg_.hop_length);
         for (int i = 0; i < cfg_.win_length; ++i) {
-            frame[i] = padded[start + static_cast<size_t>(i)] * window[i];
+            frame[i] = padded[start + static_cast<size_t>(i)] * window_[i];
         }
 
         for (int k = 0; k < n_bins; ++k) {
-            const float* c = cos_table.data() + k * cfg_.n_fft;
-            const float* s = sin_table.data() + k * cfg_.n_fft;
+            const float* c = cos_table_.data() + static_cast<size_t>(k) * cfg_.n_fft;
+            const float* s = sin_table_.data() + static_cast<size_t>(k) * cfg_.n_fft;
             float re = 0.0f;
             float im = 0.0f;
             for (int n = 0; n < cfg_.n_fft; ++n) {
@@ -447,7 +474,7 @@ std::vector<float> OnnxWhisperStt::compute_features(
 
         for (int m = 0; m < n_mels; ++m) {
             float sum = 0.0f;
-            const float* filt = fb.data() + m * n_bins;
+            const float* filt = mel_filterbank_.data() + static_cast<size_t>(m) * n_bins;
             for (int k = 0; k < n_bins; ++k) sum += power[k] * filt[k];
             mel[t * n_mels + m] = std::max(sum, 1e-10f);
         }
@@ -470,7 +497,10 @@ std::vector<float> OnnxWhisperStt::compute_features(
 TranscriptionResult OnnxWhisperStt::transcribe(
     const float* audio, size_t length, int sample_rate) {
     TranscriptionResult out;
+    last_profile_ = {};
     if (!audio || length == 0) return out;
+    const auto t_total = Clock::now();
+    Profile profile;
 
     std::vector<float> converted;
     const float* pcm = audio;
@@ -488,7 +518,21 @@ TranscriptionResult OnnxWhisperStt::transcribe(
     const size_t chunk = std::max<size_t>(1, cfg_.max_audio_samples);
     while (offset < pcm_len) {
         size_t n = std::min(chunk, pcm_len - offset);
+        double chunk_start_ms = ms_since(t_total);
         auto r = decode_chunk(pcm + offset, n);
+        ++profile.chunks;
+        profile.feature_ms += r.profile.feature_ms;
+        profile.encoder_ms += r.profile.encoder_ms;
+        profile.language_ms += r.profile.language_ms;
+        profile.decoder_prompt_ms += r.profile.decoder_prompt_ms;
+        profile.decoder_ms += r.profile.decoder_ms;
+        profile.feature_frames += r.profile.feature_frames;
+        profile.encoded_frames += r.profile.encoded_frames;
+        profile.prompt_tokens += r.profile.prompt_tokens;
+        profile.generated_tokens += r.profile.generated_tokens;
+        if (profile.first_token_ms == 0.0 && r.profile.first_token_ms > 0.0) {
+            profile.first_token_ms = chunk_start_ms + r.profile.first_token_ms;
+        }
         if (!r.text.empty()) texts.push_back(std::move(r.text));
         if (language.empty()) language = std::move(r.language);
         offset += n;
@@ -503,14 +547,20 @@ TranscriptionResult OnnxWhisperStt::transcribe(
     out.language = std::move(language);
     out.confidence = 1.0f;
     out.end_time = static_cast<float>(length) / static_cast<float>(sample_rate);
+    profile.total_ms = ms_since(t_total);
+    last_profile_ = profile;
     return out;
 }
 
 OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_chunk(
     const float* audio, size_t length) {
+    DecodeResult result;
     int num_frames = 0;
+    const auto t_feature = Clock::now();
     std::vector<float> features = compute_features(audio, length, &num_frames);
-    if (features.empty() || num_frames <= 0) return {};
+    result.profile.feature_ms = ms_since(t_feature);
+    result.profile.feature_frames = num_frames;
+    if (features.empty() || num_frames <= 0) return result;
 
     const int max_real_frames =
         std::max(1, cfg_.max_feature_frames - cfg_.reserve_tail_frames);
@@ -518,6 +568,8 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_chunk(
 
     const int actual_frames = std::min(
         cfg_.max_feature_frames, num_frames + std::max(0, cfg_.tail_padding_frames));
+    result.profile.feature_frames = num_frames;
+    result.profile.encoded_frames = actual_frames;
 
     std::vector<float> mel(static_cast<size_t>(meta_.n_mels) * actual_frames, 0.0f);
     for (int t = 0; t < num_frames; ++t) {
@@ -536,12 +588,23 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_chunk(
     const char* enc_out[] = {"n_layer_cross_k", "n_layer_cross_v"};
     OrtValue* enc_inputs[] = {t_mel.get()};
     OrtValue* enc_outputs[] = {nullptr, nullptr};
+    const auto t_encoder = Clock::now();
     ort_check(api_, api_->Run(encoder_, nullptr, enc_in, enc_inputs, 1,
                               enc_out, 2, enc_outputs));
+    result.profile.encoder_ms = ms_since(t_encoder);
 
     OrtValueHandle cross_k(api_, enc_outputs[0]);
     OrtValueHandle cross_v(api_, enc_outputs[1]);
-    return decode_greedy(cross_k.get(), cross_v.get(), num_frames);
+    auto decoded = decode_greedy(cross_k.get(), cross_v.get(), num_frames);
+    decoded.profile.feature_ms = result.profile.feature_ms;
+    decoded.profile.encoder_ms = result.profile.encoder_ms;
+    decoded.profile.feature_frames = result.profile.feature_frames;
+    decoded.profile.encoded_frames = result.profile.encoded_frames;
+    decoded.profile.first_token_ms = result.profile.feature_ms
+        + result.profile.encoder_ms
+        + decoded.profile.language_ms
+        + decoded.profile.decoder_prompt_ms;
+    return decoded;
 }
 
 int32_t OnnxWhisperStt::detect_language(OrtValue* cross_k, OrtValue* cross_v) {
@@ -600,6 +663,7 @@ int32_t OnnxWhisperStt::detect_language(OrtValue* cross_k, OrtValue* cross_v) {
 OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_greedy(
     OrtValue* cross_k, OrtValue* cross_v, int num_feature_frames) {
     DecodeResult result;
+    const auto t_decoder_total = Clock::now();
     auto* mem = OnnxEngine::get().cpu_memory();
 
     std::vector<int64_t> initial = meta_.sot_sequence;
@@ -612,7 +676,9 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_greedy(
             }
             language_token = it->second;
         } else {
+            const auto t_language = Clock::now();
             language_token = detect_language(cross_k, cross_v);
+            result.profile.language_ms = ms_since(t_language);
         }
         initial[1] = language_token;
         auto lang = meta_.id2lang.find(language_token);
@@ -625,6 +691,7 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_greedy(
         }
     }
     initial.push_back(meta_.no_timestamps);
+    result.profile.prompt_tokens = static_cast<int>(initial.size());
 
     std::vector<float> self_k(static_cast<size_t>(meta_.n_text_layer)
                               * meta_.n_text_ctx * meta_.n_text_state, 0.0f);
@@ -679,9 +746,13 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_greedy(
         return {std::move(logits), next};
     };
 
+    const auto t_prompt = Clock::now();
     auto first = run_decoder(initial.data(), initial.size(), 0);
+    result.profile.decoder_prompt_ms = ms_since(t_prompt);
     (void)first.first;
     int32_t next_token = first.second;
+    std::vector<float>().swap(self_k);
+    std::vector<float>().swap(self_v);
 
     int limit = static_cast<int>(num_feature_frames / 100.0f * 6.0f);
     if (meta_.n_text_ctx > 0) limit = std::min(limit, meta_.n_text_ctx / 2);
@@ -704,6 +775,8 @@ OnnxWhisperStt::DecodeResult OnnxWhisperStt::decode_greedy(
     }
 
     result.text = decode_tokens(generated);
+    result.profile.generated_tokens = static_cast<int>(generated.size());
+    result.profile.decoder_ms = ms_since(t_decoder_total);
     return result;
 }
 
