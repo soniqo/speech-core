@@ -20,6 +20,7 @@
 #include "speech_core/models/kokoro_tts.h"
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/models/onnx_cosyvoice3_tts.h"
+#include "speech_core/models/onnx_whisper_stt.h"
 #include "speech_core/models/onnx_sidon_restorer.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/onnx_personaplex.h"
@@ -317,6 +318,60 @@ void test_parakeet_stt(const std::string& dir) {
 
     std::printf("ok (silence text=\"%s\" conf=%.3f)\n",
                 result.text.c_str(), result.confidence);
+}
+
+// ---------------------------------------------------------------------------
+
+void test_onnx_whisper_stt(const std::string& dir) {
+    const char* override_dir = std::getenv("SPEECH_WHISPER_ONNX_DIR");
+    std::string root = override_dir ? override_dir : dir;
+
+    struct Candidate { const char* prefix; const char* suffix; };
+    const Candidate candidates[] = {
+        {"turbo", ".int8"},
+        {"large-v3", ".int8"},
+        {"medium", ".int8"},
+        {"small", ".int8"},
+        {"turbo", ""},
+        {"large-v3", ""},
+        {"medium", ""},
+        {"small", ""},
+    };
+
+    std::string enc;
+    std::string dec;
+    std::string tok;
+    for (const auto& c : candidates) {
+        std::string e = root + "/" + c.prefix + "-encoder" + c.suffix + ".onnx";
+        std::string d = root + "/" + c.prefix + "-decoder" + c.suffix + ".onnx";
+        std::string t = root + "/" + c.prefix + "-tokens.txt";
+        if (file_exists(e) && file_exists(d) && file_exists(t)) {
+            enc = std::move(e);
+            dec = std::move(d);
+            tok = std::move(t);
+            break;
+        }
+    }
+    if (enc.empty()) {
+        std::printf("  [skip] whisper ONNX bundle not in %s\n", root.c_str());
+        return;
+    }
+
+    std::printf("  test_onnx_whisper_stt ... ");
+    speech_core::OnnxWhisperStt::Config cfg;
+    cfg.language = "en";
+    cfg.max_decode_tokens = 4;
+    cfg.tail_padding_frames = 50;
+    speech_core::OnnxWhisperStt stt(enc, dec, tok, cfg, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+
+    std::vector<float> silence(16000, 0.0f);
+    auto result = stt.transcribe(silence.data(), silence.size(), 16000);
+    REQUIRE(result.confidence >= 0.0f && result.confidence <= 1.0f);
+    REQUIRE(result.language.empty() || result.language == "en");
+
+    std::printf("ok (silence text=\"%.40s\" lang=%s)\n",
+                result.text.c_str(), result.language.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,6 +1153,7 @@ int main() {
     RUN(test_silero_vad);
     RUN(test_silero_vad_real_speech);
     RUN(test_parakeet_stt);
+    RUN(test_onnx_whisper_stt);
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
     RUN(test_deepfilter);

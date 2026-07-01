@@ -125,6 +125,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
         src/models/personaplex/onnx_personaplex.cpp
+        src/models/whisper/onnx_whisper_stt.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
     # avoid duplicate symbols when a downstream binary links both targets, we
@@ -858,6 +859,10 @@ if(SPEECH_CORE_PACKAGE)
     # invoked without a model_dir argument.
     install(PROGRAMS scripts/download_models.sh
         DESTINATION bin RENAME speech_download_models)
+    if(SPEECH_CORE_WITH_ONNX)
+        install(PROGRAMS scripts/download_whisper_onnx.sh
+            DESTINATION bin RENAME speech_download_whisper_onnx)
+    endif()
     if(SPEECH_CORE_WITH_LITERT)
         install(PROGRAMS scripts/download_models_litert.sh
             DESTINATION bin RENAME speech_download_models_litert)

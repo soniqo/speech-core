@@ -8,6 +8,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 |---|---|---|---|
 | `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` | full |
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
+| `OnnxWhisperStt` | `STTInterface` | `speech_core/models/onnx_whisper_stt.h` | full |
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
 | `OnnxSidonRestorer` | (own API; `EnhancerInterface` adapter) | `speech_core/models/onnx_sidon_restorer.h` | full — see [OnnxSidonRestorer](#onnxsidonrestorer) |
@@ -173,6 +174,36 @@ auto result = stt.transcribe(audio, length, 16000);
 - Language detection via `<|xx|>` BPE tokens
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
 - Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64.
+
+## OnnxWhisperStt
+
+```cpp
+#include <speech_core/models/onnx_whisper_stt.h>
+
+speech_core::OnnxWhisperStt stt(
+    "/models/whisper-turbo/turbo-encoder.int8.onnx",
+    "/models/whisper-turbo/turbo-decoder.int8.onnx",
+    "/models/whisper-turbo/turbo-tokens.txt");
+
+auto result = stt.transcribe(audio, length, 16000);
+```
+
+- OpenAI Whisper small, medium, large-v3, and large-v3-turbo exported through the sherpa-onnx encoder/decoder graph contract.
+- Native ONNX Runtime implementation in `speech_core_models`: Whisper log-mel frontend, encoder cross-attention KV, greedy decoder self-KV cache, metadata-driven language detection, and base64 token-table decoding.
+- Fixed language prompts are available with `Config.language` or `set_language("de")`; empty language auto-detects on multilingual models.
+- The default chunk size leaves room for sherpa-style tail padding, so long audio is processed in approximately 29.5 second windows.
+- Download helper:
+
+```bash
+scripts/download_whisper_onnx.sh turbo int8
+scripts/download_whisper_onnx.sh medium fp16
+```
+
+- Model files:
+  [soniqo/Whisper-Small-ONNX](https://huggingface.co/soniqo/Whisper-Small-ONNX),
+  [soniqo/Whisper-Medium-ONNX](https://huggingface.co/soniqo/Whisper-Medium-ONNX),
+  [soniqo/Whisper-Large-v3-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-ONNX),
+  [soniqo/Whisper-Large-v3-Turbo-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX).
 
 ## LiteRTSileroVad
 
