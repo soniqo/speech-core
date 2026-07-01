@@ -19,7 +19,7 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, VoxCPM2 TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
+- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, Whisper v3/turbo STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, VoxCPM2 TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
 - **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
@@ -30,6 +30,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) | Voice activity detection | ✓ | ✓ |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) | Speech-to-text | ✓ | ✓ |
+| [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) | Speech-to-text (multilingual, greedy ONNX runtime) | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | ✓ | ✓ |
 | [Nemotron-3.5 ASR Streaming Multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) | Streaming speech-to-text (multilingual, prompt-conditioned) | ✓ | ✓ |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
@@ -303,6 +304,7 @@ The orchestration + diarization unit tests need no model files. Integration test
 ```bash
 scripts/fetch_litert.sh build/litert
 scripts/download_models_litert.sh            # public soniqo/* models, no token
+scripts/download_whisper_onnx.sh turbo int8  # optional large Whisper bundle
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cmake --build build
 SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
 ```
