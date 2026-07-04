@@ -239,6 +239,20 @@ public:
 
         if (create_status != nullptr && nnapi) {
             const char* msg = api_->GetErrorMessage(create_status);
+            if (gpu_attempted) {
+                const char* require_cuda = std::getenv("SPEECH_CUDA_REQUIRE_GPU");
+                const char* require_core = std::getenv("SPEECH_CORE_REQUIRE_GPU");
+                const bool require_gpu =
+                    (require_cuda != nullptr && require_cuda[0] == '1') ||
+                    (require_core != nullptr && require_core[0] == '1');
+                if (require_gpu) {
+                    std::string err(msg);
+                    api_->ReleaseStatus(create_status);
+                    api_->ReleaseSessionOptions(opts);
+                    throw std::runtime_error(
+                        "ORT hardware EP session failed with required GPU: " + err);
+                }
+            }
             LOGI("Hardware-EP session failed (%s), retrying CPU-only", msg);
             if (!gpu_attempted) {
                 nnapi_fallback_ = true;
