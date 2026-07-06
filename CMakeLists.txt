@@ -256,6 +256,20 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_omnilingual_stt.cpp
         src/models/litert/litert_nemotron_streaming_stt.cpp
         src/models/litert/litert_nemotron_multilingual_stt.cpp
+        src/models/litert/indic_mio_tokenizer.cpp
+        src/models/litert/indic_mio_istft.cpp
+        # kissfft (BSD-3): arbitrary-N real FFT for the Indic-Mio host ISTFT
+        # (n_fft 1920 = 2^7*3*5; the in-tree Ooura engine is radix-2 only).
+        third_party/kissfft/kiss_fft.c
+        third_party/kissfft/kiss_fftr.c
+    )
+
+    # The project enables CXX only, so .c sources would be silently dropped —
+    # build the (C++-clean) kissfft translation units as C++.
+    set_source_files_properties(
+        third_party/kissfft/kiss_fft.c
+        third_party/kissfft/kiss_fftr.c
+        PROPERTIES LANGUAGE CXX
     )
 
     target_include_directories(speech_core_models_litert
@@ -264,6 +278,7 @@ if(SPEECH_CORE_WITH_LITERT)
             $<INSTALL_INTERFACE:include>
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft
     )
 
     if(MSVC)
@@ -485,6 +500,8 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_litert_chatterbox"
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
+           OR TEST_NAME STREQUAL "test_indic_mio_istft"
+           OR TEST_NAME STREQUAL "test_indic_mio_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
@@ -556,6 +573,27 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_litert_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_litert_models COMMAND test_litert_models)
+    endif()
+
+    # Indic-Mio host ISTFT vs the upstream torch fixture (pure unit — always runs).
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_indic_mio_istft.cpp)
+        add_executable(test_indic_mio_istft tests/test_indic_mio_istft.cpp)
+        target_link_libraries(test_indic_mio_istft PRIVATE speech_core_models_litert)
+        target_include_directories(test_indic_mio_istft PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft)
+        target_compile_definitions(test_indic_mio_istft PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME test_indic_mio_istft COMMAND test_indic_mio_istft)
+    endif()
+
+    # Indic-Mio tokenizer vs golden HF fixtures (skips when
+    # SPEECH_CORE_INDIC_MIO_BUNDLE unset — tokenizer.json ships with the bundle).
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_indic_mio_tokenizer.cpp)
+        add_executable(test_indic_mio_tokenizer tests/test_indic_mio_tokenizer.cpp)
+        target_link_libraries(test_indic_mio_tokenizer PRIVATE speech_core_models_litert)
+        target_compile_definitions(test_indic_mio_tokenizer PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME test_indic_mio_tokenizer COMMAND test_indic_mio_tokenizer)
     endif()
 
     # Chatterbox TTS smoke test (skips when SPEECH_CORE_CHATTERBOX_BUNDLE unset).
