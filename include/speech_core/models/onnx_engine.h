@@ -182,19 +182,16 @@ public:
             ort_check(api_, api_->AddSessionConfigEntry(
                 opts, "session.use_device_allocator_for_initializers", "1"));
         }
-        // Disable per-session memory arena + memory pattern to test whether
-        // they were pre-allocating the host shadow buffer. Off by default —
-        // SPEECH_CORE_DISABLE_MEM_ARENA=1 / SPEECH_CORE_DISABLE_MEM_PATTERN=1.
-        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_MEM_ARENA")) {
-            if (d[0] == '1') {
-                ort_check(api_, api_->DisableCpuMemArena(opts));
-            }
-        }
-        if (const char* d = std::getenv("SPEECH_CORE_DISABLE_MEM_PATTERN")) {
-            if (d[0] == '1') {
-                ort_check(api_, api_->DisableMemPattern(opts));
-            }
-        }
+        // Minimize peak RSS by default: the CPU memory arena pre-allocates a
+        // large pool up front, and the memory-pattern planner reserves a
+        // contiguous activation buffer sized for the whole graph. Disabling
+        // both drops peak resident memory materially at a small throughput
+        // cost. Measured on a Galaxy S23 (Parakeet-TDT-0.6B INT8, CPU):
+        // 1342 MB -> 1147 MB peak RSS (-15%), RTF 12.9x -> 12.2x (-6%, still
+        // ~12x real time). On-device / embedded targets are memory-bound, not
+        // throughput-bound here, so this is the right default.
+        ort_check(api_, api_->DisableCpuMemArena(opts));
+        ort_check(api_, api_->DisableMemPattern(opts));
         // EXPERIMENT: BF16 models route weights through a Cast(BF16->FP32)
         // node per initializer. ORT's ConstantFolding optimizer would
         // collapse each Cast into an FP32 constant at session-load time,
