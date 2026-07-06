@@ -464,7 +464,7 @@ auto final = stt.end_stream();
 - Parakeet-EOU-120M — multilingual (25 European) streaming RNN-T with inline
   end-of-utterance detection. **~231 MB peak RSS on a Galaxy S23** (arm64 CPU,
   native; ~377 MB on desktop) — 5–6× lighter than Parakeet-TDT 0.6B (~1.1–1.3 GB)
-  and comfortably real-time on a phone (RTF 4.7× on the S23).
+  and comfortably real-time on a phone (RTF 0.21 on the S23).
 - Streaming windowing mirrors the reference session: a `melFrames * hop` window
   advanced by `outputFrames * subsamplingFactor * hop` samples (overlapping),
   committing `outputFrames` encoder frames per step. Pre-emphasis (config
@@ -480,17 +480,21 @@ auto final = stt.end_stream();
 ## On-device benchmarks
 
 Measured on a Samsung Galaxy S23 (SM-S918B, arm64), CPU only, INT8 where noted.
-RTF is audio-seconds ÷ wall-seconds (higher = faster than real time); RSS is peak
-resident set. STT rows use a 20 s clip; TTS reports time-to-first-audio (TTFA).
+RTF is wall-seconds ÷ audio-seconds (lower = faster than real time; <1.0 = real time); RSS is peak
+resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (TTFA).
 
 | Model | Task | Backend | Peak RSS | Speed |
 |---|---|---|---|---|
-| Parakeet-EOU-120M | streaming STT + EOU | ONNX INT8 | **~232 MB** | 4.7× RTF |
-| Omnilingual CTC-300M | multilingual STT | LiteRT | ~831 MB | 6.8× RTF |
-| Nemotron streaming 0.6B | streaming STT | LiteRT | ~1.30 GB | 1.5× RTF |
-| Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 12.2× RTF |
-| SupertonicTTS-3 (99M) | TTS (preset voice) | LiteRT | ~832 MB | TTFA ~1.1 s (3-step) |
+| Parakeet-EOU-120M | streaming STT + EOU | ONNX INT8 | **~232 MB** | 0.21 RTF |
+| Omnilingual CTC-300M | multilingual STT | LiteRT | ~831 MB | 0.15 RTF |
+| Nemotron streaming 0.6B | streaming STT | LiteRT | ~1.30 GB | 0.67 RTF |
+| Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 0.082 RTF |
+| SupertonicTTS-3 (99M) | TTS (preset voice) | LiteRT | ~832 MB | 0.34 RTF · ~1.1 s TTFA |
+| Kokoro-82M | TTS (preset voice) | ONNX FP32 | ~640 MB | 0.53 RTF |
 
+- Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
+  synthesizes); Kokoro is single-pass and one-shot, so its first audio equals full
+  synthesis (~2.6 s for a 5 s line at 0.53 RTF).
 - Disabling the ONNX CPU memory arena (now the default) cut Parakeet-TDT peak RSS
   from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
 - Parakeet-EOU is the lightest STT here while staying multilingual + streaming —
