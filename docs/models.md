@@ -463,8 +463,8 @@ auto final = stt.end_stream();
 
 - Parakeet-EOU-120M — multilingual (25 European) streaming RNN-T with inline
   end-of-utterance detection. **~231 MB peak RSS on a Galaxy S23** (arm64 CPU,
-  native; ~377 MB on desktop with the Python-adjacent runtime) — 5–6× lighter
-  than Parakeet-TDT 0.6B (~1.1–1.3 GB) and comfortably real-time on a phone.
+  native; ~377 MB on desktop) — 5–6× lighter than Parakeet-TDT 0.6B (~1.1–1.3 GB)
+  and comfortably real-time on a phone (RTF 4.7× on the S23).
 - Streaming windowing mirrors the reference session: a `melFrames * hop` window
   advanced by `outputFrames * subsamplingFactor * hop` samples (overlapping),
   committing `outputFrames` encoder frames per step. Pre-emphasis (config
@@ -485,7 +485,7 @@ resident set. STT rows use a 20 s clip; TTS reports time-to-first-audio (TTFA).
 
 | Model | Task | Backend | Peak RSS | Speed |
 |---|---|---|---|---|
-| Parakeet-EOU-120M | streaming STT + EOU | ONNX INT8 | **~231 MB** | ~5× RTF |
+| Parakeet-EOU-120M | streaming STT + EOU | ONNX INT8 | **~232 MB** | 4.7× RTF |
 | Omnilingual CTC-300M | multilingual STT | LiteRT | ~831 MB | 6.8× RTF |
 | Nemotron streaming 0.6B | streaming STT | LiteRT | ~1.30 GB | 1.5× RTF |
 | Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 12.2× RTF |
