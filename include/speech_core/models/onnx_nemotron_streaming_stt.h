@@ -51,6 +51,19 @@ public:
         int attn_left_context = 70;    // cache_last_channel time dim
         int conv_cache_size   = 8;     // cache_last_time conv dim (kernel-1)
         int max_symbols       = 8;     // expansions per encoder frame
+        int subsampling_factor = 8;    // encoder frame : mel frame ratio (EOU streaming shift)
+        // End-of-utterance / end-of-boundary tokens (Parakeet-EOU). Read from
+        // config.json's eouTokenId / eobTokenId. -1 = disabled (plain Nemotron
+        // streaming), in which case these ids are never special-cased and the
+        // decode path is byte-identical to before. When set, <EOU> ends the
+        // current utterance (surfaced via end_of_utterance()) and <EOB> is a
+        // soft boundary that is not emitted into the transcript.
+        int eou_token_id      = -1;
+        int eob_token_id      = -1;
+        // Pre-emphasis coefficient applied to the waveform before the mel
+        // frontend (NeMo `preemph`, read from config.json's preEmphasis).
+        // 0 = disabled, keeping the plain-Nemotron path unchanged.
+        float preemph         = 0.0f;
     };
 
     OnnxNemotronStreamingStt(const std::string& encoder_path,
@@ -70,6 +83,11 @@ public:
     TranscriptionResult transcribe(const float* audio, size_t length, int sample_rate) override;
     int input_sample_rate() const override { return cfg_.sample_rate; }
 
+    // True once an <EOU> token has been decoded in the current stream
+    // (Parakeet-EOU only). Lets a voice agent detect turn end from the ASR
+    // stream itself. Reset by begin_stream() / cancel_stream().
+    bool end_of_utterance() const { return eou_detected_; }
+
     // --- STTInterface (streaming — the real path) ---
     bool supports_streaming() const override { return true; }
     void begin_stream(int sample_rate) override;
@@ -84,7 +102,22 @@ private:
     void run_decoder_step(int64_t token_id);
     std::string run_window();
     std::string token_to_text(int id) const;
-    int chunk_samples() const { return (cfg_.actual_mel_frames - 1) * cfg_.hop_length; }
+    // Mel window fed to the encoder, in samples. EOU streams melFrames*hop
+    // windows advanced by a smaller shift (see run_window); Nemotron uses the
+    // original (melFrames-1)*hop stride where window == shift.
+    int chunk_samples() const {
+        const int frames = (cfg_.eou_token_id >= 0)
+            ? cfg_.actual_mel_frames
+            : cfg_.actual_mel_frames - 1;
+        return frames * cfg_.hop_length;
+    }
+    // Samples to advance per window: for EOU only outputFrames*subsampling mel
+    // frames are fresh audio (the rest is right-context re-settled next window);
+    // Nemotron advances the whole window.
+    int shift_samples() const {
+        if (cfg_.eou_token_id < 0) return chunk_samples();
+        return output_frames_ * cfg_.subsampling_factor * cfg_.hop_length;
+    }
 
     const OrtApi* api_ = nullptr;
     OrtSession*   enc_ = nullptr;
@@ -120,6 +153,8 @@ private:
     std::vector<float> dec_hidden_;          // [Hd] — joint input
     std::string        accumulated_text_;
     bool               stream_init_ = false;
+    bool               eou_detected_ = false;  // Parakeet-EOU: <EOU> seen this stream
+    float              preemph_prev_ = 0.0f;   // last raw sample, for cross-window pre-emphasis
 };
 
 }  // namespace speech_core

@@ -440,6 +440,62 @@ auto final   = stt.end_stream();
 - Config defaults match the export; vocab size auto-derives from `vocab.json`.
 - Model files: [soniqo/Nemotron-Speech-Streaming-LiteRT](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) — `nemotron-streaming-{encoder,decoder,joint}.tflite`, `vocab.json`, `config.json`
 
+## Parakeet-EOU (streaming ONNX)
+
+```cpp
+#include <speech_core/models/onnx_nemotron_streaming_stt.h>
+
+// Parakeet-EOU-120M is wire-identical to Nemotron streaming (the same
+// three-graph cache-aware RNN-T contract), so it runs through the same wrapper.
+// Point it at the model directory; the wrapper self-configures dims, vocab, and
+// the <EOU>/<EOB> token ids from config.json.
+speech_core::OnnxNemotronStreamingStt stt(
+    "/models/parakeet-eou-encoder.onnx",
+    "/models/parakeet-eou-decoder.onnx",
+    "/models/parakeet-eou-joint.onnx",
+    "/models/vocab.json");
+
+stt.begin_stream(16000);
+stt.push_chunk(audio_chunk, chunk_len);
+if (stt.end_of_utterance()) { /* turn ended — the model emitted <EOU> */ }
+auto final = stt.end_stream();
+```
+
+- Parakeet-EOU-120M — multilingual (25 European) streaming RNN-T with inline
+  end-of-utterance detection. **~231 MB peak RSS on a Galaxy S23** (arm64 CPU,
+  native; ~377 MB on desktop with the Python-adjacent runtime) — 5–6× lighter
+  than Parakeet-TDT 0.6B (~1.1–1.3 GB) and comfortably real-time on a phone.
+- Streaming windowing mirrors the reference session: a `melFrames * hop` window
+  advanced by `outputFrames * subsamplingFactor * hop` samples (overlapping),
+  committing `outputFrames` encoder frames per step. Pre-emphasis (config
+  `preEmphasis`) is applied to the waveform with cross-window carry.
+- Same runtime as Nemotron streaming: when `config.json` declares `eouTokenId` /
+  `eobTokenId`, the decoder treats `<EOU>` as end-of-turn (surfaced through
+  `end_of_utterance()`, not written into the transcript) and `<EOB>` as a soft
+  boundary. A config without those ids is plain Nemotron and is byte-identical to
+  before.
+- Encoder INT8, decoder + joint FP32; 320 ms streaming chunks.
+- Model files: [soniqo/Parakeet-EOU-120M-ONNX-INT8](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) — `parakeet-eou-{encoder,decoder,joint}.onnx`, `vocab.json`, `config.json`
+
+## On-device benchmarks
+
+Measured on a Samsung Galaxy S23 (SM-S918B, arm64), CPU only, INT8 where noted.
+RTF is audio-seconds ÷ wall-seconds (higher = faster than real time); RSS is peak
+resident set. STT rows use a 20 s clip; TTS reports time-to-first-audio (TTFA).
+
+| Model | Task | Backend | Peak RSS | Speed |
+|---|---|---|---|---|
+| Parakeet-EOU-120M | streaming STT + EOU | ONNX INT8 | **~231 MB** | ~5× RTF |
+| Omnilingual CTC-300M | multilingual STT | LiteRT | ~831 MB | 6.8× RTF |
+| Nemotron streaming 0.6B | streaming STT | LiteRT | ~1.30 GB | 1.5× RTF |
+| Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 12.2× RTF |
+| SupertonicTTS-3 (99M) | TTS (preset voice) | LiteRT | ~832 MB | TTFA ~1.1 s (3-step) |
+
+- Disabling the ONNX CPU memory arena (now the default) cut Parakeet-TDT peak RSS
+  from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
+- Parakeet-EOU is the lightest STT here while staying multilingual + streaming —
+  its 120M size vs the 600M of the 0.6B models is the difference.
+
 ## OnnxPersonaPlex
 
 > **Status: shipped on HuggingFace.** All four ONNX graphs exported, parity-verified, quantized through multiple recipes. Four production bundle variants live at [**soniqo/PersonaPlex-7B-ONNX**](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX): `fp16`, `mixed`, `int8-nb-dep_gint8` ⭐ (recommended ship default), and `int4-nb-dep_gint8`. All run end-to-end with voice prompt + system prompt + silence spacer + embedding prefix prefill, producing semantically appropriate English responses to real user audio.
