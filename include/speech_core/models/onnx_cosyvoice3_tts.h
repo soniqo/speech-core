@@ -57,6 +57,11 @@ public:
     int tokens_generated() const { return tokens_generated_; }
     bool stopped_on_stop_token() const { return stopped_on_stop_token_; }
 
+    /// Style instruction (upstream `instruct2` layout): sent to the LLM as
+    /// "instruction<|endofprompt|>" in place of the conditioning prompt text,
+    /// with the LLM prompt speech tokens withheld. The flow conditioning is
+    /// unchanged, so the reference voice still anchors timbre. Empty
+    /// (default) keeps the zero-shot transcript-led layout.
     void set_instruction(std::string instruction) { instruction_ = std::move(instruction); }
 
     int64_t prefill_ms() const { return prefill_ms_; }

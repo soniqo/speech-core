@@ -333,6 +333,7 @@ struct OnnxCosyVoice3Tts::Impl {
         hift = engine.load(bundle_dir + "/hift.onnx", hw_accel);
         hift_128 = load_optional(engine, bundle_dir + "/hift_128.onnx", hw_accel);
         hift_256 = load_optional(engine, bundle_dir + "/hift_256.onnx", hw_accel);
+        load_flow_noise(bundle_dir + "/flow_noise.bin");
     }
 
     ~Impl() {
@@ -360,6 +361,10 @@ struct OnnxCosyVoice3Tts::Impl {
     Conditioning conditioning;
     bool has_conditioning = false;
     std::atomic<bool> cancelled{false};
+    // Upstream's fixed torch-seed-0 rand_noise ([80, N] row-major), loaded
+    // from the bundle's flow_noise.bin when present.
+    std::vector<float> flow_noise;
+    int flow_noise_frames = 0;
 
     static constexpr int kTextSlots = 192;
     static constexpr int kPromptSpeechSlots = 320;
@@ -380,6 +385,20 @@ struct OnnxCosyVoice3Tts::Impl {
         std::ifstream f(path);
         if (!f.good()) return nullptr;
         return engine.load(path, hw_accel);
+    }
+
+    void load_flow_noise(const std::string& path) {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f.good()) return;
+        const std::streamsize bytes = f.tellg();
+        if (bytes <= 0 || bytes % (80 * sizeof(float)) != 0) return;
+        f.seekg(0);
+        flow_noise.resize(static_cast<size_t>(bytes) / sizeof(float));
+        if (!f.read(reinterpret_cast<char*>(flow_noise.data()), bytes)) {
+            flow_noise.clear();
+            return;
+        }
+        flow_noise_frames = static_cast<int>(flow_noise.size() / 80);
     }
 
     OrtValue* make_i64(const int64_t* data, size_t n, const int64_t* shape, size_t rank) {
@@ -480,6 +499,7 @@ struct OnnxCosyVoice3Tts::Impl {
     }
 
     std::vector<int64_t> run_llm(const std::vector<int64_t>& target_ids,
+                                 const std::string& instruction,
                                  int max_tokens,
                                  uint32_t seed,
                                  int* prefill_ms,
@@ -489,17 +509,32 @@ struct OnnxCosyVoice3Tts::Impl {
             throw std::runtime_error("CosyVoice3 conditioning is required");
         }
         if (stopped_on_stop_token) *stopped_on_stop_token = false;
-        std::vector<int64_t> text_tokens_all = conditioning.prompt_text_ids;
+        // Zero-shot: prompt_text_ids ("You are a helpful
+        // assistant.<|endofprompt|>" + reference transcript) leads the text.
+        // Instruct (upstream `instruct2`): the instruction replaces that
+        // prefix as "instruction<|endofprompt|>" and the LLM prompt speech
+        // tokens are withheld — the flow conditioning still anchors timbre.
+        // Concatenating the instruction into the target text instead makes
+        // the model read the instruction aloud.
+        std::vector<int64_t> text_tokens_all;
+        size_t llm_prompt_count = conditioning.llm_prompt_speech_tokens.size();
+        if (!instruction.empty()) {
+            text_tokens_all = encode_text(instruction + "<|endofprompt|>");
+            llm_prompt_count = 0;
+        } else {
+            text_tokens_all = conditioning.prompt_text_ids;
+        }
         text_tokens_all.insert(text_tokens_all.end(), target_ids.begin(), target_ids.end());
 
         std::vector<int64_t> text_ids(kTextSlots, 0);
         std::vector<int64_t> prompt_ids(kPromptSpeechSlots, 0);
         const int text_len = std::min<int>(kTextSlots, text_tokens_all.size());
-        const int prompt_len = std::min<int>(kPromptSpeechSlots,
-            conditioning.llm_prompt_speech_tokens.size());
+        const int prompt_len = std::min<int>(kPromptSpeechSlots, llm_prompt_count);
         std::copy_n(text_tokens_all.begin(), text_len, text_ids.begin());
-        std::copy_n(conditioning.llm_prompt_speech_tokens.begin(), prompt_len,
-                    prompt_ids.begin());
+        if (prompt_len > 0) {
+            std::copy_n(conditioning.llm_prompt_speech_tokens.begin(), prompt_len,
+                        prompt_ids.begin());
+        }
         int64_t text_len_v[1] = {text_len};
         int64_t prompt_len_v[1] = {prompt_len};
         const int target_text_len = std::max<int>(1, target_ids.size());
@@ -737,36 +772,55 @@ struct OnnxCosyVoice3Tts::Impl {
         }
         std::copy_n(mask_full.data(), total_frames, mask.data());
 
-        std::mt19937 rng(1986);
-        std::normal_distribution<float> normal(0.0f, 1.0f);
+        // Initial ODE noise. Upstream never samples fresh noise — it slices a
+        // fixed torch-seed-0 buffer (rand_noise = randn([1, 80, 50*300])), an
+        // implicitly validated draw for the Euler solver. Use the bundle's
+        // flow_noise.bin when present; the fixed-seed local draw keeps
+        // renders deterministic without it.
         std::vector<float> x(static_cast<size_t>(80) * total_frames);
-        for (float& v : x) v = normal(rng);
+        if (flow_noise_frames >= total_frames) {
+            for (int c = 0; c < 80; ++c) {
+                std::copy_n(
+                    flow_noise.data() + static_cast<size_t>(c) * flow_noise_frames,
+                    total_frames,
+                    x.data() + static_cast<size_t>(c) * total_frames);
+            }
+        } else {
+            std::mt19937 rng(1986);
+            std::normal_distribution<float> normal(0.0f, 1.0f);
+            for (float& v : x) v = normal(rng);
+        }
 
         auto cosine_t = [flow_steps](int i) {
             constexpr float kPi = 3.14159265358979323846f;
             const float u = static_cast<float>(i) / static_cast<float>(flow_steps);
             return 1.0f - std::cos(u * kPi / 2.0f);
         };
+        // Classifier-free guidance batch. The conditional half carries
+        // mu/spks/cond; the UNCONDITIONAL half must run with all three zeroed
+        // (upstream solve_euler: mu_in[1] = 0, spks_in[1] = 0, cond_in[1] = 0)
+        // — only x, mask and t are duplicated. With mu in both halves the
+        // guidance term cancels and CFG stops sharpening the content.
+        // Everything except x is step-invariant, so build it once.
+        std::vector<float> mu2(static_cast<size_t>(2) * 80 * total_frames, 0.0f);
+        std::copy(mu.begin(), mu.end(), mu2.begin());
+        std::vector<float> cond2(mu2.size(), 0.0f);
+        std::copy(cond.begin(), cond.end(), cond2.begin());
+        std::vector<float> mask2(static_cast<size_t>(2) * total_frames);
+        std::copy(mask.begin(), mask.end(), mask2.begin());
+        std::copy(mask.begin(), mask.end(), mask2.begin() + mask.size());
+        std::vector<float> spks2(160, 0.0f);
+        std::copy(spks.begin(), spks.end(), spks2.begin());
+        std::vector<float> x2(mu2.size());
+
         const int64_t s_dyn[3] = {2, 80, total_frames};
         const int64_t s_mask[3] = {2, 1, total_frames};
         const int64_t s_t[1] = {2};
         const int64_t s_spks[2] = {2, 80};
         auto flow_estimator_t0 = Clock::now();
         for (int i = 0; i < flow_steps; ++i) {
-            std::vector<float> x2(static_cast<size_t>(2) * 80 * total_frames);
-            std::vector<float> mu2(x2.size());
-            std::vector<float> cond2(x2.size(), 0.0f);
             std::copy(x.begin(), x.end(), x2.begin());
             std::copy(x.begin(), x.end(), x2.begin() + x.size());
-            std::copy(mu.begin(), mu.end(), mu2.begin());
-            std::copy(mu.begin(), mu.end(), mu2.begin() + mu.size());
-            std::copy(cond.begin(), cond.end(), cond2.begin());
-            std::vector<float> mask2(static_cast<size_t>(2) * total_frames);
-            std::copy(mask.begin(), mask.end(), mask2.begin());
-            std::copy(mask.begin(), mask.end(), mask2.begin() + mask.size());
-            std::vector<float> spks2(160);
-            std::copy(spks.begin(), spks.end(), spks2.begin());
-            std::copy(spks.begin(), spks.end(), spks2.begin() + 80);
             float t[2] = {cosine_t(i), cosine_t(i)};
 
             OrtValue* est_in[6] = {
@@ -879,12 +933,12 @@ void OnnxCosyVoice3Tts::synthesize(const std::string& text,
     flow_estimator_ms_ = -1;
     hift_ms_ = -1;
 
-    std::string prompt = instruction_.empty() ? text : instruction_ + " " + text;
-    std::vector<int64_t> target = impl_->encode_text(prompt);
+    std::vector<int64_t> target = impl_->encode_text(text);
     int prefill_ms = 0;
     int ar_ms = 0;
     bool stopped_on_stop_token = false;
-    auto speech_tokens = impl_->run_llm(target, max_steps_, seed_used_,
+    auto speech_tokens = impl_->run_llm(target, instruction_, max_steps_,
+                                        seed_used_,
                                         &prefill_ms, &ar_ms,
                                         &stopped_on_stop_token);
     tokens_generated_ = static_cast<int>(speech_tokens.size());
