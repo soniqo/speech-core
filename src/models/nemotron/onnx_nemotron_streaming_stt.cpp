@@ -213,6 +213,52 @@ OnnxNemotronStreamingStt::OnnxNemotronStreamingStt(
                     if (v > 0 && v <= enc_t_out_) output_frames_ = v;
                 }
             }
+            // Parakeet-EOU: pick up the end-of-utterance / end-of-boundary
+            // token ids if the model config declares them. Absent (plain
+            // Nemotron) leaves them at -1 and the decode path is unchanged.
+            auto scan_int = [&](const char* k, int& dst) {
+                auto p = text.find(k);
+                if (p == std::string::npos) return;
+                p = text.find(':', p);
+                if (p == std::string::npos) return;
+                ++p;
+                while (p < text.size() && (text[p] == ' ' || text[p] == '\t'
+                       || text[p] == '\n' || text[p] == '\r')) ++p;
+                bool neg = (p < text.size() && text[p] == '-');
+                if (neg) ++p;
+                if (p >= text.size() || text[p] < '0' || text[p] > '9') return;
+                int v = 0;
+                while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+                    v = v * 10 + (text[p] - '0'); ++p;
+                }
+                dst = neg ? -v : v;
+            };
+            scan_int("\"eouTokenId\"", cfg_.eou_token_id);
+            scan_int("\"eobTokenId\"", cfg_.eob_token_id);
+            // An EOU model's config.json carries the full dim set (it differs
+            // from Nemotron 0.6B: 17 layers / 512 hidden / 1 decoder layer),
+            // so self-configure from it — a caller only points at the model
+            // directory. Guarded on eou_token_id so plain Nemotron is untouched.
+            if (cfg_.eou_token_id >= 0) {
+                scan_int("\"numMelBins\"", cfg_.mel_bins);
+                scan_int("\"encoderHidden\"", cfg_.encoder_hidden);
+                scan_int("\"encoderLayers\"", cfg_.encoder_layers);
+                scan_int("\"decoderHidden\"", cfg_.decoder_hidden);
+                scan_int("\"decoderLayers\"", cfg_.decoder_layers);
+                scan_int("\"attentionContext\"", cfg_.attn_left_context);
+                scan_int("\"convCacheSize\"", cfg_.conv_cache_size);
+                scan_int("\"melFrames\"", cfg_.actual_mel_frames);
+                scan_int("\"preCacheSize\"", cfg_.pre_cache_size);
+                scan_int("\"subsamplingFactor\"", cfg_.subsampling_factor);
+                auto scan_float = [&](const char* k, float& dst) {
+                    auto p = text.find(k);
+                    if (p == std::string::npos) return;
+                    p = text.find(':', p);
+                    if (p != std::string::npos)
+                        dst = std::strtof(text.c_str() + p + 1, nullptr);
+                };
+                scan_float("\"preEmphasis\"", cfg_.preemph);
+            }
         }
     }
 
@@ -276,6 +322,8 @@ void OnnxNemotronStreamingStt::reset_stream_state() {
     dec_c_.assign(static_cast<size_t>(cfg_.decoder_layers) * cfg_.decoder_hidden, 0.0f);
     dec_hidden_.assign(static_cast<size_t>(cfg_.decoder_hidden), 0.0f);
     accumulated_text_.clear();
+    eou_detected_ = false;
+    preemph_prev_ = 0.0f;
     // Prime the decoder LSTM with the blank token so the first joint() call
     // sees a meaningful hidden state (matches the LiteRT impl).
     run_decoder_step(cfg_.blank_id);
@@ -331,7 +379,23 @@ std::string OnnxNemotronStreamingStt::run_window() {
     if (static_cast<int>(pending_.size()) < win) return {};
 
     std::vector<float> pcm(pending_.begin(), pending_.begin() + win);
-    pending_.erase(pending_.begin(), pending_.begin() + win);
+    const int shift = shift_samples();
+    // Advance by the shift, not the whole window: for EOU the window overlaps
+    // the next by (win - shift), matching the reference streaming session.
+    pending_.erase(pending_.begin(), pending_.begin() + shift);
+
+    // Pre-emphasis y[n] = x[n] - a*x[n-1] (EOU frontend). Carry the raw sample
+    // just before the next window start so the boundary stays continuous across
+    // the overlap. No-op when a == 0.
+    if (cfg_.preemph > 0.0f) {
+        float prev = preemph_prev_;
+        preemph_prev_ = pcm[shift - 1];
+        for (size_t i = 0; i < pcm.size(); ++i) {
+            float cur = pcm[i];
+            pcm[i] = cur - cfg_.preemph * prev;
+            prev = cur;
+        }
+    }
 
     constexpr float kLogFloor = 1.0f / static_cast<float>(1 << 24);  // 2^-24
     auto mel = audio::mel_spectrogram(
@@ -493,9 +557,21 @@ std::string OnnxNemotronStreamingStt::run_window() {
             }
             if (best == cfg_.blank_id) break;  // advance to the next encoder frame
 
+            // Parakeet-EOU control tokens (no-op when the ids are -1).
+            if (best == cfg_.eou_token_id) {
+                eou_detected_ = true;      // end of turn — see end_of_utterance()
+                run_decoder_step(best);
+                break;                     // stop expanding this frame
+            }
+            if (best == cfg_.eob_token_id) {
+                run_decoder_step(best);    // soft boundary: advance predictor, no text
+                continue;
+            }
+
             emitted += token_to_text(best);
             run_decoder_step(best);  // advance the predictor for the next expansion
         }
+        if (eou_detected_) break;  // stop after end-of-utterance
     }
     return emitted;
 }
