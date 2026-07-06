@@ -961,6 +961,10 @@ void OnnxCosyVoice3Tts::synthesize(const std::string& text,
     on_chunk(wav.data(), wav.size(), true);
 }
 
+std::vector<int64_t> OnnxCosyVoice3Tts::encode_prompt_text(const std::string& prompt_text) const {
+    return impl_->encode_text(prompt_text);
+}
+
 std::string OnnxCosyVoice3Tts::helper_prompt_prefix() {
     return "You are a helpful assistant.<|endofprompt|>";
 }

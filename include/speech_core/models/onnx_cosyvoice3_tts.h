@@ -74,6 +74,11 @@ public:
     static std::string helper_prompt_prefix();
     static std::string prompt_text_from_transcript(const std::string& transcript);
 
+    /// Tokenize text with the bundle's Qwen BPE tokenizer. Conditioning
+    /// producers use this to build `prompt_text_ids` consistent with the
+    /// runtime (there is no other way to reach the bundled tokenizer).
+    std::vector<int64_t> encode_prompt_text(const std::string& prompt_text) const;
+
     static std::vector<uint8_t> encode_conditioning_blob(const Conditioning& c);
     static Conditioning decode_conditioning_blob(const uint8_t* data,
                                                  size_t size);
