@@ -57,6 +57,11 @@ public:
     int tokens_generated() const { return tokens_generated_; }
     bool stopped_on_stop_token() const { return stopped_on_stop_token_; }
 
+    /// Style instruction (upstream `instruct2` layout): sent to the LLM as
+    /// "instruction<|endofprompt|>" in place of the conditioning prompt text,
+    /// with the LLM prompt speech tokens withheld. The flow conditioning is
+    /// unchanged, so the reference voice still anchors timbre. Empty
+    /// (default) keeps the zero-shot transcript-led layout.
     void set_instruction(std::string instruction) { instruction_ = std::move(instruction); }
 
     int64_t prefill_ms() const { return prefill_ms_; }
@@ -68,6 +73,11 @@ public:
 
     static std::string helper_prompt_prefix();
     static std::string prompt_text_from_transcript(const std::string& transcript);
+
+    /// Tokenize text with the bundle's Qwen BPE tokenizer. Conditioning
+    /// producers use this to build `prompt_text_ids` consistent with the
+    /// runtime (there is no other way to reach the bundled tokenizer).
+    std::vector<int64_t> encode_prompt_text(const std::string& prompt_text) const;
 
     static std::vector<uint8_t> encode_conditioning_blob(const Conditioning& c);
     static Conditioning decode_conditioning_blob(const uint8_t* data,

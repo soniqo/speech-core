@@ -178,6 +178,16 @@ if(SPEECH_CORE_WITH_ONNX)
             target_compile_definitions(speech_voxcpm2_clone_onnx PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
 
+        # CosyVoice3 ONNX synthesis CLI: renders text with a prepared
+        # conditioning blob through the full prefill/step/flow/hift pipeline.
+        # The in-repo runner for validating OnnxCosyVoice3Tts end-to-end.
+        # Desktop only.
+        add_executable(speech_cosyvoice3_synth_onnx examples/onnx/cosyvoice3_synth.cpp)
+        target_link_libraries(speech_cosyvoice3_synth_onnx PRIVATE speech_core_models)
+        if(MSVC)
+            target_compile_definitions(speech_cosyvoice3_synth_onnx PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
         # Sidon speech-restoration CLI (ONNX): denoise + dereverb a clip to
         # 48 kHz. The in-repo runner for validating the predictor + DAC vocoder
         # pipeline (and the C++ SeamlessM4T front-end) end-to-end. Desktop only.
