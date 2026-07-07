@@ -254,6 +254,10 @@ void test_litert_parakeet_stt(const std::string& dir) {
     speech_core::LiteRTParakeetStt stt(enc, dec, vocab, /*hw_accel=*/false);
     REQUIRE(stt.input_sample_rate() == 16000);
     REQUIRE(stt.supports_streaming());
+    REQUIRE(stt.set_language("en-US"));
+    REQUIRE(stt.set_allowed_languages({"fr-FR", "en-US"}));
+    REQUIRE(!stt.set_allowed_languages({"zz-ZZ"}));
+    REQUIRE(stt.set_language("auto"));
 
     std::vector<float> silence(16000 * 1, 0.0f);
     auto result = stt.transcribe(silence.data(), silence.size(), 16000);

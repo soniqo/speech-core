@@ -176,12 +176,23 @@ speech_core::ParakeetStt stt(
 
 auto result = stt.transcribe(audio, length, 16000);
 // result.text, result.language, result.confidence
+
+// Optional language-token guidance for multilingual TDT vocabularies.
+stt.set_language("en-US");                         // one fixed language
+stt.set_allowed_languages({"en-US", "fr", "de"});  // or a shortlist
+stt.clear_language_guidance();                      // return to unconstrained auto-detect
 ```
 
 - Parakeet TDT v3 (0.6B params), NeMo-exported as encoder + decoder_joint
 - 128-bin mel spectrogram preprocessing
 - Greedy TDT decoding with per-frame duration prediction
 - Language detection via `<|xx|>` BPE tokens
+- `set_language()` / `set_allowed_languages()` provide language-token
+  guidance for multilingual exports. Inputs may be ISO codes or BCP-47 tags
+  (`"en"`, `"en-US"`). Guidance does not force a synthetic prompt at the start
+  of decoding; when the decoder emits a language token, the wrapper chooses the
+  highest-scoring allowed language token and reports it through
+  `result.language`.
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
 - Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64.
 
@@ -266,6 +277,7 @@ auto result = stt.transcribe(audio, length, 16000);
 ```
 
 - Same public contract and TDT decode loop as `ParakeetStt`
+- Supports the same language-token guidance API: `set_language("en-US")`, `set_allowed_languages({...})`, and `clear_language_guidance()`.
 - Encoder INT8 weight-quantized (~595 MB on disk vs ~840 MB ONNX FP32), decoder-joint stays FP32 to avoid LSTM drift
 - Decoder-joint exposes `(encoder_out, target, h, c)` as four discrete tensors (ORT bundles `target_length` and uses suffix-`_1`/`_2` for h/c)
 - Model files: [soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) — `parakeet-encoder.tflite`, `parakeet-decoder-joint.tflite`, `vocab.json`

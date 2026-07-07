@@ -100,6 +100,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 speech_core::LiteRTParakeetStt stt(
     "parakeet-encoder.tflite", "parakeet-decoder-joint.tflite", "vocab.json");
 
+stt.set_allowed_languages({"en-US", "fr"});         // optional language-token guidance
 auto r = stt.transcribe(audio, n_samples, 16000);   // r.text / r.language / r.confidence
 ```
 
