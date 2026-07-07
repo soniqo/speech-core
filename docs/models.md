@@ -24,6 +24,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
 | `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
 | `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | full (text-only) |
+| `LiteRTIndicMioTts` | `TTSInterface` | `speech_core/models/litert_indic_mio_tts.h` | full |
 | `LiteRTWeSpeakerEmbedding` | `EmbeddingInterface` | `speech_core/models/litert_wespeaker_embedding.h` | full |
 | `LiteRTPyannoteSegmentation` | `SegmentationInterface` | `speech_core/models/litert_pyannote_segmentation.h` | full |
 | `LiteRTOmnilingualStt` | `STTInterface` | `speech_core/models/litert_omnilingual_stt.h` | full |
@@ -327,6 +328,59 @@ tts.synthesize_with_options("Hello world", "en", options,
 - **Constructor** loads all four graphs via `LiteRTEngine` and verifies the tokenizer file exists; `synthesize()` runs the full pipeline (text-prefill → token-step ×N → audio-decoder) with the hand-rolled BPE tokenizer in [`voxcpm2_tokenizer.h`](../include/speech_core/models/voxcpm2_tokenizer.h).
 - **Precision variants**: the repo *root* holds the `selective` bundle — fp16 weights except the **fp32 LocDiT** diffusion estimator, which needs full precision for clean cloned-voice sibilants (~8.7 GB; the ARM default). On **x86_64** the `fp32-p16/` subdir holds an **fp32 token-step** bundle (fp16 prefill, fp32 token-step + audio, ~13 GB): the fp16 token-step *over-generates* on x86 — its stop-margin (`stop_logits[1] > stop_logits[0]`) rounds the wrong way under x86 XNNPACK so the stop token never fires and the AR loop runs to the cap; the fp32 token-step computes that margin precisely and stops cleanly. `sc_voxcpm2_create_from_pretrained` picks the variant by architecture automatically. Download with `scripts/download_voxcpm2_litert.sh` (arch-aware); kept out of `download_models_litert.sh` because the bundle blows the standard nightly's `actions/cache` budget.
 - Model files: [soniqo/VoxCPM2-LiteRT](https://huggingface.co/soniqo/VoxCPM2-LiteRT) — root (ARM / `selective`) and the `fp32-p16/` subdir (x86), each with `voxcpm2-{text-prefill,token-step,audio-encoder,audio-decoder}.tflite`, `tokenizer.json`, `config.json`
+
+## LiteRTIndicMioTts
+
+```cpp
+#include <speech_core/models/litert_indic_mio_tts.h>
+
+speech_core::LiteRTIndicMioTts tts(
+    "/models/indicmio-text-prefill.tflite",
+    "/models/indicmio-token-step.tflite",
+    "/models/indicmio-audio-decoder.tflite",
+    "/models/indicmio-ref-encoder.tflite",
+    "/models/tokenizer.json");
+
+tts.set_reference(reference_pcm.data(), reference_pcm.size(), 24000);  // cloning (optional)
+tts.set_seed(1234);                                                    // reproducible take
+tts.synthesize("नमस्ते, आज मौसम बहुत अच्छा है। <happy>", "", 
+    [](const float* samples, size_t length, bool is_final) {
+        // 24 kHz Float32 PCM, one final buffered chunk per utterance.
+    });
+```
+
+- Indic-Mio: Hindi/Indic emotion TTS — a Qwen3-0.6B speech-token LM plus the
+  MioCodec wave decoder. Emotion is controlled **inline in the text** with
+  end-of-utterance suffix tags (`<happy> <sad> <angry> <disgust> <fear>
+  <surprise>`); there is no separate style API, and the language is implicit
+  in the text (the `language` argument is ignored).
+- Voice cloning: `set_reference()` resamples the clip to 24 kHz, center-crops
+  (preferred — zero padding dilutes the pooled embedding) or pads to the
+  encoder's 10 s window, and caches the 128-dim global speaker embedding on
+  the handle. Without a reference the model's default voice is used.
+- Sampling defaults follow the upstream reference (temperature 0.9, top-k 50,
+  top-p 0.9); EOS is suppressed until the first speech token so a take can
+  never be empty. `set_seed(0)` draws a fresh seed per call (see
+  `seed_used()`), a fixed seed reproduces a take — the host's regenerate
+  contract.
+- Ships as **four** LiteRT graphs plus the Qwen tokenizer:
+  - `text-prefill`: 64-token chat prompt (right-padded) + last index → logits + K/V `[28,1,8,512,128]`
+  - `token-step`: one AR step with an explicit functional K/V cache (ping-ponged host-side, no per-step copies)
+  - `audio-decoder`: 384-token bucket + `valid_tokens` masking (pad codes cannot contaminate the real region) → STFT real/imag frames; the **host ISTFT** (`indic_mio_istft.h`, kissfft) reconstructs 24 kHz PCM
+  - `ref-encoder`: 10 s @ 24 kHz reference → 128-dim global embedding
+- The tokenizer is byte-level BPE (Qwen3 family) — different from every other
+  tokenizer in this tree; `indic_mio_tokenizer.h` reimplements the Split-regex
+  pretokenizer with utf8proc and is pinned by golden HF fixtures
+  (`tests/data/indic_mio_tokenizer_fixtures.json`), as is the ISTFT
+  (`tests/data/indic_mio_istft_*`). e2e smoke: `test_litert_indic_mio`
+  (gated on `SPEECH_CORE_INDIC_MIO_BUNDLE`).
+- Memory policy mirrors VoxCPM2: token-step/decoder/ref-encoder stay resident;
+  the 1.1 GB prefill graph loads for its single call per synthesis and is
+  released after. Bundle ≈ 2.6 GB total.
+- Model files: [soniqo/Indic-Mio-LiteRT](https://huggingface.co/soniqo/Indic-Mio-LiteRT)
+  — `indicmio-{text-prefill,token-step,audio-decoder,ref-encoder}.tflite`,
+  `tokenizer.json`, `config.json` (manifest: token offsets, stop ids, prompt
+  template, bucket sizes); the model card documents the full host contract.
 
 ## LiteRTWeSpeakerEmbedding
 

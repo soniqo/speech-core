@@ -258,6 +258,8 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/litert_nemotron_multilingual_stt.cpp
         src/models/litert/indic_mio_tokenizer.cpp
         src/models/litert/indic_mio_istft.cpp
+        src/models/litert/litert_indic_mio_tts.cpp
+        src/models/litert/indic_mio_c.cpp
         # kissfft (BSD-3): arbitrary-N real FFT for the Indic-Mio host ISTFT
         # (n_fft 1920 = 2^7*3*5; the in-tree Ooura engine is radix-2 only).
         third_party/kissfft/kiss_fft.c
@@ -502,6 +504,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_indic_mio_istft"
            OR TEST_NAME STREQUAL "test_indic_mio_tokenizer"
+           OR TEST_NAME STREQUAL "test_litert_indic_mio"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
@@ -594,6 +597,15 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_indic_mio_tokenizer PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_indic_mio_tokenizer COMMAND test_indic_mio_tokenizer)
+    endif()
+
+    # Indic-Mio e2e smoke (skips when SPEECH_CORE_INDIC_MIO_BUNDLE unset).
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_litert_indic_mio.cpp)
+        add_executable(test_litert_indic_mio tests/test_litert_indic_mio.cpp)
+        target_link_libraries(test_litert_indic_mio PRIVATE speech_core_models_litert)
+        target_compile_definitions(test_litert_indic_mio PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME test_litert_indic_mio COMMAND test_litert_indic_mio)
     endif()
 
     # Chatterbox TTS smoke test (skips when SPEECH_CORE_CHATTERBOX_BUNDLE unset).
