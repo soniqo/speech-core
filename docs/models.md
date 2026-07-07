@@ -548,7 +548,8 @@ auto final = stt.end_stream();
 
 Measured on a Samsung Galaxy S23 (SM-S918B, arm64), CPU only, INT8 where noted.
 RTF is wall-seconds ÷ audio-seconds (lower = faster than real time; <1.0 = real time); RSS is peak
-resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (TTFA).
+resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (TTFA);
+the LLM row reports tool-call decode throughput in tokens/s.
 
 | Model | Task | Backend | Peak RSS | Speed |
 |---|---|---|---|---|
@@ -558,6 +559,7 @@ resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (
 | Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 0.082 RTF |
 | SupertonicTTS-3 (99M) | TTS (preset voice) | LiteRT | ~832 MB | 0.34 RTF · ~1.1 s TTFA |
 | Kokoro-82M | TTS (preset voice) | ONNX FP32 | ~640 MB | 0.53 RTF |
+| FunctionGemma-270M | LLM (tool calls) | LiteRT-LM | ~611 MB | ~118 tok/s |
 
 - Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
   synthesizes); Kokoro is single-pass and one-shot, so its first audio equals full
@@ -566,6 +568,10 @@ resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (
   from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
 - Parakeet-EOU is the lightest STT here while staying multilingual + streaming —
   its 120M size vs the 600M of the 0.6B models is the difference.
+- FunctionGemma-270M runs the constrained function-call grammar via `liblitert-lm`
+  (`LiteRTFunctionGemmaLLM`, CPU); ~118 tok/s is end-to-end for a tool call
+  (prefill + decode). The Apple CoreML build reaches 128 tok/s on iPhone 16 Pro
+  (see [speech-swift](https://github.com/soniqo/speech-swift/blob/main/docs/benchmarks/ios-coreml.md)).
 
 ## OnnxPersonaPlex
 
