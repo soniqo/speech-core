@@ -56,6 +56,15 @@ public:
     TranscriptionResult end_stream() override;
     void cancel_stream() override;
 
+    /// Restrict Parakeet's language-token choice to one language.
+    /// Accepts ISO codes or BCP-47 tags ("en", "en-US"). "auto" clears it.
+    bool set_language(const std::string& language);
+
+    /// Restrict Parakeet's language-token choice to this shortlist.
+    /// Unknown languages are ignored; returns false if none resolve.
+    bool set_allowed_languages(const std::vector<std::string>& languages);
+    void clear_language_guidance();
+
 private:
     /// Internal decode result — converted to TranscriptionResult / PartialResult at the boundary.
     struct DecodeResult {
@@ -85,6 +94,7 @@ private:
 
     // Language tokens: token ID → ISO 639-1 code (e.g. 64 → "en", 71 → "fr")
     std::unordered_map<int, std::string> lang_tokens_;
+    std::vector<int> guided_lang_tokens_;
 
     // Streaming state
     std::vector<float> stream_buffer_;

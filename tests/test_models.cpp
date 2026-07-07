@@ -310,6 +310,10 @@ void test_parakeet_stt(const std::string& dir) {
     speech_core::ParakeetStt stt(enc, dec, vocab, /*hw_accel=*/false);
     REQUIRE(stt.input_sample_rate() == 16000);
     REQUIRE(stt.supports_streaming());
+    REQUIRE(stt.set_language("en-US"));
+    REQUIRE(stt.set_allowed_languages({"fr-FR", "en-US"}));
+    REQUIRE(!stt.set_allowed_languages({"zz-ZZ"}));
+    REQUIRE(stt.set_language("auto"));
 
     // Pure silence → empty or near-empty transcription, no crash
     std::vector<float> silence(16000 * 1, 0.0f);

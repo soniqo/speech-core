@@ -41,6 +41,7 @@ add_library(speech_core
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
+    src/models/parakeet_language_guidance.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
