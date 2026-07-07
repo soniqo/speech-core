@@ -20,7 +20,7 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 speech-core is a small orchestration core (state machine, turn detection, interruption handling, audio utilities — zero ML deps) plus a set of abstract interfaces. Model inference is **opt-in** through two interchangeable backends you can enable independently:
 
 - **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, **Parakeet-EOU streaming STT (120M, multilingual, end-of-utterance — ~232 MB peak RSS on a phone)**, Whisper v3/turbo STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, VoxCPM2 TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
-- **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
+- **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS, Indic-Mio TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
 
 Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
 
@@ -38,6 +38,7 @@ Consumers can enable either, both, or neither — or bring their own implementat
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) | Text-to-speech (48 kHz, voice cloning) | ✓ | ✓ |
+| [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) | Text-to-speech (24 kHz, Hindi/Indic voice cloning + emotion tags) | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) | Speech restoration — denoise + dereverb (16 kHz → 48 kHz) | ✓ | — |
@@ -265,7 +266,7 @@ cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cm
 
 LiteRT headers are vendored in `third_party/litert/` (no setup). `LITERT_DIR` points at the directory holding `libLiteRt.{so,dylib,dll}` (Windows also needs `LiteRt.lib`). Add `-DSPEECH_CORE_BUILD_EXAMPLES=ON` for the Linux CLI demos (`speech_transcribe`, `speech_synthesize`, …) — see [`examples/linux`](examples/linux). A voice-cloning CLI (`speech_voxcpm2_clone`) is built automatically whenever `SPEECH_CORE_WITH_LITERT=ON` — see [`examples/litert`](examples/litert).
 
-**On-device model download (optional).** Add `-DSPEECH_CORE_WITH_HF_DOWNLOAD=ON` to fetch model bundles from Hugging Face on first use instead of provisioning them by hand. It links libcurl (`find_package(CURL)` — system libcurl on Linux/macOS, vcpkg on Windows) and adds `sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", …)` to the [VoxCPM2 C ABI](include/speech_core/voxcpm2_c.h): a resumable, retrying download (HTTP Range, atomic rename) that tolerates network interruptions and caches under the OS cache dir (`SPEECH_CORE_CACHE_DIR` to override; `HF_ENDPOINT` for a mirror). Off by default so embedded/offline builds carry no HTTP/TLS dependency. The `hf_fetch` debug CLI exercises it directly.
+**On-device model download (optional).** Add `-DSPEECH_CORE_WITH_HF_DOWNLOAD=ON` to fetch model bundles from Hugging Face on first use instead of provisioning them by hand. It links libcurl (`find_package(CURL)` — system libcurl on Linux/macOS, vcpkg on Windows) and adds pretrained constructors to the [VoxCPM2 C ABI](include/speech_core/voxcpm2_c.h) and [Indic-Mio C ABI](include/speech_core/indic_mio_c.h): `sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", …)` and `sc_indic_mio_create_from_pretrained("soniqo/Indic-Mio-LiteRT", …)`. Downloads are resumable and retrying (HTTP Range, atomic rename); large files use parallel ranged fetches by default (`SPEECH_CORE_DOWNLOAD_CONNECTIONS=4`, clamped 1–16; set `1` for a single stream). Bundles cache under the OS cache dir (`SPEECH_CORE_CACHE_DIR` to override; `HF_ENDPOINT` for a mirror). Off by default so embedded/offline builds carry no HTTP/TLS dependency. The `hf_fetch` debug CLI exercises the downloader directly.
 
 ### Install on Linux (prebuilt `speech` package)
 

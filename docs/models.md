@@ -141,6 +141,15 @@ cmake --build build
 
 `SPEECH_CORE_WITH_ONNX` and `SPEECH_CORE_WITH_LITERT` are independent — enable either, both, or neither. Both flags produce separate static libraries (`speech_core_models`, `speech_core_models_litert`); consumers link only what they use.
 
+`SPEECH_CORE_WITH_HF_DOWNLOAD=ON` adds first-run Hugging Face bundle downloads
+for LiteRT models exposed through the C ABI, including
+`sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", ...)` and
+`sc_indic_mio_create_from_pretrained("soniqo/Indic-Mio-LiteRT", ...)`.
+Downloads resume from `.part` files, retry on low-speed stalls, and use
+parallel HTTP ranges for large files by default. Tune with
+`SPEECH_CORE_DOWNLOAD_CONNECTIONS` (`4` default, clamped `1`–`16`; set `1` for
+single-stream), `SPEECH_CORE_CACHE_DIR`, and `HF_ENDPOINT`.
+
 ## SileroVad
 
 ```cpp
@@ -432,6 +441,10 @@ tts.synthesize("नमस्ते, आज मौसम बहुत अच्�
 - Memory policy mirrors VoxCPM2: token-step/decoder/ref-encoder stay resident;
   the 1.1 GB prefill graph loads for its single call per synthesis and is
   released after. Bundle ≈ 2.6 GB total.
+- `sc_indic_mio_create_from_pretrained("soniqo/Indic-Mio-LiteRT", ...)`
+  downloads and caches the same bundle for C ABI users; set
+  `SPEECH_CORE_DOWNLOAD_CONNECTIONS=1` only when a network or proxy breaks
+  parallel HTTP ranges.
 - Model files: [soniqo/Indic-Mio-LiteRT](https://huggingface.co/soniqo/Indic-Mio-LiteRT)
   — `indicmio-{text-prefill,token-step,audio-decoder,ref-encoder}.tflite`,
   `tokenizer.json`, `config.json` (manifest: token offsets, stop ids, prompt
@@ -909,7 +922,7 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
 `test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
 
-A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT) + the `DiarizationPipeline` + the VoxCPM2 tokenizer against `.tflite` artifacts:
+A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS, Indic-Mio TTS fixtures, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT) + the `DiarizationPipeline` + the VoxCPM2 tokenizer against `.tflite` artifacts:
 
 ```bash
 scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel

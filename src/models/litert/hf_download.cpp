@@ -7,7 +7,11 @@
 #include <string>
 
 #ifdef SPEECH_CORE_WITH_HF_DOWNLOAD
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <fstream>
+#include <memory>
 #include <thread>
 
 #include <curl/curl.h>
@@ -79,14 +83,61 @@ struct ProgressCtx {
     uint64_t total;  // full remote size, 0 if unknown
 };
 
-int xferinfo(void* p, curl_off_t /*dltotal*/, curl_off_t dlnow,
+struct SegmentProgressCtx {
+    std::atomic<uint64_t>* done;
+    uint64_t base;
+};
+
+struct SegmentRange {
+    uint64_t start;
+    uint64_t end;
+    fs::path path;
+
+    uint64_t size() const { return end - start + 1; }
+};
+
+enum class ParallelFetchResult {
+    Complete,
+    RangeUnsupported,
+    Failed,
+};
+
+int download_connections() {
+    int value = 4;
+    if (const char* env = std::getenv("SPEECH_CORE_DOWNLOAD_CONNECTIONS"); env && *env) {
+        value = std::atoi(env);
+    }
+    if (value < 1) value = 1;
+    if (value > 16) value = 16;
+    return value;
+}
+
+uint64_t parallel_threshold_bytes() {
+    return 64ull * 1024ull * 1024ull;
+}
+
+int xferinfo(void* p, curl_off_t dltotal, curl_off_t dlnow,
              curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
     auto* c = static_cast<ProgressCtx*>(p);
     if (c->fn && *c->fn) {
+        uint64_t total = c->total;
+        if (total == 0 && dltotal > 0) {
+            total = c->base + static_cast<uint64_t>(dltotal);
+        }
         (*c->fn)(c->file, c->idx, c->count, c->base + static_cast<uint64_t>(dlnow),
-                 c->total);
+                 total);
     }
     return 0;  // non-zero would abort the transfer
+}
+
+int segment_xferinfo(void* p, curl_off_t /*dltotal*/, curl_off_t dlnow,
+                     curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
+    auto* c = static_cast<SegmentProgressCtx*>(p);
+    if (c && c->done) {
+        c->done->store(c->base + static_cast<uint64_t>(dlnow),
+                       std::memory_order_relaxed);
+    }
+    return 0;
 }
 
 // HEAD the (redirected) URL and return Content-Length, or 0 if unknown.
@@ -96,7 +147,9 @@ uint64_t remote_size(const std::string& url) {
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "speech-core/hf-download");
     uint64_t size = 0;
     if (curl_easy_perform(curl) == CURLE_OK) {
@@ -148,6 +201,207 @@ bool fetch_once(const std::string& url, const fs::path& part, uint64_t resume_fr
     }
     curl_easy_cleanup(curl);
     return rc == CURLE_OK;
+}
+
+bool fetch_range_once(const std::string& url, const SegmentRange& range,
+                      uint64_t local_have, std::atomic<uint64_t>& done,
+                      std::atomic<bool>& range_unsupported) {
+    if (range_unsupported.load(std::memory_order_relaxed)) return false;
+    if (local_have >= range.size()) return true;
+
+    std::FILE* f = std::fopen(range.path.string().c_str(), local_have ? "ab" : "wb");
+    if (!f) throw std::runtime_error("cannot open " + range.path.string() + " for writing");
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::fclose(f);
+        throw std::runtime_error("curl_easy_init failed");
+    }
+
+    const uint64_t from = range.start + local_have;
+    const std::string range_header =
+        std::to_string(from) + "-" + std::to_string(range.end);
+    SegmentProgressCtx pctx{&done, local_have};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_file);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "speech-core/hf-download");
+    curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, segment_xferinfo);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &pctx);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long response = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
+    std::fclose(f);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        std::fprintf(stderr, "[speech] range download %s: %s\n",
+                     range.path.filename().string().c_str(), curl_easy_strerror(rc));
+        return false;
+    }
+    if (response != 206) {
+        if (response == 200) {
+            range_unsupported.store(true, std::memory_order_relaxed);
+        }
+        std::fprintf(stderr, "[speech] range download %s: unexpected HTTP %ld\n",
+                     range.path.filename().string().c_str(), response);
+        return false;
+    }
+    return true;
+}
+
+bool fetch_segment_with_retries(const std::string& url, const SegmentRange& range,
+                                std::atomic<uint64_t>& done,
+                                std::atomic<bool>& range_unsupported) {
+    constexpr int kMaxAttempts = 6;
+    std::error_code ec;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (range_unsupported.load(std::memory_order_relaxed)) return false;
+
+        uint64_t have = fs::exists(range.path)
+                            ? static_cast<uint64_t>(fs::file_size(range.path, ec))
+                            : 0;
+        if (have > range.size()) {
+            fs::remove(range.path, ec);
+            have = 0;
+        }
+        done.store(have, std::memory_order_relaxed);
+        if (have == range.size()) return true;
+
+        if (attempt > 0) {
+            int delay = 1 << (attempt - 1);
+            if (delay > 16) delay = 16;
+            std::fprintf(stderr, "[speech] retrying range %s (attempt %d/%d) in %ds\n",
+                         range.path.filename().string().c_str(), attempt + 1,
+                         kMaxAttempts, delay);
+            std::this_thread::sleep_for(std::chrono::seconds(delay));
+        }
+
+        if (fetch_range_once(url, range, have, done, range_unsupported)) {
+            have = fs::exists(range.path)
+                       ? static_cast<uint64_t>(fs::file_size(range.path, ec))
+                       : 0;
+            done.store(have, std::memory_order_relaxed);
+            if (have == range.size()) return true;
+        }
+    }
+    return false;
+}
+
+ParallelFetchResult fetch_parallel_ranges(const std::string& url, const fs::path& part,
+                                          uint64_t prefix_size, uint64_t total,
+                                          const std::string& file, int idx, int count,
+                                          const ProgressFn& on_progress) {
+    const uint64_t remaining = total - prefix_size;
+    int connections = download_connections();
+    if (connections <= 1 || remaining < parallel_threshold_bytes()) {
+        return ParallelFetchResult::Failed;
+    }
+    connections = static_cast<int>(
+        std::min<uint64_t>(static_cast<uint64_t>(connections), remaining));
+
+    std::vector<SegmentRange> ranges;
+    ranges.reserve(static_cast<size_t>(connections));
+    const uint64_t chunk = (remaining + static_cast<uint64_t>(connections) - 1) /
+                           static_cast<uint64_t>(connections);
+    for (int i = 0; i < connections; ++i) {
+        const uint64_t start = prefix_size + static_cast<uint64_t>(i) * chunk;
+        if (start >= total) break;
+        const uint64_t end = std::min<uint64_t>(total - 1, start + chunk - 1);
+        ranges.push_back(SegmentRange{
+            start,
+            end,
+            fs::path(part.string() + "." + std::to_string(start) + "-" +
+                     std::to_string(end) + ".seg"),
+        });
+    }
+    if (ranges.size() <= 1) return ParallelFetchResult::Failed;
+
+    std::vector<std::unique_ptr<std::atomic<uint64_t>>> progress;
+    progress.reserve(ranges.size());
+    for (const auto& range : ranges) {
+        auto done = std::make_unique<std::atomic<uint64_t>>(0);
+        std::error_code ec;
+        if (fs::exists(range.path)) {
+            uint64_t have = static_cast<uint64_t>(fs::file_size(range.path, ec));
+            if (have <= range.size()) done->store(have, std::memory_order_relaxed);
+        }
+        progress.push_back(std::move(done));
+    }
+
+    std::atomic<int> active{static_cast<int>(ranges.size())};
+    std::atomic<bool> ok{true};
+    std::atomic<bool> range_unsupported{false};
+    std::vector<std::thread> workers;
+    workers.reserve(ranges.size());
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        workers.emplace_back([&, i] {
+            try {
+                if (!fetch_segment_with_retries(url, ranges[i], *progress[i],
+                                                range_unsupported)) {
+                    ok.store(false, std::memory_order_relaxed);
+                }
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[speech] range worker %s: %s\n",
+                             ranges[i].path.filename().string().c_str(), e.what());
+                ok.store(false, std::memory_order_relaxed);
+            }
+            active.fetch_sub(1, std::memory_order_relaxed);
+        });
+    }
+
+    while (active.load(std::memory_order_relaxed) > 0) {
+        uint64_t done = prefix_size;
+        for (const auto& p : progress) done += p->load(std::memory_order_relaxed);
+        if (on_progress) on_progress(file, idx, count, done, total);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    for (auto& worker : workers) worker.join();
+
+    uint64_t done = prefix_size;
+    for (const auto& p : progress) done += p->load(std::memory_order_relaxed);
+    if (on_progress) on_progress(file, idx, count, done, total);
+
+    if (range_unsupported.load(std::memory_order_relaxed)) {
+        return ParallelFetchResult::RangeUnsupported;
+    }
+    if (!ok.load(std::memory_order_relaxed)) {
+        return ParallelFetchResult::Failed;
+    }
+
+    std::error_code ec;
+    for (const auto& range : ranges) {
+        const uint64_t have = fs::exists(range.path)
+                                  ? static_cast<uint64_t>(fs::file_size(range.path, ec))
+                                  : 0;
+        if (have != range.size()) return ParallelFetchResult::Failed;
+    }
+
+    std::ofstream out(part, std::ios::binary | std::ios::app);
+    if (!out) throw std::runtime_error("cannot open " + part.string() + " for appending");
+    for (const auto& range : ranges) {
+        std::ifstream in(range.path, std::ios::binary);
+        if (!in) throw std::runtime_error("cannot open " + range.path.string() + " for reading");
+        out << in.rdbuf();
+        in.close();
+        fs::remove(range.path, ec);
+    }
+    out.close();
+
+    const uint64_t final_size = fs::exists(part)
+                                    ? static_cast<uint64_t>(fs::file_size(part, ec))
+                                    : 0;
+    return final_size == total ? ParallelFetchResult::Complete
+                               : ParallelFetchResult::Failed;
 }
 
 }  // namespace
@@ -213,8 +467,29 @@ void download_bundle(const std::string& repo, const std::string& revision,
                 std::this_thread::sleep_for(std::chrono::seconds(delay));
             }
 
-            ProgressCtx pctx{&on_progress, file, i, file_count, resume_from, total};
-            fetch_once(url, part_path, resume_from, pctx);
+            if (total > 0 && download_connections() > 1 &&
+                (total - resume_from) >= parallel_threshold_bytes()) {
+                std::fprintf(stderr,
+                             "[speech] downloading %s with %d parallel ranges\n",
+                             file.c_str(), download_connections());
+                const ParallelFetchResult parallel = fetch_parallel_ranges(
+                    url, part_path, resume_from, total, file, i, file_count,
+                    on_progress);
+                if (parallel == ParallelFetchResult::Complete) {
+                    done = true;
+                } else if (parallel == ParallelFetchResult::RangeUnsupported) {
+                    std::fprintf(stderr,
+                                 "[speech] range download unsupported for %s; "
+                                 "falling back to single stream\n",
+                                 file.c_str());
+                    ProgressCtx pctx{&on_progress, file, i, file_count,
+                                     resume_from, total};
+                    fetch_once(url, part_path, resume_from, pctx);
+                }
+            } else {
+                ProgressCtx pctx{&on_progress, file, i, file_count, resume_from, total};
+                fetch_once(url, part_path, resume_from, pctx);
+            }
 
             const uint64_t now = fs::exists(part_path)
                                      ? static_cast<uint64_t>(fs::file_size(part_path, ec))
@@ -234,7 +509,10 @@ void download_bundle(const std::string& repo, const std::string& revision,
             throw std::runtime_error("could not finalize " + final_path.string() +
                                      ": " + ec.message());
         }
-        if (on_progress) on_progress(file, i, file_count, total, total);
+        const uint64_t final_size = total > 0
+                                      ? total
+                                      : static_cast<uint64_t>(fs::file_size(final_path, ec));
+        if (on_progress) on_progress(file, i, file_count, final_size, final_size);
     }
 }
 
