@@ -27,4 +27,16 @@ std::vector<std::string> chunk_text_for_synthesis(
     size_t hard_cap_tokens,
     size_t min_tail_tokens);
 
+/// Split one unsafe synthesis chunk into two balanced, strictly smaller
+/// pieces. Semantic boundary class (sentence, clause, then word) takes
+/// priority over balance; UTF-8 character boundaries are the last resort.
+/// Candidates inside a punctuation/closing-quote run are skipped so the run
+/// stays on the left. Returns empty when no split can keep both children
+/// within [`min_tokens`, `max_tokens`].
+std::vector<std::string> split_text_for_synthesis_retry(
+    const std::string& text,
+    const TokenCounter& count_tokens,
+    size_t min_tokens,
+    size_t max_tokens);
+
 }  // namespace speech_core

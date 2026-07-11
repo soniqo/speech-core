@@ -541,9 +541,9 @@ auto final = stt.end_stream();
 ```
 
 - Parakeet-EOU-120M — multilingual (25 European) streaming RNN-T with inline
-  end-of-utterance detection. **~231 MB peak RSS on a Galaxy S23** (arm64 CPU,
+  end-of-utterance detection. **~231 MB peak RSS on a Galaxy S23 Ultra** (arm64 CPU,
   native; ~377 MB on desktop) — 5–6× lighter than Parakeet-TDT 0.6B (~1.1–1.3 GB)
-  and comfortably real-time on a phone (RTF 0.21 on the S23).
+  and comfortably real-time on a phone (RTF 0.21 on the S23 Ultra).
 - Streaming windowing mirrors the reference session: a `melFrames * hop` window
   advanced by `outputFrames * subsamplingFactor * hop` samples (overlapping),
   committing `outputFrames` encoder frames per step. Pre-emphasis (config
@@ -558,8 +558,8 @@ auto final = stt.end_stream();
 
 ## On-device benchmarks
 
-Measured on a Samsung Galaxy S23 (SM-S918B, arm64), CPU only, INT8 where noted.
-RTF is wall-seconds ÷ audio-seconds (lower = faster than real time; <1.0 = real time); RSS is peak
+Measured on a Samsung Galaxy S23 Ultra (SM-S918B, arm64), CPU only, INT8 where noted.
+RTF is wall-seconds ÷ audio-seconds (lower is faster; <1.0 is faster than real time); RSS is peak
 resident set. STT rows use a 20 s clip; TTS reports RTF or time-to-first-audio (TTFA);
 the LLM row reports tool-call decode throughput in tokens/s.
 
@@ -570,12 +570,19 @@ the LLM row reports tool-call decode throughput in tokens/s.
 | Nemotron streaming 0.6B | streaming STT | LiteRT | ~1.30 GB | 0.67 RTF |
 | Parakeet-TDT 0.6B | STT (batch) | ONNX INT8 | ~1.15 GB | 0.082 RTF |
 | SupertonicTTS-3 (99M) | TTS (preset voice) | LiteRT | ~832 MB | 0.34 RTF · ~1.1 s TTFA |
-| Kokoro-82M | TTS (preset voice) | ONNX FP32 | ~640 MB | 0.53 RTF |
+| Kokoro-82M (full graph, published two-thread CPU default) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.81 RTF |
+| Kokoro-82M (full graph, four-thread local tuning) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.16 RTF |
+| Kokoro-82M (realtime 3.0 s short-turn graph) | TTS (preset voice) | ONNX FP32 | ~527 MiB | **0.75–0.88 RTF** |
 | FunctionGemma-270M | LLM (tool calls) | LiteRT-LM | ~611 MB | ~118 tok/s |
 
 - Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
-  synthesizes); Kokoro is single-pass and one-shot, so its first audio equals full
-  synthesis (~2.6 s for a 5 s line at 0.53 RTF).
+  synthesizes). Each Kokoro text chunk is one non-autoregressive graph run, so its
+  first audio for that chunk equals its synthesis time. The published two-thread
+  full graph measured ~4.16 s for a 2.3 s line; four-thread local tuning measured
+  ~2.66 s. The published 120-frame realtime graph measured a 1.73 s p50 for that line.
+  Physical-device runs vary with thermal state (0.75–0.88 RTF here). The short-turn
+  result describes an in-profile English reply, not a worst-case long-form result;
+  output beyond the 2.8 s guarded limit is split and retried safely.
 - Disabling the ONNX CPU memory arena (now the default) cut Parakeet-TDT peak RSS
   from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
 - Parakeet-EOU is the lightest STT here while staying multilingual + streaming —
@@ -834,7 +841,7 @@ auto segments = diar.diarize(audio, length, 16000, cfg);  // [{start,end,speaker
 #include <speech_core/models/kokoro_tts.h>
 
 speech_core::KokoroTts tts(
-    "/models/kokoro.onnx",
+    "/models/kokoro-e2e.onnx",
     "/models/kokoro_voices",   // directory of .bin voice embeddings
     "/models/kokoro_data");    // directory of vocab + dictionaries
 
@@ -844,13 +851,41 @@ tts.synthesize("Hello world", "en",
     });
 ```
 
-- Kokoro 82M, non-autoregressive single-pass synthesis
+For tightly bounded voice-agent replies, select a compatible 120-frame
+short-turn graph. The official `kokoro-e2e-realtime.onnx` filename selects the
+matching runtime profile automatically. The graph is published in the linked
+public model repository and reuses the full graph's external weight file.
+
+```cpp
+auto profile = speech_core::KokoroTts::Config::short_turn_3s();
+speech_core::KokoroTts tts(
+    "/models/kokoro-e2e-realtime.onnx",
+    "/models/voices", "/models", profile);
+```
+
+The explicit profile remains useful for a renamed graph. With the official
+filename, the existing bool constructor selects it automatically:
+
+```cpp
+speech_core::KokoroTts tts(
+    "/models/kokoro-e2e-realtime.onnx",
+    "/models/voices", "/models", /*hw_accel=*/false);
+```
+
+`short_turn_3p5s()` remains available for a compatible 140-frame graph when
+fewer split/retries are more important than the shorter graph's latency.
+
+- Kokoro 82M, non-autoregressive synthesis; long input is sentence/chunk split
 - 24 kHz Float32 output
-- Single chunk per call (E2E model, not streaming-capable)
+- One callback per safe internal text chunk; `is_final=true` marks the final one
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
-- Output post-processing: peak-clip detection (drops numerically unstable short prompts), trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
-- Model files: [soniqo/Kokoro-82M-ONNX](https://huggingface.co/soniqo/Kokoro-82M-ONNX) — `kokoro-e2e.onnx` + `kokoro-e2e.onnx.data` (~90 MB total), `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, `voices/*.bin`
+- Unsafe length, non-finite PCM, or numerical instability triggers bounded split/retry; output is never clamped or silently dropped
+- Output post-processing: trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
+- Kokoro CPU sessions use four intra-op threads by default for its large
+  inference run in each internal chunk. `SPEECH_CORE_KOKORO_ORT_THREADS` overrides the
+  global `SPEECH_CORE_ORT_THREADS` setting when a device needs separate tuning.
+- Default public bundle files: [soniqo/Kokoro-82M-ONNX](https://huggingface.co/soniqo/Kokoro-82M-ONNX) — `kokoro-e2e-realtime.onnx` (the Android default) or `kokoro-e2e.onnx`, one shared `kokoro-e2e.onnx.data` weight file (~310 MiB), plus `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, and `voices/*.bin`.
 
 ### Voice files
 

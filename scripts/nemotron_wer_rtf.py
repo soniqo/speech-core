@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 import statistics
 import sys
@@ -182,7 +183,8 @@ def compute_stats(label: str, rows: List[EngineRow], refs: Dict[str, str]) -> En
     wer_p95 = _percentile(wers, 95.0)
     wall_p50 = _percentile(walls, 50.0)
     wall_p95 = _percentile(walls, 95.0)
-    rtf = (audio_total / (wall_total / 1000.0)) if wall_total > 0 else 0.0
+    rtf = ((wall_total / 1000.0) / audio_total
+           if audio_total > 0.0 else float("inf"))
 
     return EngineStats(
         label=label,
@@ -202,7 +204,9 @@ def _fmt_pct(v: float) -> str:
 
 
 def _fmt_rtf(v: float) -> str:
-    return f"{v:.2f}x"
+    if not math.isfinite(v):
+        return "n/a"
+    return f"{v:.2f}"
 
 
 def _fmt_ms(v: float) -> str:

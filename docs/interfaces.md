@@ -85,7 +85,8 @@ The callback is invoked for each audio chunk during synthesis. `is_final=true` m
 
 `synthesize()` is the streaming API and is not deprecated. `synthesize_with_options()` is the uniform delivery/post-processing API for all TTS implementations through the base default. `Streaming` with no post-processing delegates to `synthesize()`. `Buffered` accumulates all PCM for the submitted text input, applies the requested offline post-processing chain, then invokes the callback once with `is_final=true`. Any offline post-processing belongs on the complete buffered result, not on individual streaming chunks or internal text chunks. Models only need to override `synthesize_with_options()` when they need custom buffering around internal decoder chunks. `VoicePipeline` currently calls `synthesize()` unless a future pipeline config threads synthesis options through.
 
-**Reference implementation:** `KokoroTts` (Kokoro 82M via ONNX Runtime, single-chunk output).
+**Reference implementation:** `KokoroTts` (Kokoro 82M via ONNX Runtime;
+sentence/chunk-split output with a final marker).
 
 **Swift counterpart:** `SpeechGenerationModel`.
 

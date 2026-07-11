@@ -34,13 +34,6 @@ static std::string to_lower(const std::string& s) {
     return result;
 }
 
-static std::string capitalize(const std::string& s) {
-    if (s.empty()) return s;
-    std::string result = s;
-    result[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(result[0])));
-    return result;
-}
-
 static bool is_punct(char c) {
     return std::ispunct(static_cast<unsigned char>(c)) != 0;
 }
@@ -116,14 +109,14 @@ void KokoroPhonemizer::set_language(const std::string& lang) {
 void KokoroPhonemizer::grow_dictionary(
     std::unordered_map<std::string, json::DictEntry>& dict)
 {
+    // Word lookup is always lowercase. Preserve lowercase aliases for source
+    // entries that contain capitals, but do not manufacture capitalized copies
+    // of every lowercase entry: those copies are unreachable and nearly double
+    // the two English dictionaries' heap footprint.
     std::unordered_map<std::string, json::DictEntry> additions;
     for (auto& [key, entry] : dict) {
         auto lower = to_lower(key);
-        if (key == lower && !key.empty()) {
-            auto cap = capitalize(key);
-            if (dict.find(cap) == dict.end()) additions[cap] = entry;
-        }
-        if (!key.empty() && std::isupper(static_cast<unsigned char>(key[0]))) {
+        if (!key.empty() && key != lower) {
             if (dict.find(lower) == dict.end()) additions[lower] = entry;
         }
     }

@@ -1,5 +1,9 @@
 #include "speech_core/util/text_chunker.h"
 
+#include <algorithm>
+#include <limits>
+#include <tuple>
+
 namespace speech_core {
 
 namespace {
@@ -124,6 +128,11 @@ void pack_units(const std::vector<std::string>& units,
         std::vector<std::string> finer;
         if (level == 0) {
             finer = split_units(unit, is_clause_end);
+            // A long sentence with no comma/semicolon must still fall back
+            // to whole words. Previously this skipped directly to UTF-8
+            // character cuts, which could emit fragments such as
+            // "voice-age" / "nt replies" for a normal hyphenated word.
+            if (finer.size() <= 1) finer = split_words(unit);
         } else if (level == 1) {
             finer = split_words(unit);
         }
@@ -160,6 +169,79 @@ std::vector<std::string> chunk_text_for_synthesis(
         }
     }
     return chunks;
+}
+
+std::vector<std::string> split_text_for_synthesis_retry(
+    const std::string& text, const TokenCounter& count_tokens,
+    size_t min_tokens, size_t max_tokens) {
+    if (text.empty() || min_tokens == 0 || min_tokens > max_tokens) return {};
+
+    std::vector<std::string> best;
+    auto best_score = std::make_tuple(
+        std::numeric_limits<int>::max(),
+        std::numeric_limits<size_t>::max(),
+        std::numeric_limits<size_t>::max());
+
+    size_t split = 0;
+    while (split < text.size()) {
+        size_t len = utf8_char_len(static_cast<unsigned char>(text[split]));
+        if (split + len > text.size()) len = text.size() - split;
+        split += len;
+        if (split >= text.size()) break;
+
+        std::string left = trimmed(text.substr(0, split));
+        std::string right = trimmed(text.substr(split));
+        if (left.empty() || right.empty()) continue;
+
+        const size_t left_tokens = count_tokens(left);
+        const size_t right_tokens = count_tokens(right);
+        if (left_tokens < min_tokens || right_tokens < min_tokens ||
+            left_tokens > max_tokens || right_tokens > max_tokens) {
+            continue;
+        }
+
+        int boundary_rank = 3;  // UTF-8 character boundary
+        const char before = text[split - 1];
+        const char after = text[split];
+
+        // Treat a run such as `...`, `?!`, or `?!"` as one boundary. Never
+        // leave part of that run at the beginning of the retry's right half.
+        bool saw_sentence_end = false;
+        bool saw_clause_end = false;
+        size_t run_begin = split;
+        while (run_begin > 0) {
+            const char c = text[run_begin - 1];
+            if (is_sentence_end(c)) {
+                saw_sentence_end = true;
+            } else if (is_clause_end(c)) {
+                saw_clause_end = true;
+            } else if (c != '\'' && c != '"') {
+                break;
+            }
+            --run_begin;
+        }
+        if (saw_sentence_end || saw_clause_end) {
+            if (is_sentence_end(after) || is_clause_end(after) ||
+                after == '\'' || after == '"') {
+                continue;
+            }
+            boundary_rank = saw_sentence_end ? 0 : 1;
+        } else if (before == ' ' || before == '\t' ||
+                   after == ' ' || after == '\t') {
+            boundary_rank = 2;
+        }
+
+        const size_t largest = std::max(left_tokens, right_tokens);
+        const size_t imbalance = left_tokens > right_tokens
+            ? left_tokens - right_tokens
+            : right_tokens - left_tokens;
+        const auto score = std::make_tuple(boundary_rank, largest, imbalance);
+        if (score < best_score) {
+            best_score = score;
+            best = {std::move(left), std::move(right)};
+        }
+    }
+    return best;
 }
 
 }  // namespace speech_core
