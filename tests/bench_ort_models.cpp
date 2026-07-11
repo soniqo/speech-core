@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -162,6 +163,17 @@ double pct(std::vector<double> v, double p) {
     return v[(std::min)(idx, v.size() - 1)];
 }
 
+// Conventional real-time factor: inference wall time divided by the amount
+// of audio processed or produced. Values below 1.0 are faster than real time.
+constexpr double classic_rtf(double wall_ms, double audio_s) {
+    if (audio_s <= 0.0 || wall_ms < 0.0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return (wall_ms / 1000.0) / audio_s;
+}
+static_assert(classic_rtf(2000.0, 4.0) == 0.5,
+              "RTF must be wall seconds divided by audio seconds");
+
 std::vector<float> load_audio_16k() {
     auto wav = load_wav_mono_pcm16(test_audio_path());
     if (wav.samples.empty()) return {};
@@ -210,7 +222,8 @@ void bench_silero(const std::string& dir) {
     char ex[128];
     std::snprintf(ex, sizeof(ex), "p50=%.3fms p95=%.3fms n=%zu",
                   pct(per_chunk, 50), pct(per_chunk, 95), per_chunk.size());
-    emit("silero-vad", "stream", load_ms, wall, audio_s / (wall / 1000.0), peak_rss_mb(), ex);
+    emit("silero-vad", "stream", load_ms, wall,
+         classic_rtf(wall, audio_s), peak_rss_mb(), ex);
 }
 
 void bench_parakeet(const std::string& dir) {
@@ -252,7 +265,8 @@ void bench_parakeet(const std::string& dir) {
     char ex[256];
     std::snprintf(ex, sizeof(ex), "p50=%.0fms p95=%.0fms text=\"%s\"",
                   pct(runs, 50), pct(runs, 95), last_text.c_str());
-    emit("parakeet-tdt", "batch", load_ms, med, audio_s / (med / 1000.0), peak_rss_mb(), ex);
+    emit("parakeet-tdt", "batch", load_ms, med,
+         classic_rtf(med, audio_s), peak_rss_mb(), ex);
 }
 
 struct WhisperBundle {
@@ -315,7 +329,7 @@ void emit_whisper_profile(const std::string& metric,
                   p.feature_frames, p.encoded_frames, p.prompt_tokens,
                   p.generated_tokens, transcript.c_str());
     emit("whisper", metric, load_ms, p.total_ms,
-         audio_s / (p.total_ms / 1000.0), peak_rss_mb(), ex);
+         classic_rtf(p.total_ms, audio_s), peak_rss_mb(), ex);
 }
 
 void bench_whisper_config(const WhisperBundle& bundle,
@@ -376,15 +390,43 @@ void bench_whisper(const std::string& dir) {
 }
 
 void bench_kokoro(const std::string& dir) {
-    std::string m = dir + "/kokoro-e2e.onnx";
+    const char* model_override = std::getenv("SPEECH_KOKORO_ONNX_PATH");
+    std::string m = model_override ? model_override : dir + "/kokoro-e2e.onnx";
     if (!file_exists(m) || !file_exists(dir + "/vocab_index.json")) {
         std::fprintf(stderr, "[skip] kokoro files\n"); return;
     }
     auto t_load = clk::now();
-    speech_core::KokoroTts tts(m, dir + "/voices", dir, /*hw_accel=*/true);
+    // Keep this row an explicit CPU baseline. Hardware-provider experiments
+    // belong in separate runs where provider assignment is verified.
+    auto config = speech_core::KokoroTts::Config::default_for_model_path(
+        m, /*hw_accel=*/false);
+    const char* config_label =
+        config.max_safe_output_samples > 0 ? "short-3.0s-auto" : "full-auto";
+    if (const char* profile = std::getenv("SPEECH_KOKORO_REALTIME_PROFILE");
+        profile && profile[0] != '\0') {
+        if (std::strcmp(profile, "3") == 0 ||
+            std::strcmp(profile, "3.0") == 0) {
+            config = speech_core::KokoroTts::Config::short_turn_3s(
+                /*hw_accel=*/false);
+            config_label = "short-3.0s";
+        } else if (std::strcmp(profile, "3.5") == 0) {
+            config = speech_core::KokoroTts::Config::short_turn_3p5s(
+                /*hw_accel=*/false);
+            config_label = "short-3.5s";
+        } else {
+            std::fprintf(stderr,
+                         "unknown SPEECH_KOKORO_REALTIME_PROFILE=%s\n",
+                         profile);
+            std::exit(2);
+        }
+    }
+    speech_core::KokoroTts tts(m, dir + "/voices", dir, config);
     double load_ms = ms_since(t_load);
 
-    const std::string text = "The quick brown fox jumps over the lazy dog";
+    const char* text_override = std::getenv("SPEECH_KOKORO_TEXT");
+    const std::string text = text_override
+        ? text_override
+        : "The quick brown fox jumps over the lazy dog";
 
     // Warmup
     size_t warm_samples = 0;
@@ -392,21 +434,48 @@ void bench_kokoro(const std::string& dir) {
                    [&](const float*, size_t n, bool) { warm_samples += n; });
 
     std::vector<double> runs;
-    size_t last_samples = 0;
+    std::vector<double> audio_durations;
+    std::vector<double> rtfs;
+    size_t last_chunks = 0;
+    size_t last_finals = 0;
+    bool last_finite = true;
     for (int i = 0; i < 3; ++i) {
         size_t samples = 0;
+        size_t chunks = 0;
+        size_t finals = 0;
+        bool finite = true;
         auto t = clk::now();
         tts.synthesize(text, "en",
-                       [&](const float*, size_t n, bool) { samples += n; });
-        runs.push_back(ms_since(t));
-        last_samples = samples;
+                       [&](const float* pcm, size_t n, bool is_final) {
+                           ++chunks;
+                           if (is_final) ++finals;
+                           for (size_t j = 0; j < n; ++j) {
+                               if (!std::isfinite(pcm[j])) finite = false;
+                           }
+                           samples += n;
+                       });
+        const double wall_ms = ms_since(t);
+        const double audio_s = static_cast<double>(samples) / 24000.0;
+        runs.push_back(wall_ms);
+        audio_durations.push_back(audio_s);
+        rtfs.push_back(classic_rtf(wall_ms, audio_s));
+        last_chunks = chunks;
+        last_finals = finals;
+        last_finite = finite;
     }
     double med = pct(runs, 50);
-    double audio_s = static_cast<double>(last_samples) / 24000.0;  // Kokoro outputs 24 kHz
-    char ex[160];
-    std::snprintf(ex, sizeof(ex), "p50=%.0fms p95=%.0fms audio=%.2fs",
-                  pct(runs, 50), pct(runs, 95), audio_s);
-    emit("kokoro-tts", "synth", load_ms, med, audio_s / (med / 1000.0), peak_rss_mb(), ex);
+    double audio_s = pct(audio_durations, 50);
+    const size_t slash = m.find_last_of("/\\");
+    const std::string graph = slash == std::string::npos
+        ? m
+        : m.substr(slash + 1);
+    char ex[384];
+    std::snprintf(ex, sizeof(ex),
+                  "config=%s graph=%s p50=%.0fms p95=%.0fms audio_p50=%.2fs chunks=%zu finals=%zu finite=%d",
+                  config_label, graph.c_str(), pct(runs, 50), pct(runs, 95), audio_s,
+                  last_chunks, last_finals, last_finite ? 1 : 0);
+    emit("kokoro-tts", "synth", load_ms, med, pct(rtfs, 50),
+         peak_rss_mb(), ex);
 }
 
 void bench_cosyvoice3(const std::string& /*dir*/) {
@@ -494,11 +563,12 @@ void bench_cosyvoice3(const std::string& /*dir*/) {
                   static_cast<double>(flow_estimator_ms),
                   static_cast<double>(hift_ms));
     emit("cosyvoice3-tts", "synth", load_ms, med,
-         audio_s / (med / 1000.0), peak_rss_mb(), ex);
+         classic_rtf(med, audio_s), peak_rss_mb(), ex);
 }
 
 // ---------------------------------------------------------------------------
-// VoxCPM2 ONNX TTS — the comparison the LiteRT bench shows at 0.10x RTF / ~12 GB
+// VoxCPM2 ONNX TTS — the comparison the LiteRT bench shows at ~10 RTF
+// (0.10x real-time throughput) / ~12 GB
 // RSS / 1.55 s per AR step on CPU. The ONNX wrapper drives the same 4-graph
 // pipeline; with hw_accel=true (CUDA) the per-step compute should drop
 // substantially (text_prefill once + token_step ×N is where the GPU win lives).
@@ -553,9 +623,9 @@ void bench_nemotron(const std::string& dir) {
             chunk_ms.push_back(ms_since(t_c));
             if (first_partial_ms < 0 && !p.text.empty()) first_partial_ms = ms_since(t_stream);
         }
+        last_text = stt.end_stream().text;
         walls.push_back(ms_since(t_stream));
         first_partials.push_back(first_partial_ms);
-        last_text = stt.end_stream().text;
     }
     double wall_ms = pct(walls, 50);
     double audio_s = static_cast<double>(audio.size()) / 16000.0;
@@ -568,7 +638,7 @@ void bench_nemotron(const std::string& dir) {
                   pct(chunk_ms, 50), pct(chunk_ms, 95),
                   pct(first_partials, 50), last_text.c_str());
     emit("nemotron-streaming", "stream", load_ms, wall_ms,
-         audio_s / (wall_ms / 1000.0), peak_rss_mb(), ex);
+         classic_rtf(wall_ms, audio_s), peak_rss_mb(), ex);
 }
 
 void bench_voxcpm2(const std::string& /*dir*/) {
@@ -627,7 +697,7 @@ void bench_voxcpm2(const std::string& /*dir*/) {
     std::snprintf(ex, sizeof(ex),
                   "p50=%.0fms p95=%.0fms audio=%.2fs steps=%d ms_per_step=%.0fms",
                   med, pct(walls, 95), audio_s, last_tokens, ms_per_step);
-    emit("voxcpm2-tts", "synth", load_ms, med, audio_s / (med / 1000.0),
+    emit("voxcpm2-tts", "synth", load_ms, med, classic_rtf(med, audio_s),
          peak_rss_mb(), ex);
 }
 
@@ -840,11 +910,22 @@ int main(int argc, char** argv) {
     if (!nemotron_manifest.empty()) return run_corpus_nemotron(dir, nemotron_manifest);
     if (!manifest.empty()) return run_corpus(dir, manifest, batch_size);
     std::printf("#model,provider,metric,load_ms,wall_ms,rtf,rss_mb,extra\n");
-    if (const char* only = std::getenv("SPEECH_BENCH_ONLY")) {
-        if (std::string(only) == "whisper") {
-            bench_whisper(dir);
-            return 0;
+    if (const char* only_env = std::getenv("SPEECH_BENCH_ONLY")) {
+        const std::string only(only_env);
+        if (only == "silero") bench_silero(dir);
+        else if (only == "parakeet") bench_parakeet(dir);
+        else if (only == "whisper") bench_whisper(dir);
+        else if (only == "kokoro") bench_kokoro(dir);
+        else if (only == "cosyvoice3") bench_cosyvoice3(dir);
+        else if (only == "voxcpm2") bench_voxcpm2(dir);
+        else if (only == "nemotron") bench_nemotron(dir);
+        else {
+            std::fprintf(stderr,
+                         "unknown SPEECH_BENCH_ONLY=%s\n",
+                         only.c_str());
+            return 2;
         }
+        return 0;
     }
     bench_silero(dir);
     bench_parakeet(dir);

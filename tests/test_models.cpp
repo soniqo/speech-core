@@ -443,6 +443,84 @@ void test_kokoro_tts(const std::string& dir) {
     std::printf("ok (samples=%zu)\n", total_samples);
 }
 
+void test_kokoro_short_turn_profile(const std::string& dir) {
+    const char* model_env = std::getenv("SPEECH_KOKORO_REALTIME_ONNX_PATH");
+    if (!model_env || !file_exists(model_env) ||
+        !file_exists(dir + "/vocab_index.json")) {
+        std::printf("  [skip] set SPEECH_KOKORO_REALTIME_ONNX_PATH for short-turn Kokoro test\n");
+        return;
+    }
+    std::printf("  test_kokoro_short_turn_profile ... ");
+
+    auto fast_config = speech_core::KokoroTts::Config::short_turn_3s(
+        /*hw_accel=*/false);
+    REQUIRE(fast_config.chunk_token_budget == 44);
+    REQUIRE(fast_config.chunk_token_hard_cap == 49);
+    REQUIRE(fast_config.max_safe_output_samples == 67200);
+
+    auto inferred_short =
+        speech_core::KokoroTts::Config::default_for_model_path(
+            "/models/kokoro-e2e-realtime.onnx", /*hw_accel=*/false);
+    REQUIRE(inferred_short.chunk_token_budget == 44);
+    REQUIRE(inferred_short.chunk_token_hard_cap == 49);
+    REQUIRE(inferred_short.max_safe_output_samples == 67200);
+
+    auto inferred_full =
+        speech_core::KokoroTts::Config::default_for_model_path(
+            "/models/kokoro-e2e.onnx", /*hw_accel=*/false);
+    REQUIRE(inferred_full.chunk_token_budget == 72);
+    REQUIRE(inferred_full.chunk_token_hard_cap == 128);
+    REQUIRE(inferred_full.max_safe_output_samples == 0);
+
+    // The bool constructor is the public default path. With the official
+    // realtime filename it must pick the 3.0 s guard without requiring an
+    // Android-specific configuration call. This text fits the 3.5 s graph
+    // but exceeds the 3.0 s guarded limit, so a split proves the default.
+    speech_core::KokoroTts auto_profile_tts(
+        model_env, dir + "/voices", dir, /*hw_accel=*/false);
+    size_t auto_chunks = 0;
+    size_t auto_finals = 0;
+    auto_profile_tts.synthesize(
+        "The package arrives tomorrow morning at nine.", "en",
+        [&](const float*, size_t, bool is_final) {
+            ++auto_chunks;
+            if (is_final) ++auto_finals;
+        });
+    REQUIRE(auto_chunks >= 2);
+    REQUIRE(auto_finals == 1);
+
+    auto config = speech_core::KokoroTts::Config::short_turn_3p5s(
+        /*hw_accel=*/false);
+    REQUIRE(config.chunk_token_budget == 44);
+    REQUIRE(config.chunk_token_hard_cap == 49);
+    REQUIRE(config.max_safe_output_samples == 79200);
+
+    speech_core::KokoroTts tts(
+        model_env, dir + "/voices", dir, config);
+    size_t chunks = 0;
+    size_t finals = 0;
+    size_t total_samples = 0;
+    bool finite = true;
+    // This phrase produces 82,200 raw samples: above the profile's 79,200
+    // validated limit while still fitting its input-token hard cap. It must
+    // therefore exercise the runtime output-length split/retry path.
+    tts.synthesize("The package arrives tomorrow morning safely today.", "en",
+        [&](const float* samples, size_t len, bool is_final) {
+            ++chunks;
+            if (is_final) ++finals;
+            total_samples += len;
+            for (size_t i = 0; i < len; ++i) {
+                if (!std::isfinite(samples[i])) finite = false;
+            }
+        });
+
+    REQUIRE(chunks >= 2);
+    REQUIRE(finals == 1);
+    REQUIRE(total_samples > 0);
+    REQUIRE(finite);
+    std::printf("ok (chunks=%zu samples=%zu)\n", chunks, total_samples);
+}
+
 // ---------------------------------------------------------------------------
 
 void test_deepfilter(const std::string& dir) {
@@ -1168,6 +1246,7 @@ int main() {
     RUN(test_onnx_whisper_stt);
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
+    RUN(test_kokoro_short_turn_profile);
     RUN(test_deepfilter);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);

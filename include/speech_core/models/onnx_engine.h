@@ -91,8 +91,8 @@ public:
     /// short calls per utterance (decoder-joint runs ~50 times, each on
     /// tiny tensors; thread-pool overhead per call > parallel-GEMM win).
     /// Measured on the LibriSpeech-100 bench (LiteRT v2.1, ORT 1.26 CUDA):
-    ///   intra=2  CPU 28.77x RTF / CUDA 32.91x RTF (baseline)
-    ///   intra=16 CPU 24.25x RTF / CUDA 26.49x RTF (15–20% slower)
+    ///   intra=2  CPU 28.77x real-time / CUDA 32.91x (baseline)
+    ///   intra=16 CPU 24.25x real-time / CUDA 26.49x (15–20% slower)
     /// The env var stays available for long-utterance / large-batch
     /// workloads where the parallel win does dominate.
     static int resolve_intra_threads(int override_threads = 0) {
@@ -108,6 +108,7 @@ public:
                      bool capture_hint = false, int intra_threads = 0) {
         OrtSessionOptions* opts = nullptr;
         ort_check(api_, api_->CreateSessionOptions(&opts));
+        enable_profiling_if_requested(opts);
         // Optimization level — default ORT_ENABLE_ALL, lowered via
         // SPEECH_CORE_ORT_OPT_LEVEL=disable_all/basic/extended. For INT8
         // dynamic-quantized models the heavier passes (DequantizeLinearFusion,
@@ -186,9 +187,9 @@ public:
         // large pool up front, and the memory-pattern planner reserves a
         // contiguous activation buffer sized for the whole graph. Disabling
         // both drops peak resident memory materially at a small throughput
-        // cost. Measured on a Galaxy S23 (Parakeet-TDT-0.6B INT8, CPU):
-        // 1342 MB -> 1147 MB peak RSS (-15%), RTF 12.9x -> 12.2x (-6%, still
-        // ~12x real time). On-device / embedded targets are memory-bound, not
+        // cost. Measured on a Galaxy S23 Ultra (Parakeet-TDT-0.6B INT8, CPU):
+        // 1342 MB -> 1147 MB peak RSS (-15%), throughput 12.9x -> 12.2x
+        // real-time (-6%). On-device / embedded targets are memory-bound, not
         // throughput-bound here, so this is the right default.
         ort_check(api_, api_->DisableCpuMemArena(opts));
         ort_check(api_, api_->DisableMemPattern(opts));
@@ -260,6 +261,7 @@ public:
 
             opts = nullptr;
             ort_check(api_, api_->CreateSessionOptions(&opts));
+            enable_profiling_if_requested(opts);
             ort_check(api_, api_->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL));
             ort_check(api_, api_->SetIntraOpNumThreads(
                 opts, resolve_intra_threads(intra_threads)));
@@ -294,6 +296,16 @@ public:
     }
 
 private:
+    /// Write an ORT JSON trace when explicitly requested. ORT appends its own
+    /// timestamp/suffix to this prefix, so multiple sessions remain distinct.
+    /// Kept opt-in because profiling itself changes latency measurements.
+    void enable_profiling_if_requested(OrtSessionOptions* opts) const {
+        const char* prefix = std::getenv("SPEECH_CORE_ORT_PROFILE_PREFIX");
+        if (!prefix || prefix[0] == '\0') return;
+        const OrtPathStr ort_prefix = to_ort_path(prefix);
+        ort_check(api_, api_->EnableProfiling(opts, ort_prefix.c_str()));
+    }
+
     OnnxEngine() {
         api_ = OrtGetApiBase()->GetApi(ORT_API_VERSION);
         ort_check(api_, api_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "speech", &env_));

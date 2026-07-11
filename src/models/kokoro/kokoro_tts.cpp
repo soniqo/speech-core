@@ -5,41 +5,140 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>
 
 namespace speech_core {
 
 static constexpr int MAX_PHONEMES = 128;
 
-// Packing budget for one synthesis call, in phonemizer tokens (BOS/EOS
-// included). The E2E export emits at most 120000 samples (5 s at 24 kHz),
-// which real speech reaches at roughly 17 phonemes/s — well before the
-// 128-phoneme input cap — so budget for the output tensor, not the input.
-// 72 tokens is ~4.2 s of speech, leaving margin for slow prosody.
-static constexpr size_t CHUNK_TOKEN_BUDGET = 72;
 // Chunks below this are synthesized unreliably (the numerical-stability
 // guard below drops ≤5-token outputs); merge such tails into the previous
-// chunk instead, up to the MAX_PHONEMES hard cap.
+// chunk when the selected graph profile's hard budget permits it.
 static constexpr size_t MIN_TAIL_TOKENS = 12;
+static constexpr size_t MIN_RETRY_TOKENS = 6;
+static constexpr size_t MAX_RETRY_DEPTH = 4;
+static constexpr size_t MAX_INFERENCE_ATTEMPTS = 15;
+// Parity testing found a sharp quality cliff in the final two 25 ms decoder
+// frames of the bounded export. Reserve a conservative eight-frame (200 ms)
+// margin for the initial profile, regardless of profile-specific limits.
+static constexpr size_t OUTPUT_TAIL_GUARD_SAMPLES = 4800;
+
+namespace {
+
+constexpr size_t guarded_output_capacity(
+    size_t tensor_capacity, size_t configured_limit) {
+    size_t safe = tensor_capacity > OUTPUT_TAIL_GUARD_SAMPLES
+        ? tensor_capacity - OUTPUT_TAIL_GUARD_SAMPLES
+        : 0;
+    return configured_limit > 0 && configured_limit < safe
+        ? configured_limit
+        : safe;
+}
+
+static_assert(61200 <= guarded_output_capacity(72000, 67200));
+static_assert(67800 > guarded_output_capacity(72000, 67200));
+static_assert(71400 > guarded_output_capacity(72000, 67200));
+static_assert(73800 <= guarded_output_capacity(84000, 79200));
+static_assert(79800 > guarded_output_capacity(84000, 79200));
+static_assert(83400 > guarded_output_capacity(84000, 79200));
+
+class OrtValuesGuard {
+public:
+    OrtValuesGuard(const OrtApi* api, OrtValue** values, size_t count)
+        : api_(api), values_(values), count_(count) {}
+
+    ~OrtValuesGuard() {
+        for (size_t i = count_; i > 0; --i) {
+            if (values_[i - 1]) api_->ReleaseValue(values_[i - 1]);
+        }
+    }
+
+    OrtValuesGuard(const OrtValuesGuard&) = delete;
+    OrtValuesGuard& operator=(const OrtValuesGuard&) = delete;
+
+private:
+    const OrtApi* api_;
+    OrtValue** values_;
+    size_t count_;
+};
+
+int resolve_kokoro_threads() {
+    if (const char* value = std::getenv("SPEECH_CORE_KOKORO_ORT_THREADS")) {
+        const int threads = std::atoi(value);
+        if (threads > 0) return threads;
+    }
+    if (const char* value = std::getenv("SPEECH_CORE_ORT_THREADS")) {
+        const int threads = std::atoi(value);
+        if (threads > 0) return threads;
+    }
+    // Kokoro is one large Conv-heavy Run, unlike Parakeet's many tiny decoder
+    // calls that motivated OnnxEngine's conservative two-thread default.
+    return 4;
+}
+
+}  // namespace
+
+KokoroTts::Config KokoroTts::Config::short_turn_3s(bool hw_accel) {
+    Config config;
+    config.hw_accel = hw_accel;
+    config.chunk_token_budget = 44;
+    config.chunk_token_hard_cap = 49;
+    config.max_safe_output_samples = 67200;
+    return config;
+}
+
+KokoroTts::Config KokoroTts::Config::default_for_model_path(
+    const std::string& model_path, bool hw_accel) {
+    constexpr const char* kRealtimeGraph = "kokoro-e2e-realtime.onnx";
+    const size_t slash = model_path.find_last_of("/\\");
+    const std::string filename = slash == std::string::npos
+        ? model_path
+        : model_path.substr(slash + 1);
+    if (filename == kRealtimeGraph) return short_turn_3s(hw_accel);
+    return Config{hw_accel, 72, MAX_PHONEMES, 0};
+}
+
+KokoroTts::Config KokoroTts::Config::short_turn_3p5s(bool hw_accel) {
+    Config config;
+    config.hw_accel = hw_accel;
+    config.chunk_token_budget = 44;
+    config.chunk_token_hard_cap = 49;
+    config.max_safe_output_samples = 79200;
+    return config;
+}
 
 KokoroTts::KokoroTts(
     const std::string& model_path,
     const std::string& voices_dir,
     const std::string& data_dir,
     bool hw_accel)
-    : voices_dir_(voices_dir)
+    : KokoroTts(model_path, voices_dir, data_dir,
+                Config::default_for_model_path(model_path, hw_accel))
+{}
+
+KokoroTts::KokoroTts(
+    const std::string& model_path,
+    const std::string& voices_dir,
+    const std::string& data_dir,
+    const Config& config)
+    : voices_dir_(voices_dir), config_(config)
 {
+    if (config_.chunk_token_budget == 0 ||
+        config_.chunk_token_budget > MAX_PHONEMES ||
+        config_.chunk_token_hard_cap < config_.chunk_token_budget ||
+        config_.chunk_token_hard_cap > MAX_PHONEMES) {
+        throw std::invalid_argument("invalid Kokoro chunk token budgets");
+    }
+
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
-    // The engine's intra-op default (2 threads) is tuned for Parakeet's
-    // profile of many tiny decoder calls. Kokoro is the opposite workload:
-    // one large single-pass graph per chunk, seconds of GEMM-heavy compute,
-    // where the parallel win dominates thread-pool overhead — measured ~1.5x
-    // real-time on 2 phone cores. Give it 4.
-    session_ = engine.load(model_path, hw_accel, /*capture_hint=*/false,
-                           /*intra_threads=*/4);
+    session_ = engine.load(model_path, config_.hw_accel,
+                           /*capture_hint=*/false,
+                           resolve_kokoro_threads());
 
     // Load phonemizer vocabulary and dictionaries
     phonemizer_.load_vocab(data_dir + "/vocab_index.json");
@@ -53,6 +152,7 @@ KokoroTts::KokoroTts(
 
     // Load default voice
     set_voice("af_heart");
+    current_lang_ = "en";
 }
 
 KokoroTts::~KokoroTts() {
@@ -111,41 +211,105 @@ void KokoroTts::synthesize(
     const std::string& text, const std::string& language,
     TTSChunkCallback on_chunk)
 {
-    cancelled_ = false;
+    cancelled_.store(false, std::memory_order_relaxed);
 
     // Set language and auto-switch voice if language changed
     std::string lang = language.empty() ? "en" : language;
     phonemizer_.set_language(lang);
     auto_switch_voice(lang);
 
-    // The E2E export bounds one synthesis call twice: the input tensor holds
-    // MAX_PHONEMES tokens (tokenize() silently truncates beyond it) and the
-    // output tensor holds 5 s of audio, reached at roughly 17 phonemes/s —
-    // well before the input cap. Split long text into sentence-preferring
-    // chunks whose real speech fits the output budget, and synthesize them
-    // sequentially; each chunk keeps natural prosody and the seams land on
-    // sentence/clause boundaries.
+    // The E2E export bounds both its input and output tensors. Split long text
+    // into sentence-preferring chunks using the selected graph profile's
+    // validated token budget.
     auto count_tokens = [this](const std::string& t) {
         return phonemizer_.tokenize(t, 1 << 20).size();
     };
     auto chunks = chunk_text_for_synthesis(
-        text, count_tokens, CHUNK_TOKEN_BUDGET, MAX_PHONEMES,
+        text, count_tokens, config_.chunk_token_budget,
+        MAX_PHONEMES,
         MIN_TAIL_TOKENS);
     for (size_t i = 0; i < chunks.size(); i++) {
-        if (cancelled_) return;
-        synthesize_chunk(chunks[i], on_chunk, i + 1 == chunks.size());
+        if (cancelled_.load(std::memory_order_relaxed)) return;
+        const bool is_final = i + 1 == chunks.size();
+        size_t inference_attempts = 0;
+        if (!synthesize_with_retry(
+                chunks[i], on_chunk, is_final, 0, inference_attempts)) return;
     }
 }
 
-void KokoroTts::synthesize_chunk(
+bool KokoroTts::synthesize_with_retry(
+    const std::string& text, const TTSChunkCallback& on_chunk,
+    bool is_final, size_t depth, size_t& inference_attempts)
+{
+    auto count_tokens = [this](const std::string& t) {
+        return phonemizer_.tokenize(t, 1 << 20).size();
+    };
+    const size_t token_count = count_tokens(text);
+
+    ChunkResult result = ChunkResult::RetrySmaller;
+    if (token_count <= config_.chunk_token_hard_cap) {
+        if (++inference_attempts > MAX_INFERENCE_ATTEMPTS) {
+            throw std::runtime_error("Kokoro retry inference-attempt limit exceeded");
+        }
+        result = synthesize_chunk(text, on_chunk, is_final);
+    } else {
+        LOGI("TTS: preflight split for %zu tokens above model-run cap=%zu",
+             token_count, config_.chunk_token_hard_cap);
+    }
+    if (result == ChunkResult::Emitted) return true;
+    if (result == ChunkResult::Cancelled ||
+        cancelled_.load(std::memory_order_relaxed)) return false;
+    if (depth >= MAX_RETRY_DEPTH) {
+        throw std::runtime_error("Kokoro output remained unsafe after retry limit");
+    }
+
+    if (token_count <= MIN_RETRY_TOKENS * 2) {
+        throw std::runtime_error("Kokoro output is unsafe and too short to split");
+    }
+
+    auto pieces = split_text_for_synthesis_retry(
+        text, count_tokens, MIN_RETRY_TOKENS, token_count - 1);
+    if (pieces.size() < 2) {
+        throw std::runtime_error("Kokoro retry splitter made no progress");
+    }
+
+    for (const auto& piece : pieces) {
+        const size_t child_tokens = count_tokens(piece);
+        if (piece.empty() || child_tokens < MIN_RETRY_TOKENS ||
+            child_tokens >= token_count) {
+            throw std::runtime_error("Kokoro retry splitter produced an unsafe chunk");
+        }
+    }
+
+    LOGI("TTS: retrying %zu-token chunk as %zu smaller chunks",
+         token_count, pieces.size());
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        if (cancelled_.load(std::memory_order_relaxed)) return false;
+        const bool child_final = is_final && i + 1 == pieces.size();
+        if (!synthesize_with_retry(
+                pieces[i], on_chunk, child_final, depth + 1,
+                inference_attempts)) return false;
+    }
+    return true;
+}
+
+KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
     const std::string& text, const TTSChunkCallback& on_chunk,
     bool is_final)
 {
     auto* mem = OnnxEngine::get().cpu_memory();
 
     // Text → phoneme token IDs
-    auto raw_tokens = phonemizer_.tokenize(text, MAX_PHONEMES);
-    if (raw_tokens.empty() || cancelled_) return;
+    auto raw_tokens = phonemizer_.tokenize(text, MAX_PHONEMES + 1);
+    if (cancelled_.load(std::memory_order_relaxed)) {
+        return ChunkResult::Cancelled;
+    }
+    if (raw_tokens.empty()) return ChunkResult::RetrySmaller;
+    if (raw_tokens.size() > MAX_PHONEMES) {
+        LOGI("TTS: input exceeds %d phonemes; splitting and retrying",
+             MAX_PHONEMES);
+        return ChunkResult::RetrySmaller;
+    }
 
     size_t token_count = raw_tokens.size();
 
@@ -163,71 +327,62 @@ void KokoroTts::synthesize_chunk(
 
     const int64_t ids_shape[] = {1, MAX_PHONEMES};
 
+    OrtValue* inputs[] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    OrtValuesGuard input_guard(api_, inputs, 5);
+
     // input_ids [1, 128]
-    OrtValue* t_ids = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
         mem, input_ids.data(), input_ids.size() * sizeof(int64_t),
-        ids_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_ids));
+        ids_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &inputs[0]));
 
     // attention_mask [1, 128]
-    OrtValue* t_mask = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
         mem, attention_mask.data(), attention_mask.size() * sizeof(int64_t),
-        ids_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_mask));
+        ids_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &inputs[1]));
 
     // ref_s / voice embedding [1, 256]
     const int64_t style_shape[] = {1, 256};
-    OrtValue* t_style = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
         mem, voice_embedding_.data(), voice_embedding_.size() * sizeof(float),
-        style_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_style));
+        style_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputs[2]));
 
     // speed [1]
     float speed = 0.85f;
     const int64_t speed_shape[] = {1};
-    OrtValue* t_speed = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
         mem, &speed, sizeof(float),
-        speed_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_speed));
+        speed_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputs[3]));
 
     // random_phases [1, 9]
     float phases[9];
     for (int i = 0; i < 9; i++)
         phases[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     const int64_t phases_shape[] = {1, 9};
-    OrtValue* t_phases = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
         mem, phases, sizeof(phases),
-        phases_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_phases));
+        phases_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputs[4]));
 
     // --- run ---
 
     const char* in_names[]  = {"input_ids", "attention_mask", "ref_s", "speed", "random_phases"};
     const char* out_names[] = {"audio", "audio_length_samples", "pred_dur"};
-    OrtValue* inputs[]  = {t_ids, t_mask, t_style, t_speed, t_phases};
     OrtValue* outputs[] = {nullptr, nullptr, nullptr};
+    OrtValuesGuard output_guard(api_, outputs, 3);
 
     ort_check(api_, api_->Run(
         session_, nullptr,
         in_names, inputs, 5,
         out_names, 3, outputs));
 
-    if (!cancelled_) {
+    if (!cancelled_.load(std::memory_order_relaxed)) {
         float* audio = nullptr;
         ort_check(api_, api_->GetTensorMutableData(outputs[0], (void**)&audio));
 
         // Get valid sample count from model
         int64_t* len_ptr = nullptr;
         ort_check(api_, api_->GetTensorMutableData(outputs[1], (void**)&len_ptr));
-        size_t valid_samples =
-            static_cast<size_t>(std::max<int64_t>(len_ptr[0], 0));
+        const int64_t reported_samples = len_ptr[0];
 
-        // audio_length_samples is predicted from summed durations, but the
-        // E2E export writes audio into a fixed-capacity tensor. Near the
-        // 128-phoneme input cap the prediction can exceed that capacity, and
-        // trusting it walked the loops below past the allocation (SIGSEGV on
-        // any text long enough to fill the input). Clamp to the tensor's
-        // real element count.
         OrtTensorTypeAndShapeInfo* audio_info = nullptr;
         ort_check(api_, api_->GetTensorTypeAndShape(outputs[0], &audio_info));
         size_t audio_capacity = 0;
@@ -237,31 +392,43 @@ void KokoroTts::synthesize_chunk(
             api_->GetTensorShapeElementCount(audio_info, &audio_capacity);
         api_->ReleaseTensorTypeAndShapeInfo(audio_info);
         ort_check(api_, count_status);
-        if (valid_samples > audio_capacity) {
-            LOGI("TTS: reported %zu samples exceeds audio tensor capacity %zu - "
-                 "clamping (max-length input? text='%.40s')",
-                 valid_samples, audio_capacity, text.c_str());
-            valid_samples = audio_capacity;
+
+        if (reported_samples <= 0 || audio_capacity == 0) {
+            LOGI("TTS: invalid output length=%lld capacity=%zu; retrying",
+                 static_cast<long long>(reported_samples), audio_capacity);
+            return ChunkResult::RetrySmaller;
         }
+
+        const size_t safe_capacity = guarded_output_capacity(
+            audio_capacity, config_.max_safe_output_samples);
+        if (static_cast<uint64_t>(reported_samples) >
+            static_cast<uint64_t>(safe_capacity)) {
+            LOGI("TTS: output length=%lld exceeds safe capacity=%zu "
+                 "(tensor=%zu); splitting and retrying",
+                 static_cast<long long>(reported_samples), safe_capacity,
+                 audio_capacity);
+            return ChunkResult::RetrySmaller;
+        }
+        const size_t valid_samples = static_cast<size_t>(reported_samples);
 
         // Inspect peak before any processing — short prompts (≤5 tokens) can
         // make the E2E ONNX export numerically explode (peak in the hundreds).
-        // Treat that as a synthesis failure rather than amplifying garbage.
+        // Non-finite or exploded outputs are split and retried once the input
+        // is large enough; they are never emitted.
         float peak = 0.0f;
+        bool finite = true;
         for (size_t i = 0; i < valid_samples; i++) {
             float a = std::abs(audio[i]);
+            if (!std::isfinite(a)) {
+                finite = false;
+                break;
+            }
             if (a > peak) peak = a;
         }
-        if (peak > 2.0f) {
-            LOGI("TTS: dropping output, peak=%.2f indicates numerical instability "
-                 "(short prompt? text='%.40s')", peak, text.c_str());
-            for (int i = 2; i >= 0; i--) api_->ReleaseValue(outputs[i]);
-            api_->ReleaseValue(t_phases);
-            api_->ReleaseValue(t_speed);
-            api_->ReleaseValue(t_style);
-            api_->ReleaseValue(t_mask);
-            api_->ReleaseValue(t_ids);
-            return;
+        if (!finite || peak > 2.0f) {
+            LOGI("TTS: unstable output finite=%d peak=%.2f; splitting and retrying "
+                 "(text='%.40s')", finite ? 1 : 0, peak, text.c_str());
+            return ChunkResult::RetrySmaller;
         }
 
         // Trim trailing artifacts — Kokoro's E2E model often emits 100-300 ms
@@ -308,20 +475,14 @@ void KokoroTts::synthesize_chunk(
              valid_samples, speech_end, peak, is_final ? 1 : 0);
 
         on_chunk(audio, speech_end, is_final);
+        return ChunkResult::Emitted;
     }
 
-    // --- cleanup ---
-
-    for (int i = 2; i >= 0; i--) api_->ReleaseValue(outputs[i]);
-    api_->ReleaseValue(t_phases);
-    api_->ReleaseValue(t_speed);
-    api_->ReleaseValue(t_style);
-    api_->ReleaseValue(t_mask);
-    api_->ReleaseValue(t_ids);
+    return ChunkResult::Cancelled;
 }
 
 void KokoroTts::cancel() {
-    cancelled_ = true;
+    cancelled_.store(true, std::memory_order_relaxed);
 }
 
 }  // namespace speech_core

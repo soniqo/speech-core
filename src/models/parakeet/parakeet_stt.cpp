@@ -66,7 +66,7 @@ ParakeetStt::ParakeetStt(
     // Decoder-joint stays CPU even when hw_accel=true. The published
     // file is FP32 (the "-int8.onnx" filename is misleading — only the
     // encoder is INT8), so we tried the GPU path: WER stayed at 5.63%
-    // on LibriSpeech-100 but wall time went UP 8% (32.9x -> 30.5x RTF).
+    // on LibriSpeech-100 but wall time went UP 8% (32.9x -> 30.5x real-time).
     // Each decoder-joint call ships ~640-hidden tensors over the PCIe
     // bus 50+ times per utterance; for tensors this small the GPU
     // dispatch + memcpy beats the FP32 LSTM kernel's compute time. Same

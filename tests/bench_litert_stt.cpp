@@ -8,7 +8,7 @@
 //       ./build/bench_litert_stt [warmup_runs] [measured_runs]
 //
 // Reports, for streaming: first-partial latency, per-chunk compute p50/p95/max,
-// and stream RTF (audio_seconds / wall_seconds). For batch Parakeet: end-to-end
+// and stream RTF (wall_seconds / audio_seconds). For batch Parakeet: end-to-end
 // wall time and RTF. Skips cleanly when models/fixture are missing.
 
 #include "speech_core/audio/resampler.h"
@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -106,6 +107,15 @@ double pct(std::vector<double> v, double p) {
     return v[std::min(idx, v.size() - 1)];
 }
 
+constexpr double classic_rtf(double wall_ms, double audio_s) {
+    if (audio_s <= 0.0 || wall_ms < 0.0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return (wall_ms / 1000.0) / audio_s;
+}
+static_assert(classic_rtf(2000.0, 4.0) == 0.5,
+              "RTF must be wall seconds divided by audio seconds");
+
 std::vector<float> load_audio_16k() {
     auto wav = load_wav_mono_pcm16(test_audio_path());
     if (wav.samples.empty()) return {};
@@ -161,19 +171,20 @@ void bench_nemotron_streaming(const std::string& dir, int warmup, int runs) {
             }
             if (first_partial_ms < 0 && !p.text.empty()) first_partial_ms = ms_since(t_stream);
         }
-        double wall_s = ms_since(t_stream) / 1000.0;
         stt.end_stream();
+        double wall_s = ms_since(t_stream) / 1000.0;
         if (measured) {
             all_first_partial.push_back(first_partial_ms);
-            all_rtf.push_back(audio_seconds / wall_s);
-            std::printf("  run %d: wall=%.2fs RTF=%.3fx first_partial=%.0fms "
+            const double rtf = classic_rtf(wall_s * 1000.0, audio_seconds);
+            all_rtf.push_back(rtf);
+            std::printf("  run %d: wall=%.2fs RTF=%.3f first_partial=%.0fms "
                         "chunk p50=%.1f p95=%.1f max=%.1f ms\n",
-                        r - warmup, wall_s, audio_seconds / wall_s, first_partial_ms,
+                        r - warmup, wall_s, rtf, first_partial_ms,
                         pct(chunk_ms, 50), pct(chunk_ms, 95), max_chunk);
         }
     }
 
-    std::printf("  SUMMARY nemotron: RTF=%.3fx first_partial=%.0fms "
+    std::printf("  SUMMARY nemotron: RTF=%.3f first_partial=%.0fms "
                 "chunk p50=%.1fms p95=%.1fms max=%.1fms\n",
                 pct(all_rtf, 50), pct(all_first_partial, 50),
                 pct(chunk_ms_pooled, 50), pct(chunk_ms_pooled, 95), pct(chunk_ms_pooled, 100));
@@ -203,13 +214,13 @@ void bench_parakeet_batch(const std::string& dir, int warmup, int runs) {
         double dt = ms_since(t);
         if (r >= warmup) {
             all_ms.push_back(dt);
-            std::printf("  run %d: %.0f ms RTF=%.3fx text_len=%zu\n",
-                        r - warmup, dt, audio_seconds / (dt / 1000.0), res.text.size());
+            std::printf("  run %d: %.0f ms RTF=%.3f text_len=%zu\n",
+                        r - warmup, dt, classic_rtf(dt, audio_seconds), res.text.size());
         }
     }
     double med = pct(all_ms, 50);
-    std::printf("  SUMMARY parakeet batch: %.0f ms RTF=%.3fx\n",
-                med, audio_seconds / (med / 1000.0));
+    std::printf("  SUMMARY parakeet batch: %.0f ms RTF=%.3f\n",
+                med, classic_rtf(med, audio_seconds));
 }
 
 double peak_rss_mb() {
@@ -232,7 +243,7 @@ double peak_rss_mb() {
 
 // ---------------------------------------------------------------------------
 // VoxCPM2 — autoregressive TTS, the heaviest model. Wall time per step is the
-// thing that scales; RTF is steps × 160ms / wall_time. Single measured run
+// thing that scales; RTF is wall_time / (steps × 160ms). Single measured run
 // because each takes ~25 s and runs are deterministic with a pinned seed.
 // ---------------------------------------------------------------------------
 
@@ -264,11 +275,11 @@ void bench_voxcpm2(const std::string& dir, int /*warmup*/, int /*runs*/) {
     double wall_ms = ms_since(t);
     int tokens = tts.tokens_generated();
     double audio_s = static_cast<double>(samples) / 48000.0;  // VoxCPM2 = 48 kHz
-    double rtf = audio_s / (wall_ms / 1000.0);
+    double rtf = classic_rtf(wall_ms, audio_s);
     double ms_per_step = wall_ms / std::max(1, tokens);
-    std::printf("  wall=%.0fms tokens=%d audio=%.2fs RTF=%.3fx ms_per_step=%.0fms rss=%.0fMB\n",
+    std::printf("  wall=%.0fms tokens=%d audio=%.2fs RTF=%.3f ms_per_step=%.0fms rss=%.0fMB\n",
                 wall_ms, tokens, audio_s, rtf, ms_per_step, peak_rss_mb());
-    std::printf("  SUMMARY voxcpm2: RTF=%.3fx ms_per_step=%.0fms\n", rtf, ms_per_step);
+    std::printf("  SUMMARY voxcpm2: RTF=%.3f ms_per_step=%.0fms\n", rtf, ms_per_step);
 }
 
 // ---------------------------------------------------------------------------
@@ -300,13 +311,13 @@ void bench_omnilingual(const std::string& dir, int warmup, int runs) {
         if (r >= warmup) {
             all_ms.push_back(dt);
             text = res.text;
-            std::printf("  run %d: %.0f ms RTF=%.3fx text_len=%zu\n",
-                        r - warmup, dt, audio_seconds / (dt / 1000.0), res.text.size());
+            std::printf("  run %d: %.0f ms RTF=%.3f text_len=%zu\n",
+                        r - warmup, dt, classic_rtf(dt, audio_seconds), res.text.size());
         }
     }
     double med = pct(all_ms, 50);
-    std::printf("  SUMMARY omnilingual: %.0f ms RTF=%.3fx rss=%.0fMB text=\"%.80s\"\n",
-                med, audio_seconds / (med / 1000.0), peak_rss_mb(), text.c_str());
+    std::printf("  SUMMARY omnilingual: %.0f ms RTF=%.3f rss=%.0fMB text=\"%.80s\"\n",
+                med, classic_rtf(med, audio_seconds), peak_rss_mb(), text.c_str());
 }
 
 // ---------------------------------------------------------------------------

@@ -96,6 +96,29 @@ void test_word_fallback() {
     printf("  PASS: word_fallback\n");
 }
 
+void test_long_sentence_preserves_whole_words() {
+    // A normal sentence with no clause punctuation must fall back to words,
+    // not character fragments. This specifically protects hyphenated words
+    // in short-turn TTS prompts.
+    std::string text =
+        "The new short-turn graph is ready for quick replies.";
+    auto chunks = chunk(text, /*budget=*/14, /*hard_cap=*/14,
+                        /*min_tail=*/0);
+    assert(chunks.size() >= 2);
+
+    std::string rejoined;
+    bool found_hyphenated_word = false;
+    for (const auto& c : chunks) {
+        assert(fake_count(c) <= 14);
+        if (!rejoined.empty()) rejoined += " ";
+        rejoined += c;
+        if (c == "short-turn") found_hyphenated_word = true;
+    }
+    assert(rejoined == text);
+    assert(found_hyphenated_word);
+    printf("  PASS: long_sentence_preserves_whole_words\n");
+}
+
 void test_monster_word_char_split() {
     std::string word(50, 'x');
     size_t budget = 12;
@@ -158,6 +181,100 @@ void test_newlines_are_boundaries() {
     printf("  PASS: newlines_are_boundaries\n");
 }
 
+void test_retry_split_progress_for_13_to_42_tokens() {
+    for (size_t parent_tokens = 13; parent_tokens <= 42; ++parent_tokens) {
+        std::string word(parent_tokens - 2, 'x');
+        auto pieces = split_text_for_synthesis_retry(
+            word, fake_count, /*min_tokens=*/6,
+            /*max_tokens=*/parent_tokens - 1);
+        assert(pieces.size() == 2);
+        std::string rejoined;
+        for (const auto& piece : pieces) {
+            const size_t child_tokens = fake_count(piece);
+            assert(!piece.empty());
+            assert(child_tokens >= 6);
+            assert(child_tokens < parent_tokens);
+            rejoined += piece;
+        }
+        assert(rejoined == word);
+    }
+    printf("  PASS: retry_split_progress_for_13_to_42_tokens\n");
+}
+
+void test_retry_split_utf8_is_balanced_and_intact() {
+    std::string word;
+    for (int i = 0; i < 14; ++i) word += "\xC3\xBC\xE4\xB8\xAD";  // ü中
+    const size_t parent_tokens = fake_count(word);
+    auto pieces = split_text_for_synthesis_retry(
+        word, fake_count, /*min_tokens=*/6,
+        /*max_tokens=*/parent_tokens - 1);
+    assert(pieces.size() == 2);
+    std::string rejoined;
+    for (const auto& piece : pieces) {
+        assert(!piece.empty());
+        assert((static_cast<unsigned char>(piece[0]) & 0xC0) != 0x80);
+        assert(fake_count(piece) >= 6);
+        assert(fake_count(piece) < parent_tokens);
+        rejoined += piece;
+    }
+    assert(rejoined == word);
+    printf("  PASS: retry_split_utf8_is_balanced_and_intact\n");
+}
+
+void test_retry_split_prefers_word_boundary_when_balanced() {
+    auto pieces = split_text_for_synthesis_retry(
+        "alpha bravo", fake_count, /*min_tokens=*/6, /*max_tokens=*/12);
+    assert(pieces.size() == 2);
+    assert(pieces[0] == "alpha");
+    assert(pieces[1] == "bravo");
+    printf("  PASS: retry_split_prefers_word_boundary_when_balanced\n");
+}
+
+void test_retry_split_does_not_trade_word_boundary_for_balance() {
+    auto pieces = split_text_for_synthesis_retry(
+        "alpha bravo charlie", fake_count, /*min_tokens=*/6,
+        /*max_tokens=*/16);
+    assert(pieces.size() == 2);
+    assert(pieces[0] == "alpha bravo");
+    assert(pieces[1] == "charlie");
+    printf("  PASS: retry_split_does_not_trade_word_boundary_for_balance\n");
+}
+
+void test_retry_split_keeps_punctuation_on_left() {
+    auto pieces = split_text_for_synthesis_retry(
+        "aaaaa. bbbbb", fake_count, /*min_tokens=*/6, /*max_tokens=*/12);
+    assert(pieces.size() == 2);
+    assert(pieces[0] == "aaaaa.");
+    assert(pieces[1] == "bbbbb");
+    printf("  PASS: retry_split_keeps_punctuation_on_left\n");
+}
+
+void test_retry_split_keeps_closing_quote_with_sentence() {
+    auto pieces = split_text_for_synthesis_retry(
+        "aaaaa.\" bbbbb", fake_count, /*min_tokens=*/6, /*max_tokens=*/13);
+    assert(pieces.size() == 2);
+    assert(pieces[0] == "aaaaa.\"");
+    assert(pieces[1] == "bbbbb");
+    printf("  PASS: retry_split_keeps_closing_quote_with_sentence\n");
+}
+
+void test_retry_split_keeps_full_sentence_ender_run() {
+    auto pieces = split_text_for_synthesis_retry(
+        "aaaaa...?!\" bbbbb", fake_count, /*min_tokens=*/6,
+        /*max_tokens=*/18);
+    assert(pieces.size() == 2);
+    assert(pieces[0] == "aaaaa...?!\"");
+    assert(pieces[1] == "bbbbb");
+    printf("  PASS: retry_split_keeps_full_sentence_ender_run\n");
+}
+
+void test_retry_split_impossible_returns_empty() {
+    auto pieces = split_text_for_synthesis_retry(
+        "tiny", fake_count, /*min_tokens=*/6, /*max_tokens=*/6);
+    assert(pieces.empty());
+    printf("  PASS: retry_split_impossible_returns_empty\n");
+}
+
 int main() {
     printf("test_text_chunker:\n");
     test_empty_and_whitespace();
@@ -167,11 +284,20 @@ int main() {
     test_budget_respected();
     test_clause_fallback_for_run_on_sentence();
     test_word_fallback();
+    test_long_sentence_preserves_whole_words();
     test_monster_word_char_split();
     test_utf8_never_split_mid_character();
     test_tiny_tail_merges();
     test_newlines_are_boundaries();
     test_tiny_tail_kept_when_hard_cap_blocks();
+    test_retry_split_progress_for_13_to_42_tokens();
+    test_retry_split_utf8_is_balanced_and_intact();
+    test_retry_split_prefers_word_boundary_when_balanced();
+    test_retry_split_does_not_trade_word_boundary_for_balance();
+    test_retry_split_keeps_punctuation_on_left();
+    test_retry_split_keeps_closing_quote_with_sentence();
+    test_retry_split_keeps_full_sentence_ender_run();
+    test_retry_split_impossible_returns_empty();
     printf("All text_chunker tests passed.\n");
     return 0;
 }
