@@ -33,7 +33,13 @@ KokoroTts::KokoroTts(
 {
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
-    session_ = engine.load(model_path, hw_accel);
+    // The engine's intra-op default (2 threads) is tuned for Parakeet's
+    // profile of many tiny decoder calls. Kokoro is the opposite workload:
+    // one large single-pass graph per chunk, seconds of GEMM-heavy compute,
+    // where the parallel win dominates thread-pool overhead — measured ~1.5x
+    // real-time on 2 phone cores. Give it 4.
+    session_ = engine.load(model_path, hw_accel, /*capture_hint=*/false,
+                           /*intra_threads=*/4);
 
     // Load phonemizer vocabulary and dictionaries
     phonemizer_.load_vocab(data_dir + "/vocab_index.json");

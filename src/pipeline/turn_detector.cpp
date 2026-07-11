@@ -27,10 +27,15 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
     while (offset + chunk_size <= count) {
         float prob = vad_.process_chunk(samples + offset, chunk_size);
 
-        // Post-playback guard: keep VAD model warm but suppress events
+        // Post-playback guard: keep the VAD model warm but suppress events.
+        // The audio itself must keep flowing into the pre-speech ring —
+        // a user who starts talking inside the guard window (common right
+        // after the agent's reply) loses the utterance head otherwise, and
+        // the onset prepend has nothing to rescue it with.
         if (guard_remaining_samples_ > 0) {
             size_t dec = std::min(guard_remaining_samples_, chunk_size);
             guard_remaining_samples_ -= dec;
+            buffer_pre_speech(samples + offset, chunk_size);
             offset += chunk_size;
             continue;
         }
@@ -205,19 +210,21 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 force_end_utterance(streaming_vad_.current_time());
             }
         } else if (pre_speech_capacity_ > 0) {
-            // Maintain rolling pre-speech buffer
-            pre_speech_ring_.insert(pre_speech_ring_.end(),
-                                    samples + offset,
-                                    samples + offset + chunk_size);
-            if (pre_speech_ring_.size() > pre_speech_capacity_) {
-                pre_speech_ring_.erase(
-                    pre_speech_ring_.begin(),
-                    pre_speech_ring_.begin() +
-                        static_cast<long>(pre_speech_ring_.size() - pre_speech_capacity_));
-            }
+            buffer_pre_speech(samples + offset, chunk_size);
         }
 
         offset += chunk_size;
+    }
+}
+
+void TurnDetector::buffer_pre_speech(const float* samples, size_t count) {
+    if (pre_speech_capacity_ == 0) return;
+    pre_speech_ring_.insert(pre_speech_ring_.end(), samples, samples + count);
+    if (pre_speech_ring_.size() > pre_speech_capacity_) {
+        pre_speech_ring_.erase(
+            pre_speech_ring_.begin(),
+            pre_speech_ring_.begin() +
+                static_cast<long>(pre_speech_ring_.size() - pre_speech_capacity_));
     }
 }
 

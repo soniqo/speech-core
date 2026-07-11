@@ -80,6 +80,11 @@ public:
     std::vector<float> utterance_snapshot() const { return utterance_buffer_; }
 
 private:
+    /// Append audio to the rolling pre-speech ring (bounded by
+    /// pre_speech_buffer_duration). Runs during the post-playback guard too,
+    /// so speech beginning inside the guard survives into the onset prepend.
+    void buffer_pre_speech(const float* samples, size_t count);
+
     VADInterface& vad_;
     AgentConfig config_;
     StreamingVAD streaming_vad_;
