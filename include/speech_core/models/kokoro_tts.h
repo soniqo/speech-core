@@ -32,6 +32,11 @@ public:
 private:
     std::vector<float> load_voice_embedding(const std::string& name);
     void auto_switch_voice(const std::string& language);
+    /// Synthesize one already-budgeted chunk of text. May emit nothing when
+    /// the output fails the numerical-stability guard.
+    void synthesize_chunk(const std::string& text,
+                          const TTSChunkCallback& on_chunk,
+                          bool is_final);
 
     const OrtApi* api_;
     OrtSession* session_ = nullptr;

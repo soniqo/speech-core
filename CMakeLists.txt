@@ -48,6 +48,7 @@ add_library(speech_core
     src/diarization/diarization_pipeline.cpp
     src/speech_core_c.cpp
     src/tts_synthesis_options.cpp
+    src/util/text_chunker.cpp
 )
 
 target_include_directories(speech_core

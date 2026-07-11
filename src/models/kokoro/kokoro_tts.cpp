@@ -1,6 +1,7 @@
 #include "speech_core/models/kokoro_tts.h"
 
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/util/text_chunker.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,17 @@
 namespace speech_core {
 
 static constexpr int MAX_PHONEMES = 128;
+
+// Packing budget for one synthesis call, in phonemizer tokens (BOS/EOS
+// included). The E2E export emits at most 120000 samples (5 s at 24 kHz),
+// which real speech reaches at roughly 17 phonemes/s — well before the
+// 128-phoneme input cap — so budget for the output tensor, not the input.
+// 72 tokens is ~4.2 s of speech, leaving margin for slow prosody.
+static constexpr size_t CHUNK_TOKEN_BUDGET = 72;
+// Chunks below this are synthesized unreliably (the numerical-stability
+// guard below drops ≤5-token outputs); merge such tails into the previous
+// chunk instead, up to the MAX_PHONEMES hard cap.
+static constexpr size_t MIN_TAIL_TOKENS = 12;
 
 KokoroTts::KokoroTts(
     const std::string& model_path,
@@ -99,6 +111,30 @@ void KokoroTts::synthesize(
     std::string lang = language.empty() ? "en" : language;
     phonemizer_.set_language(lang);
     auto_switch_voice(lang);
+
+    // The E2E export bounds one synthesis call twice: the input tensor holds
+    // MAX_PHONEMES tokens (tokenize() silently truncates beyond it) and the
+    // output tensor holds 5 s of audio, reached at roughly 17 phonemes/s —
+    // well before the input cap. Split long text into sentence-preferring
+    // chunks whose real speech fits the output budget, and synthesize them
+    // sequentially; each chunk keeps natural prosody and the seams land on
+    // sentence/clause boundaries.
+    auto count_tokens = [this](const std::string& t) {
+        return phonemizer_.tokenize(t, 1 << 20).size();
+    };
+    auto chunks = chunk_text_for_synthesis(
+        text, count_tokens, CHUNK_TOKEN_BUDGET, MAX_PHONEMES,
+        MIN_TAIL_TOKENS);
+    for (size_t i = 0; i < chunks.size(); i++) {
+        if (cancelled_) return;
+        synthesize_chunk(chunks[i], on_chunk, i + 1 == chunks.size());
+    }
+}
+
+void KokoroTts::synthesize_chunk(
+    const std::string& text, const TTSChunkCallback& on_chunk,
+    bool is_final)
+{
     auto* mem = OnnxEngine::get().cpu_memory();
 
     // Text → phoneme token IDs
@@ -189,10 +225,14 @@ void KokoroTts::synthesize(
         OrtTensorTypeAndShapeInfo* audio_info = nullptr;
         ort_check(api_, api_->GetTensorTypeAndShape(outputs[0], &audio_info));
         size_t audio_capacity = 0;
-        ort_check(api_, api_->GetTensorShapeElementCount(audio_info, &audio_capacity));
+        // ort_check throws; release the info before checking the status so
+        // the failure path cannot leak it.
+        OrtStatus* count_status =
+            api_->GetTensorShapeElementCount(audio_info, &audio_capacity);
         api_->ReleaseTensorTypeAndShapeInfo(audio_info);
+        ort_check(api_, count_status);
         if (valid_samples > audio_capacity) {
-            LOGI("TTS: reported %zu samples exceeds audio tensor capacity %zu — "
+            LOGI("TTS: reported %zu samples exceeds audio tensor capacity %zu - "
                  "clamping (max-length input? text='%.40s')",
                  valid_samples, audio_capacity, text.c_str());
             valid_samples = audio_capacity;
@@ -258,9 +298,10 @@ void KokoroTts::synthesize(
             audio[i] *= static_cast<float>(i) / static_cast<float>(fade_in);
         }
 
-        LOGI("TTS: valid=%zu speech_end=%zu peak=%.4f", valid_samples, speech_end, peak);
+        LOGI("TTS: valid=%zu speech_end=%zu peak=%.4f final=%d",
+             valid_samples, speech_end, peak, is_final ? 1 : 0);
 
-        on_chunk(audio, speech_end, true);
+        on_chunk(audio, speech_end, is_final);
     }
 
     // --- cleanup ---
