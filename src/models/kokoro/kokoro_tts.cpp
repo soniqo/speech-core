@@ -177,7 +177,26 @@ void KokoroTts::synthesize(
         // Get valid sample count from model
         int64_t* len_ptr = nullptr;
         ort_check(api_, api_->GetTensorMutableData(outputs[1], (void**)&len_ptr));
-        size_t valid_samples = static_cast<size_t>(len_ptr[0]);
+        size_t valid_samples =
+            static_cast<size_t>(std::max<int64_t>(len_ptr[0], 0));
+
+        // audio_length_samples is predicted from summed durations, but the
+        // E2E export writes audio into a fixed-capacity tensor. Near the
+        // 128-phoneme input cap the prediction can exceed that capacity, and
+        // trusting it walked the loops below past the allocation (SIGSEGV on
+        // any text long enough to fill the input). Clamp to the tensor's
+        // real element count.
+        OrtTensorTypeAndShapeInfo* audio_info = nullptr;
+        ort_check(api_, api_->GetTensorTypeAndShape(outputs[0], &audio_info));
+        size_t audio_capacity = 0;
+        ort_check(api_, api_->GetTensorShapeElementCount(audio_info, &audio_capacity));
+        api_->ReleaseTensorTypeAndShapeInfo(audio_info);
+        if (valid_samples > audio_capacity) {
+            LOGI("TTS: reported %zu samples exceeds audio tensor capacity %zu — "
+                 "clamping (max-length input? text='%.40s')",
+                 valid_samples, audio_capacity, text.c_str());
+            valid_samples = audio_capacity;
+        }
 
         // Inspect peak before any processing — short prompts (≤5 tokens) can
         // make the E2E ONNX export numerically explode (peak in the hundreds).
