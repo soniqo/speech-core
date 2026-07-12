@@ -553,6 +553,33 @@ auto final = stt.end_stream();
   `end_of_utterance()`, not written into the transcript) and `<EOB>` as a soft
   boundary. A config without those ids is plain Nemotron and is byte-identical to
   before.
+- **Decoding.** Greedy by default and byte-identical to prior releases. Set
+  `Config.beam_size > 1` for modified RNN-T beam search: N hypotheses, each with
+  its own predictor state and context position, carried across streaming windows.
+  Greedy stays the default; beam is opt-in.
+- **Contextual biasing (shallow fusion).** `set_context_phrases()` biases beam
+  search toward a caller-supplied phrase list — command words, a brand name, the
+  contact / track names currently on the device. It rides on a tokenizer-agnostic
+  character automaton (`ContextGraph`, Aho-Corasick) that matches on the *decoded
+  surface text* of tokens, so it works even though the published EOU bundle ships
+  only a decode vocabulary (no encoder tokenizer). Matches are anchored to word
+  starts and a broken partial match refunds its bonus via the fail arc, so
+  unrelated speech nets ~zero. Rebuild the phrase list per utterance to inject
+  live entities; no effect unless `beam_size > 1`, and an empty list is a no-op.
+  Tuning note: keep the beam moderate (≈4) and the bonus modest — an over-wide
+  beam or over-strong bonus lets a long phrase dominate acoustically weak audio.
+
+```cpp
+speech_core::OnnxNemotronStreamingStt::Config cfg;
+cfg.beam_size = 4;                        // opt into beam search
+speech_core::OnnxNemotronStreamingStt stt(
+    "/models/parakeet-eou-encoder.onnx", "/models/parakeet-eou-decoder.onnx",
+    "/models/parakeet-eou-joint.onnx",   "/models/vocab.json", cfg);
+// Per-utterance: the fixed command grammar + whatever is on the device now.
+stt.set_context_phrases({"Soniqo", "set volume", "play music", "stop playing",
+                         /* live contact + track names */});
+```
+
 - Encoder INT8, decoder + joint FP32; 320 ms streaming chunks.
 - Model files: [soniqo/Parakeet-EOU-120M-ONNX-INT8](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) — `parakeet-eou-{encoder,decoder,joint}.onnx`, `vocab.json`, `config.json`
 

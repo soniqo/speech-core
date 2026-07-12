@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <utility>
 
 namespace speech_core {
 
@@ -327,9 +329,25 @@ void OnnxNemotronStreamingStt::reset_stream_state() {
     // Prime the decoder LSTM with the blank token so the first joint() call
     // sees a meaningful hidden state (matches the LiteRT impl).
     run_decoder_step(cfg_.blank_id);
+
+    // Beam search seeds one hypothesis from that same primed predictor state.
+    beams_.clear();
+    if (cfg_.beam_size > 1) {
+        BeamHyp seed;
+        seed.dec_h      = dec_h_;
+        seed.dec_c      = dec_c_;
+        seed.dec_hidden = dec_hidden_;
+        seed.ctx        = ctx_.start();
+        beams_.push_back(std::move(seed));
+    }
 }
 
-void OnnxNemotronStreamingStt::run_decoder_step(int64_t token_id) {
+void OnnxNemotronStreamingStt::decoder_step(
+    int64_t token_id,
+    const std::vector<float>& h_in, const std::vector<float>& c_in,
+    std::vector<float>& hidden_out,
+    std::vector<float>& h_out, std::vector<float>& c_out)
+{
     auto* mem = OnnxEngine::get().cpu_memory();
 
     const int64_t s_tok[2]   = {1, 1};
@@ -343,10 +361,10 @@ void OnnxNemotronStreamingStt::run_decoder_step(int64_t token_id) {
         mem, &tok, sizeof(int64_t), s_tok, 2,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &t_tok));
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, dec_h_.data(), dec_h_.size() * sizeof(float), s_state, 3,
+        mem, const_cast<float*>(h_in.data()), h_in.size() * sizeof(float), s_state, 3,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_h));
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, dec_c_.data(), dec_c_.size() * sizeof(float), s_state, 3,
+        mem, const_cast<float*>(c_in.data()), c_in.size() * sizeof(float), s_state, 3,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_c));
 
     OrtValue* in[3]  = {t_tok, t_h, t_c};
@@ -356,19 +374,67 @@ void OnnxNemotronStreamingStt::run_decoder_step(int64_t token_id) {
         dec_io_.in_names.data(),  in,  dec_io_.in_names.size(),
         dec_io_.out_names.data(), dec_io_.out_names.size(), out));
 
+    // Size the destinations (no-op when already sized) before copying. Safe
+    // when the out vectors alias the in vectors — Run has finished reading the
+    // inputs, and same-size resize keeps the wrapped pointers valid.
+    hidden_out.resize(static_cast<size_t>(cfg_.decoder_hidden));
+    h_out.resize(static_cast<size_t>(cfg_.decoder_layers) * cfg_.decoder_hidden);
+    c_out.resize(h_out.size());
+
     auto copy_out = [&](OrtValue* v, void* dst, size_t bytes) {
         void* p = nullptr;
         ort_check(api_, api_->GetTensorMutableData(v, &p));
         std::memcpy(dst, p, bytes);
     };
-    copy_out(out[0], dec_hidden_.data(), dec_hidden_.size() * sizeof(float));
-    copy_out(out[1], dec_h_.data(),      dec_h_.size()      * sizeof(float));
-    copy_out(out[2], dec_c_.data(),      dec_c_.size()      * sizeof(float));
+    copy_out(out[0], hidden_out.data(), hidden_out.size() * sizeof(float));
+    copy_out(out[1], h_out.data(),      h_out.size()      * sizeof(float));
+    copy_out(out[2], c_out.data(),      c_out.size()      * sizeof(float));
 
     for (int i = 2; i >= 0; --i) api_->ReleaseValue(out[i]);
     api_->ReleaseValue(t_c);
     api_->ReleaseValue(t_h);
     api_->ReleaseValue(t_tok);
+}
+
+void OnnxNemotronStreamingStt::run_decoder_step(int64_t token_id) {
+    decoder_step(token_id, dec_h_, dec_c_, dec_hidden_, dec_h_, dec_c_);
+}
+
+void OnnxNemotronStreamingStt::joint_logits(
+    const float* enc_frame, const std::vector<float>& dec_hidden,
+    std::vector<float>& logits)
+{
+    auto* mem = OnnxEngine::get().cpu_memory();
+    const int64_t s_encf  [3] = {1, 1, cfg_.encoder_hidden};
+    const int64_t s_dechid[3] = {1, 1, cfg_.decoder_hidden};
+    const size_t  n_logits    = static_cast<size_t>(cfg_.vocab_size) + 1;
+    logits.resize(n_logits);
+
+    OrtValue* t_encf   = nullptr;
+    OrtValue* t_dechid = nullptr;
+    ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+        mem, const_cast<float*>(enc_frame),
+        static_cast<size_t>(cfg_.encoder_hidden) * sizeof(float),
+        s_encf, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_encf));
+    ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+        mem, const_cast<float*>(dec_hidden.data()),
+        dec_hidden.size() * sizeof(float),
+        s_dechid, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_dechid));
+
+    OrtValue* jin[2]  = {t_encf, t_dechid};
+    OrtValue* jout[1] = {nullptr};
+    ort_check(api_, api_->Run(
+        jnt_, nullptr,
+        jnt_io_.in_names.data(),  jin,  jnt_io_.in_names.size(),
+        jnt_io_.out_names.data(), jnt_io_.out_names.size(), jout));
+
+    void* p = nullptr;
+    ort_check(api_, api_->GetTensorMutableData(jout[0], &p));
+    std::memcpy(logits.data(), p, n_logits * sizeof(float));
+
+    api_->ReleaseValue(jout[0]);
+    api_->ReleaseValue(t_dechid);
+    api_->ReleaseValue(t_encf);
 }
 
 // Drain one window from pending_, run mel -> encoder (cache-aware) -> greedy
@@ -510,45 +576,21 @@ std::string OnnxNemotronStreamingStt::run_window() {
     api_->ReleaseValue(t_mlen);
     api_->ReleaseValue(t_mel);
 
-    // Greedy RNN-T over the COMMITTED encoder frames (frames 0..output_frames_-1).
-    // The remaining T_out - output_frames_ frames are right-context lookahead,
-    // re-settled on the next window — feeding them duplicates output. For
-    // 80 ms chunks (output_frames_=1) we decode only frame 0, same as before.
-    // For 160/560/1120 ms (output_frames_=2/7/14) we now decode multiple
-    // frames per window — this is what closes the streaming-quality gap.
-    const int64_t s_encf  [3] = {1, 1, cfg_.encoder_hidden};
-    const int64_t s_dechid[3] = {1, 1, cfg_.decoder_hidden};
-    const size_t  n_logits     = static_cast<size_t>(cfg_.vocab_size) + 1;
+    // Decode the committed frames (0..output_frames_-1). The remaining
+    // T_out - output_frames_ frames are right-context lookahead, re-settled on
+    // the next window. Greedy is the default and byte-identical to before;
+    // beam search (Config.beam_size > 1) carries the alternative hypotheses.
+    return (cfg_.beam_size > 1) ? decode_beam(encoded) : decode_greedy(encoded);
+}
 
+std::string OnnxNemotronStreamingStt::decode_greedy(const std::vector<float>& encoded) {
+    const size_t n_logits = static_cast<size_t>(cfg_.vocab_size) + 1;
+    std::vector<float> logits;
     std::string emitted;
     for (int frame = 0; frame < output_frames_; ++frame) {
-        // Offset into encoded[]: frame 0 starts at index 0, frame 1 at
-        // encoder_hidden, etc. The joint sees one encoder_hidden vector.
         const size_t frame_off = static_cast<size_t>(frame) * cfg_.encoder_hidden;
         for (int expand = 0; expand < cfg_.max_symbols; ++expand) {
-            OrtValue* t_encf   = nullptr;
-            OrtValue* t_dechid = nullptr;
-            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-                mem, encoded.data() + frame_off,
-                static_cast<size_t>(cfg_.encoder_hidden) * sizeof(float),
-                s_encf, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_encf));
-            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-                mem, dec_hidden_.data(), dec_hidden_.size() * sizeof(float),
-                s_dechid, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_dechid));
-
-            OrtValue* jin[2]  = {t_encf, t_dechid};
-            OrtValue* jout[1] = {nullptr};
-            ort_check(api_, api_->Run(
-                jnt_, nullptr,
-                jnt_io_.in_names.data(),  jin,  jnt_io_.in_names.size(),
-                jnt_io_.out_names.data(), jnt_io_.out_names.size(), jout));
-
-            std::vector<float> logits(n_logits);
-            copy_out(jout[0], logits.data(), n_logits * sizeof(float));
-
-            api_->ReleaseValue(jout[0]);
-            api_->ReleaseValue(t_dechid);
-            api_->ReleaseValue(t_encf);
+            joint_logits(encoded.data() + frame_off, dec_hidden_, logits);
 
             int   best   = 0;
             float best_v = logits[0];
@@ -576,6 +618,143 @@ std::string OnnxNemotronStreamingStt::run_window() {
     return emitted;
 }
 
+const OnnxNemotronStreamingStt::BeamHyp*
+OnnxNemotronStreamingStt::best_beam() const {
+    const BeamHyp* best = nullptr;
+    for (const auto& h : beams_) {
+        if (!best || h.score > best->score) best = &h;
+    }
+    return best;
+}
+
+void OnnxNemotronStreamingStt::set_context_phrases(
+    const std::vector<std::string>& phrases, float per_char, float completion) {
+    ctx_ = ContextGraph(phrases, per_char, completion);
+}
+
+// Modified RNN-T beam search over the committed frames, with optional
+// contextual biasing. Frame-synchronous: within a frame each hypothesis may
+// emit up to max_symbols tokens (blank ends its emission for that frame). The
+// context graph adds a log-domain bonus that steers the beam toward hypotheses
+// spelling out a bias phrase. State (beams_) carries across windows exactly
+// like the greedy predictor state does.
+std::string OnnxNemotronStreamingStt::decode_beam(const std::vector<float>& encoded) {
+    const int    n_logits = cfg_.vocab_size + 1;
+    const int    beam     = std::max(2, cfg_.beam_size);
+    const size_t enc_h    = static_cast<size_t>(cfg_.encoder_hidden);
+    const bool   biasing  = !ctx_.empty();
+
+    struct Cand {
+        int    base;    // index into `active`
+        int    token;   // emitted token (blank_id = advance frame)
+        double score;   // base.score + logP(token) [+ context bonus]
+    };
+
+    std::vector<float> logits;
+    std::vector<std::pair<float, int>> ranked;  // (logit, token) for non-blank top-k
+
+    for (int frame = 0; frame < output_frames_; ++frame) {
+        const float* enc = encoded.data() + static_cast<size_t>(frame) * enc_h;
+
+        // Terminal (EOU) hypotheses are carried forward untouched; only live
+        // ones expand at this frame.
+        std::vector<BeamHyp> active;
+        std::vector<BeamHyp> frozen;
+        for (auto& h : beams_) {
+            (h.eou ? frozen : active).push_back(std::move(h));
+        }
+        beams_.clear();
+
+        for (int step = 0; step < cfg_.max_symbols && !active.empty(); ++step) {
+            std::vector<Cand> cands;
+            cands.reserve(active.size() * (static_cast<size_t>(beam) + 1));
+
+            for (size_t i = 0; i < active.size(); ++i) {
+                joint_logits(enc, active[i].dec_hidden, logits);
+
+                float mx = logits[0];
+                for (int t = 1; t < n_logits; ++t) mx = std::max(mx, logits[t]);
+                double sum = 0.0;
+                for (int t = 0; t < n_logits; ++t) sum += std::exp(logits[t] - mx);
+                const double lse = static_cast<double>(mx) + std::log(sum);
+
+                // Blank: hypothesis advances a frame, predictor unchanged.
+                cands.push_back({static_cast<int>(i), cfg_.blank_id,
+                                 active[i].score + (logits[cfg_.blank_id] - lse)});
+
+                // Top-`beam` non-blank tokens (ranking by logit is monotone in logP).
+                ranked.clear();
+                for (int t = 0; t < n_logits; ++t) {
+                    if (t != cfg_.blank_id) ranked.emplace_back(logits[t], t);
+                }
+                const size_t keep = std::min(static_cast<size_t>(beam), ranked.size());
+                std::partial_sort(ranked.begin(), ranked.begin() + keep, ranked.end(),
+                                  [](const auto& a, const auto& b) { return a.first > b.first; });
+                for (size_t k = 0; k < keep; ++k) {
+                    const int t = ranked[k].second;
+                    double sc = active[i].score + (logits[t] - lse);
+                    if (biasing && t != cfg_.eou_token_id && t != cfg_.eob_token_id) {
+                        sc += ctx_.advance(active[i].ctx, token_to_text(t)).bonus;
+                    }
+                    cands.push_back({static_cast<int>(i), t, sc});
+                }
+            }
+
+            // Keep the best `beam` candidates across all active hypotheses.
+            const size_t keepc = std::min(static_cast<size_t>(beam), cands.size());
+            std::partial_sort(cands.begin(), cands.begin() + keepc, cands.end(),
+                              [](const Cand& a, const Cand& b) { return a.score > b.score; });
+            cands.resize(keepc);
+
+            std::vector<BeamHyp> next_active;
+            for (const Cand& cd : cands) {
+                BeamHyp h = active[cd.base];  // copy: several cands can share a base
+                h.score = cd.score;
+
+                if (cd.token == cfg_.blank_id) {
+                    frozen.push_back(std::move(h));           // frame done for this hyp
+                    continue;
+                }
+                if (cd.token == cfg_.eou_token_id) {
+                    h.eou = true;
+                    decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
+                                 h.dec_hidden, h.dec_h, h.dec_c);
+                    frozen.push_back(std::move(h));           // terminal
+                    continue;
+                }
+                if (cd.token == cfg_.eob_token_id) {
+                    decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
+                                 h.dec_hidden, h.dec_h, h.dec_c);
+                    next_active.push_back(std::move(h));      // soft boundary, no text
+                    continue;
+                }
+                if (biasing) h.ctx = ctx_.advance(active[cd.base].ctx, token_to_text(cd.token)).state;
+                h.text += token_to_text(cd.token);
+                decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
+                             h.dec_hidden, h.dec_h, h.dec_c);
+                next_active.push_back(std::move(h));
+            }
+            active = std::move(next_active);
+        }
+
+        // Carry survivors (blanked = frozen; still-active hit the max_symbols cap)
+        // to the next frame, pruned to the beam width.
+        beams_ = std::move(frozen);
+        for (auto& h : active) beams_.push_back(std::move(h));
+        if (static_cast<int>(beams_.size()) > beam) {
+            std::partial_sort(beams_.begin(), beams_.begin() + beam, beams_.end(),
+                              [](const BeamHyp& a, const BeamHyp& b) { return a.score > b.score; });
+            beams_.resize(beam);
+        }
+    }
+
+    const BeamHyp* best = best_beam();
+    if (best && best->eou) eou_detected_ = true;
+    // Beam mode reports the full best transcript from end_stream(), not an
+    // incremental per-window delta, so return nothing here.
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // Streaming API
 // ---------------------------------------------------------------------------
@@ -594,10 +773,18 @@ PartialResult OnnxNemotronStreamingStt::push_chunk(const float* audio, size_t le
     while (static_cast<int>(pending_.size()) >= chunk_samples()) {
         text += run_window();
     }
-    accumulated_text_ += text;
 
     PartialResult out;
-    out.text = std::move(text);
+    if (cfg_.beam_size > 1) {
+        // Beam mode: run_window() emits no incremental delta; the transcript
+        // lives in the hypotheses. Report the current best as a full partial
+        // (replace semantics — the best path can change as more audio arrives).
+        const BeamHyp* best = best_beam();
+        out.text = best ? best->text : std::string{};
+    } else {
+        accumulated_text_ += text;
+        out.text = std::move(text);
+    }
     return out;
 }
 
@@ -623,7 +810,12 @@ void OnnxNemotronStreamingStt::flush_stream() {
 TranscriptionResult OnnxNemotronStreamingStt::end_stream() {
     flush_stream();
     TranscriptionResult out;
-    out.text = accumulated_text_;
+    if (cfg_.beam_size > 1) {
+        const BeamHyp* best = best_beam();
+        out.text = best ? best->text : std::string{};
+    } else {
+        out.text = accumulated_text_;
+    }
     stream_init_ = false;
     return out;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "speech_core/interfaces.h"
+#include "speech_core/models/context_graph.h"
 
 #include <onnxruntime_c_api.h>
 
@@ -64,6 +65,10 @@ public:
         // frontend (NeMo `preemph`, read from config.json's preEmphasis).
         // 0 = disabled, keeping the plain-Nemotron path unchanged.
         float preemph         = 0.0f;
+        // RNN-T decoding: <=1 keeps the original greedy path (byte-identical);
+        // >1 enables modified beam search, which is what contextual biasing
+        // (set_context_phrases) rides on. Greedy stays the default.
+        int   beam_size       = 0;
     };
 
     OnnxNemotronStreamingStt(const std::string& encoder_path,
@@ -88,6 +93,13 @@ public:
     // stream itself. Reset by begin_stream() / cancel_stream().
     bool end_of_utterance() const { return eou_detected_; }
 
+    // Contextual biasing (shallow fusion). Nudges beam search toward the given
+    // surface phrases — command words, a brand name, live contact/track names.
+    // No effect unless Config.beam_size > 1. Rebuild per utterance to inject the
+    // entities currently on the device. Empty list clears biasing.
+    void set_context_phrases(const std::vector<std::string>& phrases,
+                             float per_char = 1.5f, float completion = 3.0f);
+
     // --- STTInterface (streaming — the real path) ---
     bool supports_streaming() const override { return true; }
     void begin_stream(int sample_rate) override;
@@ -100,8 +112,32 @@ private:
     bool load_vocab(const std::string& path);
     void reset_stream_state();
     void run_decoder_step(int64_t token_id);
+    // Pure predictor (decoder LSTM) step: reads (token, h_in, c_in), writes the
+    // fresh joint-input hidden + next LSTM state. No shared-state side effects,
+    // so beam hypotheses each carry their own predictor state. run_decoder_step
+    // is this applied to the greedy path's shared members.
+    void decoder_step(int64_t token_id,
+                      const std::vector<float>& h_in, const std::vector<float>& c_in,
+                      std::vector<float>& hidden_out,
+                      std::vector<float>& h_out, std::vector<float>& c_out);
+    // Run the joint network for one encoder frame + predictor hidden -> logits.
+    void joint_logits(const float* enc_frame, const std::vector<float>& dec_hidden,
+                      std::vector<float>& logits);
     std::string run_window();
+    std::string decode_greedy(const std::vector<float>& encoded);
+    std::string decode_beam(const std::vector<float>& encoded);
     std::string token_to_text(int id) const;
+
+    // One beam-search hypothesis: emitted text, running log-prob score, its own
+    // predictor state, and its position in the context-biasing automaton.
+    struct BeamHyp {
+        std::string        text;
+        double             score = 0.0;
+        std::vector<float> dec_h, dec_c, dec_hidden;
+        ContextGraph::State ctx = 0;
+        bool               eou = false;
+    };
+    const BeamHyp* best_beam() const;
     // Mel window fed to the encoder, in samples. EOU streams melFrames*hop
     // windows advanced by a smaller shift (see run_window); Nemotron uses the
     // original (melFrames-1)*hop stride where window == shift.
@@ -149,12 +185,16 @@ private:
     std::vector<float> cache_last_channel_;  // [L, 1, attn, H]
     std::vector<float> cache_last_time_;     // [L, 1, H, conv]
     int64_t            cache_last_channel_len_ = 0;
-    std::vector<float> dec_h_, dec_c_;       // [L, 1, Hd]
-    std::vector<float> dec_hidden_;          // [Hd] — joint input
+    std::vector<float> dec_h_, dec_c_;       // [L, 1, Hd]  (greedy path)
+    std::vector<float> dec_hidden_;          // [Hd] — joint input (greedy path)
     std::string        accumulated_text_;
     bool               stream_init_ = false;
     bool               eou_detected_ = false;  // Parakeet-EOU: <EOU> seen this stream
     float              preemph_prev_ = 0.0f;   // last raw sample, for cross-window pre-emphasis
+
+    // ---- beam-search state (Config.beam_size > 1) ----
+    std::vector<BeamHyp> beams_;   // carried across windows, like the greedy predictor state
+    ContextGraph         ctx_;     // contextual-biasing automaton (empty = no biasing)
 };
 
 }  // namespace speech_core
