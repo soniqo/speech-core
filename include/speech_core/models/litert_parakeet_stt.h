@@ -52,14 +52,10 @@ public:
     TranscriptionResult end_stream() override;
     void cancel_stream() override;
 
-    /// Restrict Parakeet's language-token choice to one language.
-    /// Accepts ISO codes or BCP-47 tags ("en", "en-US"). "auto" clears it.
-    bool set_language(const std::string& language);
-
-    /// Restrict Parakeet's language-token choice to this shortlist.
-    /// Unknown languages are ignored; returns false if none resolve.
-    bool set_allowed_languages(const std::vector<std::string>& languages);
-    void clear_language_guidance();
+    // Note: no language forcing. Parakeet TDT is a transducer with no
+    // decoder prompt channel, and the published v3 exports never emit a
+    // language token in greedy decode — the model autodetects, exactly like
+    // every other Parakeet runtime (NeMo, sherpa-onnx, onnx-asr).
 
 private:
     struct DecodeResult {
@@ -82,7 +78,6 @@ private:
 
     std::unordered_map<int, std::string> vocab_;
     std::unordered_map<int, std::string> lang_tokens_;
-    std::vector<int> guided_lang_tokens_;
 
     std::vector<float> stream_buffer_;
     int  stream_sample_rate_ = 16000;

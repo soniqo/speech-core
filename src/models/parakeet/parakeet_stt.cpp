@@ -2,7 +2,6 @@
 
 #include "speech_core/audio/mel.h"
 #include "speech_core/models/onnx_engine.h"
-#include "speech_core/models/parakeet_language_guidance.h"
 #include "speech_core/util/json.h"
 
 #include <algorithm>
@@ -117,26 +116,6 @@ bool ParakeetStt::load_vocab(const std::string& path) {
     return !vocab_.empty();
 }
 
-bool ParakeetStt::set_language(const std::string& language) {
-    const std::string code = parakeet::normalize_language_code(language);
-    if (code.empty() || code == "auto") {
-        clear_language_guidance();
-        return true;
-    }
-    return set_allowed_languages({code});
-}
-
-bool ParakeetStt::set_allowed_languages(const std::vector<std::string>& languages) {
-    auto resolved = parakeet::resolve_language_tokens(lang_tokens_, languages);
-    if (resolved.empty()) return false;
-    guided_lang_tokens_ = std::move(resolved);
-    return true;
-}
-
-void ParakeetStt::clear_language_guidance() {
-    guided_lang_tokens_.clear();
-}
-
 std::string ParakeetStt::decode_tokens(const std::vector<int>& token_ids) {
     std::string pieces;
     for (int id : token_ids) {
@@ -162,6 +141,12 @@ std::vector<float> ParakeetStt::compute_mel(const float* audio, size_t length) {
         emphasized[i] = audio[i] - cfg_.pre_emphasis * audio[i - 1];
     }
 
+    // Keeps the mel_spectrogram defaults (HTK spacing, 1e-10 floor,
+    // uncentered) rather than the NeMo training contract (Slaney, 2^-24,
+    // centered): A/B on real recordings shows the published INT8 export
+    // transcribes better with these defaults ("What music do we have?"
+    // vs "What müzik do we have?" and a dropped segment under the NeMo
+    // flags), so the shipped behavior is the empirically correct one.
     auto mel = audio::mel_spectrogram(
         emphasized.data(), emphasized.size(),
         cfg_.sample_rate, cfg_.n_fft, cfg_.hop_length,
@@ -517,9 +502,6 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
                 best_token = i;
             }
         }
-        best_token = parakeet::apply_language_guidance(
-            logits, best_token, &best_score, lang_tokens_, guided_lang_tokens_);
-
         if (best_token == cfg_.blank_id) {
             // Blank: advance time, keep LSTM state unchanged
             t += 1;

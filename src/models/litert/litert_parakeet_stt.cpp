@@ -1,7 +1,6 @@
 #include "speech_core/models/litert_parakeet_stt.h"
 
 #include "speech_core/audio/mel.h"
-#include "speech_core/models/parakeet_language_guidance.h"
 #include "speech_core/util/json.h"
 
 #include <algorithm>
@@ -64,26 +63,6 @@ bool LiteRTParakeetStt::load_vocab(const std::string& path) {
     LOGI("LiteRT Parakeet vocab: %zu tokens, %zu language tokens, blank=%d",
          vocab_.size(), lang_tokens_.size(), cfg_.blank_id);
     return !vocab_.empty();
-}
-
-bool LiteRTParakeetStt::set_language(const std::string& language) {
-    const std::string code = parakeet::normalize_language_code(language);
-    if (code.empty() || code == "auto") {
-        clear_language_guidance();
-        return true;
-    }
-    return set_allowed_languages({code});
-}
-
-bool LiteRTParakeetStt::set_allowed_languages(const std::vector<std::string>& languages) {
-    auto resolved = parakeet::resolve_language_tokens(lang_tokens_, languages);
-    if (resolved.empty()) return false;
-    guided_lang_tokens_ = std::move(resolved);
-    return true;
-}
-
-void LiteRTParakeetStt::clear_language_guidance() {
-    guided_lang_tokens_.clear();
 }
 
 // Decode token ids → text. SentencePiece ▁ (U+2581, UTF-8 E2 96 81) marks a
@@ -337,8 +316,6 @@ LiteRTParakeetStt::DecodeResult LiteRTParakeetStt::tdt_decode(
         for (int i = 1; i <= kVocab; ++i) {
             if (logits[i] > best_logit) { best_logit = logits[i]; best_token = i; }
         }
-        best_token = parakeet::apply_language_guidance(
-            logits.data(), best_token, &best_logit, lang_tokens_, guided_lang_tokens_);
 
         // argmax over the duration bins stored at [kBlank+1 ..].
         int   best_dur       = 0;
