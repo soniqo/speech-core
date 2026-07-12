@@ -2,6 +2,7 @@
 
 #include "speech_core/interfaces.h"
 #include "speech_core/models/context_graph.h"
+#include "speech_core/models/transducer_beam.h"
 
 #include <onnxruntime_c_api.h>
 
@@ -69,6 +70,14 @@ public:
         // >1 enables modified beam search, which is what contextual biasing
         // (set_context_phrases) rides on. Greedy stays the default.
         int   beam_size       = 0;
+        // Per-emitted-token reward for beam search — a shallow-fusion blank
+        // penalty for models whose beam under-emits (blank-heavy hypotheses
+        // win and truncate). Default 0: the published Parakeet-EOU export does
+        // NOT under-emit at beam width 4 (measured — its acoustics are
+        // confident enough that the correct tokens win), and a positive reward
+        // there causes over-emission/hallucination. Raise only for a model
+        // measured to truncate. See transducer_beam.h.
+        float beam_emit_bonus = 0.0f;
     };
 
     OnnxNemotronStreamingStt(const std::string& encoder_path,
@@ -132,16 +141,14 @@ private:
     std::string decode_beam(const std::vector<float>& encoded);
     std::string token_to_text(int id) const;
 
-    // One beam-search hypothesis: emitted text, running log-prob score, its own
-    // predictor state, and its position in the context-biasing automaton.
-    struct BeamHyp {
-        std::string        text;
-        double             score = 0.0;
-        std::vector<float> dec_h, dec_c, dec_hidden;
-        ContextGraph::State ctx = 0;
-        bool               eou = false;
+    // Predictor (decoder LSTM) state carried per beam hypothesis. The generic
+    // beam (transducer_beam.h) treats it as an opaque, copyable State.
+    struct PredState {
+        std::vector<float> h, c, hidden;
     };
-    const BeamHyp* best_beam() const;
+    using Beam = transducer::BeamHyp<PredState, ContextGraph::State>;
+    const Beam* best_beam() const;
+    std::string beam_text(const Beam& b) const;  // token ids -> transcript
     // Mel window fed to the encoder, in samples. EOU streams melFrames*hop
     // windows advanced by a smaller shift (see run_window); Nemotron uses the
     // original (melFrames-1)*hop stride where window == shift.
@@ -197,8 +204,8 @@ private:
     float              preemph_prev_ = 0.0f;   // last raw sample, for cross-window pre-emphasis
 
     // ---- beam-search state (Config.beam_size > 1) ----
-    std::vector<BeamHyp> beams_;   // carried across windows, like the greedy predictor state
-    ContextGraph         ctx_;     // contextual-biasing automaton (empty = no biasing)
+    std::vector<Beam> beams_;   // carried across windows, like the greedy predictor state
+    ContextGraph      ctx_;     // contextual-biasing automaton (empty = no biasing)
 };
 
 }  // namespace speech_core
