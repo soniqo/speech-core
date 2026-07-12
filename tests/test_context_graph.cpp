@@ -84,6 +84,25 @@ void test_word_boundary_anchor() {
                 inside, atword);
 }
 
+void test_bonus_cap_bounds_long_phrases() {
+    // Uncapped: a long phrase accumulates far more than a short one.
+    ContextGraph uncapped({"what can you do", "stop"}, 1.5f, 3.0f, /*max_bonus=*/0.0f);
+    const float long_unc  = run(uncapped, {w("what"), w("can"), w("you"), w("do")});
+    const float short_unc = run(uncapped, {w("stop")});
+    assert(long_unc > short_unc + 5.0f);  // long dominates when uncapped
+
+    // Capped: the long phrase's per-char accumulation is bounded, so it no
+    // longer runs away past the short one (both reach the ceiling + completion).
+    ContextGraph capped({"what can you do", "stop"}, 1.5f, 3.0f, /*max_bonus=*/6.0f);
+    const float long_cap  = run(capped, {w("what"), w("can"), w("you"), w("do")});
+    const float short_cap = run(capped, {w("stop")});
+    assert(long_cap <= long_unc);                 // capped is not larger
+    assert(long_cap <= short_cap + 0.01f);         // long no longer dominates
+    std::printf("  PASS: bonus_cap_bounds_long_phrases "
+                "(long unc=%.1f cap=%.1f | short unc=%.1f cap=%.1f)\n",
+                long_unc, long_cap, short_unc, short_cap);
+}
+
 void test_multiple_phrases() {
     ContextGraph g({"soniqo", "set volume", "play"}, 1.5f, 3.0f);
     assert(run(g, {w("play")}) > 5.0f);
@@ -101,6 +120,7 @@ int main() {
     test_partial_prefix_does_not_beat_full_match();
     test_multiword_phrase();
     test_word_boundary_anchor();
+    test_bonus_cap_bounds_long_phrases();
     test_multiple_phrases();
     std::printf("All context graph tests passed.\n");
     return 0;

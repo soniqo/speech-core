@@ -1,5 +1,6 @@
 #include "speech_core/models/context_graph.h"
 
+#include <algorithm>
 #include <cctype>
 #include <deque>
 
@@ -38,7 +39,7 @@ std::string ContextGraph::normalize(const std::string& text) {
 }
 
 ContextGraph::ContextGraph(const std::vector<std::string>& phrases,
-                           float per_char, float completion)
+                           float per_char, float completion, float max_bonus)
     : per_char_(per_char), completion_(completion) {
     // Build the trie. Each phrase is anchored with a leading space so it only
     // matches at a word boundary (the emitted text has a space from U+2581 at
@@ -88,9 +89,16 @@ ContextGraph::ContextGraph(const std::vector<std::string>& phrases,
         }
     }
 
+    // Node score = per_char * depth, optionally capped. The cap flattens the
+    // deep region of every phrase, so no single match can accumulate an
+    // unbounded per-character boost (telescoping bonuses derive from these
+    // scores, so the cap needs no special-casing in advance()). Fail-arc
+    // refunds still work: a shallower fail target always has a lower score.
     score_.assign(nodes_.size(), 0.0f);
     for (size_t n = 0; n < nodes_.size(); ++n) {
-        score_[n] = per_char_ * static_cast<float>(nodes_[n].depth);
+        float s = per_char_ * static_cast<float>(nodes_[n].depth);
+        if (max_bonus > 0.0f) s = std::min(s, max_bonus);
+        score_[n] = s;
     }
 }
 

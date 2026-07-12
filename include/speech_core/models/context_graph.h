@@ -32,9 +32,19 @@ public:
     /// @param phrases    surface phrases to bias toward (case-insensitive).
     /// @param per_char   log-domain bonus per matched character inside a phrase.
     /// @param completion extra bonus applied when a whole phrase completes.
+    /// @param max_bonus  ceiling on the per-character accumulation a single
+    ///                   phrase match can reach (completion is added on top).
+    ///                   0 = uncapped (default) — the same behavior as
+    ///                   sherpa-onnx / k2, where longer phrases accumulate a
+    ///                   larger boost and the score must be tuned by hand. A
+    ///                   positive cap bounds each phrase's contribution, so an
+    ///                   over-wide beam or long bias list can't let a long
+    ///                   phrase override clear audio; set it low enough and
+    ///                   sufficiently long phrases all reach the same ceiling.
     explicit ContextGraph(const std::vector<std::string>& phrases,
                           float per_char = 1.5f,
-                          float completion = 3.0f);
+                          float completion = 3.0f,
+                          float max_bonus = 0.0f);
 
     /// True when no phrase produced any matchable content (biasing is a no-op).
     bool empty() const { return nodes_.size() <= 1; }

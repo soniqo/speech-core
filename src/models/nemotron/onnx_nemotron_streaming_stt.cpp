@@ -628,8 +628,9 @@ OnnxNemotronStreamingStt::best_beam() const {
 }
 
 void OnnxNemotronStreamingStt::set_context_phrases(
-    const std::vector<std::string>& phrases, float per_char, float completion) {
-    ctx_ = ContextGraph(phrases, per_char, completion);
+    const std::vector<std::string>& phrases, float per_char, float completion,
+    float max_bonus) {
+    ctx_ = ContextGraph(phrases, per_char, completion, max_bonus);
 }
 
 // Modified RNN-T beam search over the committed frames, with optional

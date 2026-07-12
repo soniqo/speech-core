@@ -96,9 +96,13 @@ public:
     // Contextual biasing (shallow fusion). Nudges beam search toward the given
     // surface phrases — command words, a brand name, live contact/track names.
     // No effect unless Config.beam_size > 1. Rebuild per utterance to inject the
-    // entities currently on the device. Empty list clears biasing.
+    // entities currently on the device. Empty list clears biasing. `max_bonus`
+    // optionally caps each phrase's per-character boost (0 = uncapped, matching
+    // sherpa-onnx/k2); a positive cap keeps a long phrase from overriding clear
+    // audio at wider beams. See ContextGraph.
     void set_context_phrases(const std::vector<std::string>& phrases,
-                             float per_char = 1.5f, float completion = 3.0f);
+                             float per_char = 1.5f, float completion = 3.0f,
+                             float max_bonus = 0.0f);
 
     // --- STTInterface (streaming — the real path) ---
     bool supports_streaming() const override { return true; }

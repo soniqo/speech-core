@@ -566,8 +566,14 @@ auto final = stt.end_stream();
   starts and a broken partial match refunds its bonus via the fail arc, so
   unrelated speech nets ~zero. Rebuild the phrase list per utterance to inject
   live entities; no effect unless `beam_size > 1`, and an empty list is a no-op.
-  Tuning note: keep the beam moderate (≈4) and the bonus modest — an over-wide
-  beam or over-strong bonus lets a long phrase dominate acoustically weak audio.
+- **Over-biasing guardrail (optional).** Uncapped, longer phrases accumulate a
+  larger boost — the same behavior as sherpa-onnx / k2, where the score is tuned
+  by hand and an over-wide beam or long list can let a phrase override clear
+  audio (e.g. every segment collapsing to "what can you do"). Pass a positive
+  `max_bonus` to `set_context_phrases()` to cap each phrase's per-character
+  boost: sufficiently long phrases then all reach the same ceiling, so no single
+  phrase dominates. Default 0 keeps the uncapped, tune-by-hand behavior. With a
+  cap set, a wider beam and a longer bias list stay safe.
 
 ```cpp
 speech_core::OnnxNemotronStreamingStt::Config cfg;
@@ -576,8 +582,11 @@ speech_core::OnnxNemotronStreamingStt stt(
     "/models/parakeet-eou-encoder.onnx", "/models/parakeet-eou-decoder.onnx",
     "/models/parakeet-eou-joint.onnx",   "/models/vocab.json", cfg);
 // Per-utterance: the fixed command grammar + whatever is on the device now.
+// The trailing max_bonus (6.0) caps each phrase's boost so a wide beam / long
+// list can't override clear audio; pass 0 (default) for the uncapped behavior.
 stt.set_context_phrases({"Soniqo", "set volume", "play music", "stop playing",
-                         /* live contact + track names */});
+                         /* live contact + track names */},
+                        /*per_char=*/1.5f, /*completion=*/3.0f, /*max_bonus=*/6.0f);
 ```
 
 - Encoder INT8, decoder + joint FP32; 320 ms streaming chunks.
