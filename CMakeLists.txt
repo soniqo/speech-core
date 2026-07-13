@@ -504,6 +504,20 @@ endif()
 if(SPEECH_CORE_BUILD_TESTS)
     enable_testing()
 
+    # The installed `speech` front-end is a POSIX shell dispatcher. Exercise
+    # its public command contract without model files by placing it beside
+    # lightweight fake speech_* tools and asserting the exact forwarded argv.
+    if(UNIX)
+        find_program(SPEECH_CORE_SH_EXECUTABLE sh)
+        if(SPEECH_CORE_SH_EXECUTABLE)
+            add_test(
+                NAME test_speech_dispatch
+                COMMAND ${SPEECH_CORE_SH_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_speech_dispatch.sh
+                        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/speech-dispatch.sh)
+        endif()
+    endif()
+
     # Orchestration tests — always built, link speech_core only.
     file(GLOB TEST_SOURCES tests/test_*.cpp)
     foreach(TEST_SRC ${TEST_SOURCES})
@@ -928,6 +942,8 @@ if(SPEECH_CORE_PACKAGE)
     if(SPEECH_CORE_WITH_LITERT)
         install(PROGRAMS scripts/download_models_litert.sh
             DESTINATION bin RENAME speech_download_models_litert)
+        install(PROGRAMS scripts/download_voxcpm2_litert.sh
+            DESTINATION bin RENAME speech_download_voxcpm2)
     endif()
 
     # `speech` multiplexer — verb-style front-end (speech transcribe …,
@@ -949,7 +965,7 @@ if(SPEECH_CORE_PACKAGE)
     set(CPACK_PACKAGE_CONTACT "ivan-digital <ivan.aufkl@gmail.com>")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "speech — voice agent CLI tools (STT, TTS, phonemizer, voice cloning)")
-    set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/soniqo/speech-core")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "https://soniqo.audio/speech-core")
     set(CPACK_PACKAGE_FILE_NAME "speech-${SPEECH_CORE_PACKAGE_VERSION}-linux-${_pkg_arch}")
     set(CPACK_STRIP_FILES ON)
     set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
@@ -957,7 +973,7 @@ if(SPEECH_CORE_PACKAGE)
     set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
     set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${_pkg_arch}")
     set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
-    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/soniqo/speech-core")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://soniqo.audio/speech-core")
     # Hand-written Depends (dpkg-shlibdeps can't resolve our private
     # lib/speech-core dir). Built on ubuntu-22.04 → needs glibc ≥ 2.35.
     # libasound2t64 is the 24.04 time64 rename; the alternation covers 22.04.

@@ -4,6 +4,8 @@ Reference Linux build of speech-core — `libspeech.so` (small C ABI), ALSA demo
 
 Targets embedded ARM64 platforms (Yocto, automotive — Qualcomm SA8295P / SA8255P) and any Linux dev box for quick smoke-testing the model wrappers.
 
+**[Linux guide](https://soniqo.audio/getting-started/linux)** · **[Speech Core overview](https://soniqo.audio/speech-core)** · **[Packaged CLI reference](../../docs/cli.md)**
+
 ## Build
 
 ```bash

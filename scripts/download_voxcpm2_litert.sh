@@ -24,7 +24,18 @@ case "$(uname -m)" in
     x86_64|amd64) URL_SUBDIR="fp32-p16/" ;;
     *)            URL_SUBDIR="" ;;
 esac
-OUT="${1:-$(dirname "$0")/models-voxcpm2}"
+# In a source checkout, keep the historical test-fixture default. When this
+# script is installed as /usr/bin/speech_download_voxcpm2, write to the same
+# per-user cache path that speech_voxcpm2_clone resolves by default.
+DEFAULT_OUT="$(dirname "$0")/models-voxcpm2"
+if [ "$(basename "$0")" = "speech_download_voxcpm2" ] || [ ! -w "$(dirname "$0")" ]; then
+    CACHE_BASE="${SPEECH_CORE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/speech-core}"
+    DEFAULT_OUT="$CACHE_BASE/soniqo__VoxCPM2-LiteRT"
+    case "$(uname -m)" in
+        x86_64|amd64) DEFAULT_OUT="$DEFAULT_OUT/fp32-p16" ;;
+    esac
+fi
+OUT="${1:-${SPEECH_LITERT_MODEL_DIR:-$DEFAULT_OUT}}"
 mkdir -p "$OUT"
 
 FILES=(

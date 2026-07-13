@@ -135,6 +135,15 @@ Known: `test_pipeline_e2e` is intermittently flaky (SIGTRAP under load) — not 
 - **Run tests after code changes** — `ctest --output-on-failure` in `build/`.
 - **Build both configurations after CMake changes** — default and `SPEECH_CORE_WITH_ONNX=ON`.
 
+## README translations
+
+English `README.md` is canonical. Keep all 13 mirrors (`zh`, `ja`, `ko`, `es`,
+`de`, `fr`, `hi`, `pt`, `ru`, `ar`, `vi`, `tr`, `th`) synchronized in the same
+PR whenever README content, commands, model rows, or documentation links change.
+Use the `README_<code>.md` filenames shared with speech-swift; retain
+`README.zh-CN.md` only as a compatibility pointer to `README_zh.md`. Arabic
+content must use RTL wrappers.
+
 ## Related repos
 
 When working across repos, prefer one PR per repo (don't bundle Android + core changes into a single PR straddling submodules). The merge sequence usually matters:
