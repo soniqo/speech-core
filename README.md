@@ -1,12 +1,18 @@
 # Speech Core
 
-**English** · [简体中文](README.zh-CN.md)
+📖 Read in: [English](README.md) · [中文](README_zh.md) · [日本語](README_ja.md) · [한국어](README_ko.md) · [Español](README_es.md) · [Deutsch](README_de.md) · [Français](README_fr.md) · [हिन्दी](README_hi.md) · [Português](README_pt.md) · [Русский](README_ru.md) · [العربية](README_ar.md) · [Tiếng Việt](README_vi.md) · [Türkçe](README_tr.md) · [ไทย](README_th.md)
 
-Voice-agent pipeline engine in **C++17** — on-device speech for **Linux, Windows, and Android** (plus Apple via a [Swift sibling](https://github.com/soniqo/speech-swift)).
+[![CI](https://github.com/soniqo/speech-core/actions/workflows/ci.yml/badge.svg)](https://github.com/soniqo/speech-core/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/soniqo/speech-core)](https://github.com/soniqo/speech-core/releases/latest)
+[![License](https://img.shields.io/github/license/soniqo/speech-core)](LICENSE)
 
-On-device voice activity detection, speech-to-text (batch **and** real-time streaming), speaker diarization, and text-to-speech. Runs locally on CPU — no cloud, no Python at inference, no data leaves the machine.
+On-device speech infrastructure in **C++17** for **Linux, Windows, and Android**: voice activity detection, batch and real-time streaming speech-to-text, speaker diarization, text-to-speech, and the voice-agent pipeline that connects them.
 
-**[📖 Docs](docs/)** · **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple (Swift)](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
+Runs locally on CPU. No cloud, no Python at inference, and no audio leaves the machine.
+
+**[📚 Full documentation →](https://soniqo.audio/speech-core)** · **[🐧 Linux](https://soniqo.audio/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+
+**[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple sibling](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Demo
 
@@ -17,316 +23,210 @@ On-device voice activity detection, speech-to-text (batch **and** real-time stre
 </p>
 <p align="center"><em>Voice cloning with VoxCPM2 — watch the speech-studio demo on YouTube</em></p>
 
-speech-core is a small, **model-agnostic** orchestration core (state machine, turn detection, interruption handling, audio utilities) behind a set of abstract interfaces — plug any VAD / STT / LLM / TTS implementation in, on-device or a remote/cloud API. Model inference is **opt-in** through two interchangeable on-device backends you can enable independently:
+## Why speech-core
 
-- **ONNX Runtime** (`SPEECH_CORE_WITH_ONNX`) — Silero VAD, Parakeet STT, **Parakeet-EOU streaming STT (120M, multilingual, end-of-utterance — ~232 MB peak RSS on a phone)**, Whisper v3/turbo STT, Nemotron-3.5 multilingual streaming STT, Kokoro TTS, VoxCPM2 TTS, DeepFilterNet3, Sidon speech restoration, **PersonaPlex 7B full-duplex speech-to-speech** (CUDA target).
-- **LiteRT** (`SPEECH_CORE_WITH_LITERT`) — Silero VAD, Parakeet STT, **Nemotron streaming STT**, **Nemotron-3.5 multilingual streaming STT**, Omnilingual STT, Pyannote diarization, WeSpeaker embeddings, VoxCPM2 TTS, Indic-Mio TTS. Backed by Google's `ai-edge-litert` (`libLiteRt`).
+speech-core separates a small, model-agnostic orchestration layer from optional inference backends. The core owns turn detection, interruption handling, audio utilities, conversation state, and tool calls; your application chooses the models.
 
-Consumers can enable either, both, or neither — or bring their own implementations of the interfaces (CPU, GPU, CoreML/MLX, a remote API).
+- **Local-first:** pure C++17 core, float audio buffers, no network or platform audio dependency.
+- **Built for live agents:** VAD-driven turns, eager STT, partial transcripts, barge-in, streaming TTS, and tool calling.
+- **Real streaming ASR:** cache-aware RNN-T decoders, end-of-utterance detection, beam search, and contextual phrase biasing.
+- **Backend choice:** enable ONNX Runtime, LiteRT, both, neither, or implement the abstract interfaces yourself.
+- **Portable surface:** native C++ API plus C APIs suitable for Kotlin/JNI, Swift/FFI, embedded Linux, and other hosts.
+- **Tested across targets:** Linux, Windows, macOS, Android-oriented arm64 builds, sanitizers, and model-backed nightly lanes.
+
+## v0.0.9 highlights
+
+- **Parakeet-EOU 120M:** low-memory multilingual streaming ASR with end-of-utterance tokens, opt-in beam search, contextual phrase biasing, and an over-bias cap.
+- **Native Whisper ONNX:** small through large-v3/turbo, language detection or fixed-language prompts, profiling, and CPU tuning controls.
+- **Broader TTS:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic, and Indic-Mio runtimes alongside Kokoro; buffered post-processing and transcript-guided cloning.
+- **Faster conversations:** Kokoro short-turn optimizations, sentence chunking for long text, and continuous pre-speech buffering around playback.
+- **On-device LLM tools:** FunctionGemma through LiteRT-LM plus the existing Ollama adapter and pipeline tool-call loop.
+- **Release-grade Linux CLI:** amd64 and arm64 packages, model download helpers, architecture-aware command availability, and clean-container smoke tests.
 
 ## Supported models
 
 | Model | Task | ONNX | LiteRT |
 |---|---|:---:|:---:|
-| [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) | Voice activity detection | ✓ | ✓ |
-| [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) | Speech-to-text | ✓ | ✓ |
-| [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) | Speech-to-text (multilingual, greedy ONNX runtime) | ✓ | — |
-| [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) | Streaming speech-to-text | ✓ | ✓ |
-| [Nemotron-3.5 ASR Streaming Multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) | Streaming speech-to-text (multilingual, prompt-conditioned) | ✓ | ✓ |
-| [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) | Streaming speech-to-text (multilingual, end-of-utterance) | ✓ | — |
-| [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) | Speech-to-text (multilingual) | — | ✓ |
-| [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) | Diarization (segmentation) | — | ✓ |
-| [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) | Speaker embedding | — | ✓ |
-| [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) | Text-to-speech (48 kHz, voice cloning) | ✓ | ✓ |
-| [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) | Text-to-speech (24 kHz, Hindi/Indic voice cloning + emotion tags) | — | ✓ |
-| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) | Text-to-speech | ✓ | — |
-| [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) | Speech enhancement | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) | Speech restoration — denoise + dereverb (16 kHz → 48 kHz) | ✓ | — |
-| [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) | Full-duplex speech-to-speech (CUDA) — 4 variants from 7.6 GB → 17 GB | ✓ | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) | On-device LLM — structured function / tool calls | — | ✓ (`LiteRTFunctionGemmaLLM`, opt-in via `SPEECH_CORE_WITH_LITERT_LM`) |
+| [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/vad) | Voice activity detection | ✓ | ✓ |
+| [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/guides/parakeet) | Speech-to-text | ✓ | ✓ |
+| [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/guides/whisper) | Multilingual speech-to-text | ✓ | — |
+| [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/nemotron) | Streaming speech-to-text | ✓ | ✓ |
+| [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/guides/nemotron) | Prompt-conditioned streaming STT | ✓ | ✓ |
+| [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/guides/dictate) | Streaming STT + end-of-utterance | ✓ | — |
+| [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/omnilingual) | Multilingual speech-to-text | — | ✓ |
+| [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/diarize) | Diarization segmentation | — | ✓ |
+| [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/embed-speaker) | Speaker embedding | — | ✓ |
+| [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + voice cloning | ✓ | — |
+| [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/guides/voxcpm2) | 48 kHz TTS + voice cloning | ✓ | ✓ |
+| [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/guides/cosyvoice) | 24 kHz conditioned TTS | staged | — |
+| [Chatterbox](https://huggingface.co/soniqo/Chatterbox-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/chatterbox) | 24 kHz text-to-speech | — | ✓ |
+| [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/supertonic) | Text-to-speech | — | ✓ |
+| [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/indic-mio) | Hindi/Indic voice cloning + emotion | — | ✓ |
+| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) · [soniqo.audio](https://soniqo.audio/guides/kokoro) | Text-to-speech | ✓ | — |
+| [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/guides/denoise) | Speech enhancement | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/guides/sidon) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
+| [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/guides/respond) | Full-duplex speech-to-speech (CUDA) | structural | — |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/guides/functiongemma) | On-device structured tool calls | — | LiteRT-LM |
 
-`LiteRTFunctionGemmaLLM` loads the [FunctionGemma 270M .litertlm bundle](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM)
-via Google's `liblitert-lm` runtime — a higher-level shared library than the
-`libLiteRt` used for the `.tflite` STT/VAD/TTS models. It builds into its own
-static library (`speech_core_models_litert_lm`) so Android consumers can link
-the LLM without pulling in `libLiteRt`. On macOS, extract the runtime once
-with `scripts/fetch_litert_lm.sh` (PyPI wheel). On Android, neither
-`libLiteRt.so` nor `liblitert-lm.so` is published upstream — use
-`scripts/build_litert_lm_android.sh` to cross-compile `liblitert-lm.so` from
-the pinned `google-ai-edge/LiteRT-LM` v0.13.1 source tree (set
-`EMULATOR_SAFE=1` for the Apple-Silicon-hosted Android emulator, where HVF
-mistraps KleidiAI's SME `rdsvl` instruction). Then build with
-`-DSPEECH_CORE_WITH_LITERT_LM=ON -DLITERT_LM_DIR=...`. The Apple CoreML
-build of the same model lives in [speech-swift](https://github.com/soniqo/speech-swift);
-see [docs/models.md](docs/models.md#llm-backends-llminterface) for the full
-LLM backend picture.
+See [docs/models.md](docs/models.md) for maturity, bundle layouts, preprocessing, memory notes, and complete examples.
 
-Diarization (`DiarizationPipeline`) is pure C++ and composes a segmenter + embedder into speaker-labelled segments — no ML-runtime dependency of its own.
+## Platforms and backends
 
-## Platforms & backends
+| Backend | Target | Platforms | Runtime setup |
+|---|---|---|---|
+| Core only | `speech_core` | Linux, Windows, macOS, Android | none |
+| ONNX Runtime | `speech_core_models` | Linux, Windows, macOS, Android | extracted ONNX Runtime release via `ORT_DIR` |
+| LiteRT | `speech_core_models_litert` | Linux x86_64, Windows x86_64, macOS arm64, Android | `scripts/fetch_litert.sh` / `LITERT_DIR` |
+| LiteRT-LM | `speech_core_models_litert_lm` | macOS, Android build path | `scripts/fetch_litert_lm.sh` / `LITERT_LM_DIR` |
 
-| Backend | Static lib | Runtime dep | Platforms | Setup |
-|---|---|---|---|---|
-| ONNX | `speech_core_models` | `onnxruntime` | Linux, macOS, Windows, Android | `ORT_DIR` from an ONNX Runtime release |
-| LiteRT | `speech_core_models_litert` | `libLiteRt` | Linux x86_64, Windows x86_64, Android, macOS arm64 | `scripts/fetch_litert.sh` (extracts from the `ai-edge-litert` PyPI wheel) |
-
-**Hardware acceleration.** ONNX: CPU, NNAPI on Android, QNN on Qualcomm Linux (drop `libQnnHtp.so` on the lib path). For other accelerators, install a `SessionOptionsHook` on `OnnxEngine` to append your provider before `CreateSession`. LiteRT runs CPU only today; Hexagon / GPU delegates exist in `libLiteRt` but aren't wired through the C API yet.
+ONNX can use CPU, Android NNAPI, Qualcomm QNN on Linux, or an application-supplied execution-provider hook. LiteRT currently uses CPU through its C API.
 
 ## Quick start
 
-Build the core + the LiteRT backend (the runtime library is extracted from the `ai-edge-litert` wheel — no TensorFlow build):
+Build the core and LiteRT backend:
 
 ```bash
-git clone https://github.com/soniqo/speech-core && cd speech-core
-scripts/fetch_litert.sh build/litert          # PYTHON=python3.11 if 'python3' is older
+git clone https://github.com/soniqo/speech-core.git
+cd speech-core
+scripts/fetch_litert.sh build/litert
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
-    -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
-cmake --build build
+    -DSPEECH_CORE_WITH_LITERT=ON \
+    -DLITERT_DIR="$PWD/build/litert"
+cmake --build build --parallel
 ```
 
-Link the targets you need:
-
-```cmake
-target_link_libraries(my_app PRIVATE speech_core)                          # orchestration only
-target_link_libraries(my_app PRIVATE speech_core speech_core_models)        # + ONNX models
-target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + LiteRT models
-```
-
-**Transcribe an audio buffer:**
+Transcribe an audio buffer; Parakeet v3 detects the language automatically:
 
 ```cpp
 #include <speech_core/models/litert_parakeet_stt.h>
 
 speech_core::LiteRTParakeetStt stt(
-    "parakeet-encoder.tflite", "parakeet-decoder-joint.tflite", "vocab.json");
+    "parakeet-encoder.tflite",
+    "parakeet-decoder-joint.tflite",
+    "vocab.json");
 
-stt.set_allowed_languages({"en-US", "fr"});         // optional language-token guidance
-auto r = stt.transcribe(audio, n_samples, 16000);   // r.text / r.language / r.confidence
+auto result = stt.transcribe(audio, sample_count, 16000);
+std::cout << result.text << "\n";
 ```
 
-**Real-time streaming with partials (CPU, ~RTF 1.0):**
+Connect any implementations of the abstract VAD, STT, LLM, and TTS interfaces to the live pipeline:
 
 ```cpp
-#include <speech_core/models/litert_nemotron_streaming_stt.h>
-
-speech_core::LiteRTNemotronStreamingStt stt(
-    "nemotron-streaming-encoder.tflite",
-    "nemotron-streaming-decoder.tflite",
-    "nemotron-streaming-joint.tflite", "vocab.json");
-
-stt.begin_stream(16000);
-for (const auto& chunk : mic_chunks) {              // feed ~80 ms windows as they arrive
-    auto partial = stt.push_chunk(chunk.data(), chunk.size());
-    if (!partial.text.empty()) std::cout << partial.text << std::flush;
-}
-auto final = stt.end_stream();
-```
-
-**Full voice-agent pipeline (VAD → STT → LLM → TTS):**
-
-```cpp
-#include <speech_core/pipeline/voice_pipeline.h>
-
-speech_core::AgentConfig cfg;
-cfg.mode = speech_core::AgentConfig::Mode::Pipeline;   // or ::TranscribeOnly / ::Echo
+speech_core::AgentConfig config;
+config.mode = speech_core::AgentConfig::Mode::Pipeline;
 
 speech_core::VoicePipeline pipeline(
-    stt, tts, &llm, vad, cfg,
-    [](const speech_core::PipelineEvent& ev) { /* transcripts, audio out, errors */ });
+    stt, tts, &llm, vad, config,
+    [](const speech_core::PipelineEvent& event) {
+        // transcription, response audio, tool call, or error
+    });
 
 pipeline.start();
-pipeline.push_audio(mic_samples, count);               // call from your audio thread
+pipeline.push_audio(mic_samples, sample_count);
 ```
 
-`VoicePipeline` is the real-time voice-agent state machine — VAD-driven turn detection, interruption handling, eager STT, conversation tracking, tool calling. It owns no audio I/O or network: the platform feeds audio in and receives events via the callback. Pass `Mode::TranscribeOnly` (and `llm = nullptr`) for a pure transcription pipeline.
+Link only what your application uses:
 
-## Code examples
-
-### Voice activity detection
-
-```cpp
-#include <speech_core/models/litert_silero_vad.h>
-speech_core::LiteRTSileroVad vad("silero-vad.tflite");
-float p = vad.process_chunk(samples_512, 512);   // speech probability in [0, 1]
+```cmake
+target_link_libraries(my_app PRIVATE speech_core)
+target_link_libraries(my_app PRIVATE speech_core speech_core_models)
+target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 ```
 
-Feed the probability stream to `StreamingVAD` (`speech_core/vad/streaming_vad.h`) for hysteresis-gated `SpeechStarted` / `SpeechEnded` events.
+## Linux CLI packages
 
-### Speaker diarization
+Releases ship `.deb` and `.tar.gz` packages for amd64 and arm64. The package bundles runtime libraries but not models.
 
-```cpp
-#include <speech_core/models/litert_pyannote_segmentation.h>
-#include <speech_core/models/litert_wespeaker_embedding.h>
-#include <speech_core/diarization/diarization_pipeline.h>
+```bash
+VERSION=0.0.9
+ARCH="$(dpkg --print-architecture)"   # amd64 or arm64
+curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
+sudo apt install "./speech_${VERSION}_${ARCH}.deb"
 
-speech_core::LiteRTPyannoteSegmentation seg("pyannote-segmentation.tflite");
-speech_core::LiteRTWeSpeakerEmbedding   emb("wespeaker-resnet34.tflite");
-speech_core::DiarizationPipeline        diar(seg, emb);
-
-auto segments = diar.diarize(audio, n_samples, 16000, speech_core::DiarizerConfig{});
-for (const auto& s : segments)
-    printf("speaker %d: %.2fs - %.2fs\n", s.speaker, s.start, s.end);
+speech download-models
+speech transcribe recording.wav
+speech speak "Hello world" hello.wav
+speech phonemize "Bonjour le monde" fr
 ```
 
-### Text-to-speech
+The amd64 package also includes the LiteRT VoxCPM2 voice-cloning command. Its x86 bundle is about 13 GB and is downloaded explicitly:
 
-```cpp
-#include <speech_core/models/litert_voxcpm2_tts.h>
-speech_core::LiteRTVoxCPM2Tts tts(
-    "voxcpm2-text-prefill.tflite", "voxcpm2-token-step.tflite",
-    "voxcpm2-audio-encoder.tflite", "voxcpm2-audio-decoder.tflite", "tokenizer.json");
-
-tts.set_reference(reference_pcm_16khz.data(), reference_pcm_16khz.size(), 16000);
-tts.set_reference_transcript("Exact words spoken in the reference clip.");
-tts.synthesize("Hello world", "en", [](const float* samples, size_t len, bool is_final) {
-    // 48 kHz Float32 PCM, streamed in chunks
-});
+```bash
+speech download-models voxcpm2
+speech clone reference.wav "This is my cloned voice." cloned.wav
 ```
 
-The ONNX wrapper exposes the same TTS interface via
-`speech_core::OnnxVoxCPM2Tts`. It accepts either a unified
-`voxcpm2-decoder.onnx` graph or split `voxcpm2-text-prefill.onnx` and
-`voxcpm2-token-step.onnx` graphs, plus the shared audio encoder/decoder and
-tokenizer files.
-
-For offline post-processing (for example spectral de-essing), use buffered
-delivery. `synthesize()` is the streaming call; buffered mode
-accumulates all PCM for that one submitted text input, applies the requested
-offline processing chain, then calls the callback once with `is_final=true`.
-
-```cpp
-speech_core::TtsSynthesisOptions opts;
-opts.mode = speech_core::TtsSynthesisMode::Buffered;
-opts.postprocess_flags = speech_core::kTtsPostProcessDeEsser;
-
-tts.synthesize_with_options("Hello world", "en", opts,
-    [](const float* samples, size_t len, bool is_final) {
-        // Full post-processed utterance for this text input.
-    });
-```
-
-### Speech restoration (Sidon)
-
-Combined denoise + dereverb. A w2v-BERT 2.0 predictor (with a C++ SeamlessM4T
-log-mel front-end) feeds a DAC vocoder; input is resampled to 16 kHz and the
-output is 48 kHz mono. Typical use: clean a reverberant voice-cloning reference
-before handing it to a TTS voice-cloner. Offline / whole-clip, ONNX only.
-
-```cpp
-#include <speech_core/models/onnx_sidon_restorer.h>
-speech_core::OnnxSidonRestorer rest("sidon-predictor.onnx", "sidon-vocoder.onnx");
-
-// Any input rate (resampled to 16 kHz internally) -> 48 kHz mono.
-std::vector<float> clean = rest.restore(ref.data(), ref.size(), ref_rate);
-```
-
-CLI: `speech_sidon_restore <bundle_dir> <in.wav> <out.wav>` (built with
-`SPEECH_CORE_WITH_ONNX=ON`; reads any-rate 16-bit PCM WAV, writes 48 kHz).
-
-Each interface and model is documented in **[docs/interfaces.md](docs/interfaces.md)** and **[docs/models.md](docs/models.md)** (download URLs, sizes, preprocessing).
+See the **[Linux CLI reference](docs/cli.md)** for exact syntax, model directories, standalone binaries, and the amd64/arm64 command matrix. [`soniqo.audio/cli`](https://soniqo.audio/cli) documents the larger speech-swift CLI for Apple platforms.
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────┐
-│            speech_core (always built)         │
-│                                              │
-│  VoicePipeline / TurnDetector / SpeechQueue  │  orchestration
-│  StreamingVAD / AudioBuffer / Resampler      │
-│  DiarizationPipeline                         │
-│                                              │
-│  STT / TTS / VAD / Enhancer / AEC / LLM      │  abstract interfaces
-│  Segmentation / Embedding / Diarizer         │
-└──────────────────────────────────────────────┘
-              ▲                       ▲
-              │ implements (optional) │
-┌─────────────┴──────────┐  ┌─────────┴──────────────┐
-│ speech_core_models     │  │ speech_core_models_litert │
-│ (SPEECH_CORE_WITH_ONNX)│  │ (SPEECH_CORE_WITH_LITERT) │
-│  ONNX Runtime          │  │  libLiteRt                │
-└────────────────────────┘  └───────────────────────────┘
+```text
+application audio / events
+            │
+            ▼
+┌──────────────────────────────────────┐
+│ speech_core                          │
+│ VoicePipeline · turn detection       │
+│ interruption · tools · audio utils   │
+│ abstract VAD / STT / LLM / TTS APIs  │
+└──────────────┬───────────────┬───────┘
+               │               │
+      ┌────────▼────────┐ ┌────▼────────────┐
+      │ ONNX Runtime    │ │ LiteRT / LiteRT-LM │
+      │ reference models│ │ reference models   │
+      └─────────────────┘ └─────────────────────┘
 ```
 
-The orchestration core depends only on the interfaces — never on a concrete model — so a backend swap is a link-time choice, not a rewrite. Design principles: pure C++17 core, no platform APIs in the core, no network I/O, no audio I/O (operates on float buffers), callback-driven.
+The orchestration target never depends on a concrete model. A backend swap is a construction and link choice, not a pipeline rewrite.
 
-Reference: **[interfaces](docs/interfaces.md)** · **[models](docs/models.md)** · **[pipeline / state machine](docs/pipeline.md)** · **[C API (FFI)](docs/c-api.md)** · **[tool calling](docs/tools.md)**
+## Documentation
 
-## Build
+| Topic | Documentation |
+|---|---|
+| Product overview and model matrix | [soniqo.audio/speech-core](https://soniqo.audio/speech-core) |
+| Linux setup | [soniqo.audio/getting-started/linux](https://soniqo.audio/getting-started/linux) |
+| Windows setup | [soniqo.audio/getting-started/windows](https://soniqo.audio/getting-started/windows) |
+| Linux CLI | [docs/cli.md](docs/cli.md) |
+| Interfaces and custom backends | [docs/interfaces.md](docs/interfaces.md) |
+| Model implementations | [docs/models.md](docs/models.md) |
+| Voice pipeline and state machine | [docs/pipeline.md](docs/pipeline.md) |
+| C API / FFI | [docs/c-api.md](docs/c-api.md) |
+| Tool calling | [docs/tools.md](docs/tools.md) |
+
+## Build variants
 
 ```bash
-# Orchestration only (no ML deps)
-cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+# Orchestration only: no ML runtime
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-# + ONNX backend
-cmake -B build -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime && cmake --build build
+# ONNX models
+cmake -B build-onnx -DCMAKE_BUILD_TYPE=Release \
+    -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime
 
-# + LiteRT backend
+# LiteRT models
 scripts/fetch_litert.sh build/litert
-cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cmake --build build
+cmake -B build-litert -DCMAKE_BUILD_TYPE=Release \
+    -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR="$PWD/build/litert"
 ```
 
-LiteRT headers are vendored in `third_party/litert/` (no setup). `LITERT_DIR` points at the directory holding `libLiteRt.{so,dylib,dll}` (Windows also needs `LiteRt.lib`). Add `-DSPEECH_CORE_BUILD_EXAMPLES=ON` for the Linux CLI demos (`speech_transcribe`, `speech_synthesize`, …) — see [`examples/linux`](examples/linux). A voice-cloning CLI (`speech_voxcpm2_clone`) is built automatically whenever `SPEECH_CORE_WITH_LITERT=ON` — see [`examples/litert`](examples/litert).
-
-**On-device model download (optional).** Add `-DSPEECH_CORE_WITH_HF_DOWNLOAD=ON` to fetch model bundles from Hugging Face on first use instead of provisioning them by hand. It links libcurl (`find_package(CURL)` — system libcurl on Linux/macOS, vcpkg on Windows) and adds pretrained constructors to the [VoxCPM2 C ABI](include/speech_core/voxcpm2_c.h) and [Indic-Mio C ABI](include/speech_core/indic_mio_c.h): `sc_voxcpm2_create_from_pretrained("soniqo/VoxCPM2-LiteRT", …)` and `sc_indic_mio_create_from_pretrained("soniqo/Indic-Mio-LiteRT", …)`. Downloads are resumable and retrying (HTTP Range, atomic rename); large files use parallel ranged fetches by default (`SPEECH_CORE_DOWNLOAD_CONNECTIONS=4`, clamped 1–16; set `1` for a single stream). Bundles cache under the OS cache dir (`SPEECH_CORE_CACHE_DIR` to override; `HF_ENDPOINT` for a mirror). Off by default so embedded/offline builds carry no HTTP/TLS dependency. The `hf_fetch` debug CLI exercises the downloader directly.
-
-### Install on Linux (prebuilt `speech` package)
-
-Each release ships `.deb` and `.tar.gz` packages with the CLI tools
-(`speech_transcribe`, `speech_synthesize`, `speech_phonemize`, `speech_demo`,
-and on amd64 the `speech_voxcpm2_clone` voice-cloning CLI), with
-`libonnxruntime.so` / `libLiteRt.so` bundled under `/usr/lib/speech/` — no
-extra runtime setup:
+## Testing
 
 ```bash
-# amd64 (arm64: speech_VERSION_arm64.deb — transcribe/synthesize/phonemize only)
-curl -LO https://github.com/soniqo/speech-core/releases/latest/download/speech_VERSION_amd64.deb
-sudo apt install ./speech_VERSION_amd64.deb
-
-speech download-models           # ONNX set → ~/.cache/speech-core/models (~1.2 GB)
-speech transcribe input.wav      # same verb-style CLI as speech-swift's `brew install speech`
-speech speak "Hello world"
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
-The `speech` command dispatches to standalone `speech_<command>` binaries
-(`speech_transcribe`, `speech_synthesize`, …) which expose extra options.
+Core tests require no model files. Backend integration tests skip cleanly unless their model-directory environment variables are set. CI covers Linux, Windows, and macOS; model-backed scheduled workflows cover the public ONNX and LiteRT bundles.
 
-Models are never inside the package. The tools look in `$SPEECH_MODEL_DIR`
-(LiteRT: `$SPEECH_LITERT_MODEL_DIR`), falling back to the per-user cache dir
-that `speech_download_models` / `speech_download_models_litert` populate; an
-explicit model-dir argument always wins. Ubuntu 22.04+ / Debian 12+
-(glibc ≥ 2.35).
+## Related projects
 
-## Testing & CI
-
-```bash
-cd build && ctest --output-on-failure        # core unit tests (no models needed)
-```
-
-The orchestration + diarization unit tests need no model files. Integration tests load real `.tflite` / `.onnx` artifacts and **skip cleanly** when `SPEECH_LITERT_MODEL_DIR` / `SPEECH_MODEL_DIR` are unset:
-
-```bash
-scripts/fetch_litert.sh build/litert
-scripts/download_models_litert.sh            # public soniqo/* models, no token
-scripts/download_whisper_onnx.sh turbo int8  # optional large Whisper bundle
-cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert && cmake --build build
-SPEECH_LITERT_MODEL_DIR=scripts/models-litert ctest --test-dir build --output-on-failure
-
-# Optional Whisper ONNX CPU latency/RSS benchmark.
-cmake -B build-onnx -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=/path/to/onnxruntime
-cmake --build build-onnx --target bench_ort_models
-SPEECH_MODEL_DIR=scripts/models/whisper-turbo \
-SPEECH_WHISPER_ONNX_DIR=scripts/models/whisper-turbo \
-SPEECH_BENCH_ONLY=whisper \
-SPEECH_WHISPER_BENCH_CONFIG=en-tail50 \
-SPEECH_CORE_WHISPER_ORT_THREADS=16 \
-./build-onnx/bench_ort_models
-```
-
-CI builds + tests across **Linux, Windows, and macOS** (LiteRT on Linux + Windows, ONNX on Linux), plus an **aarch64** cross-compile; a **nightly** lane runs the model integration tests against the public model files.
+- [speech-android](https://github.com/soniqo/speech-android) — Kotlin SDK and JNI integration over speech-core.
+- [speech-swift](https://github.com/soniqo/speech-swift) — native MLX/CoreML speech stack for macOS and iOS.
+- [Soniqo documentation](https://soniqo.audio) — guides, architecture, benchmarks, and model pages.
 
 ## Contributing
 
-PRs welcome — model integrations, backends, docs, fixes. Branch off `main`, build + `ctest`, open a PR. No marketing copy in commits or PRs.
+Issues and pull requests are welcome. Branch from `main`, build the affected configurations, run `ctest`, and open a focused PR.
 
 ## License
 
