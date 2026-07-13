@@ -30,7 +30,7 @@ speech-core एक छोटे, model-agnostic orchestration layer को optio
 - **Portable API:** native C++ और Kotlin/JNI, Swift/FFI, embedded Linux जैसे hosts के लिए C APIs।
 - **कई targets पर tested:** Linux, Windows, macOS, Android-oriented arm64 builds, sanitizers और model-backed nightly lanes।
 
-## v0.0.9 की मुख्य बातें
+## v0.0.10 की मुख्य बातें
 
 - **Parakeet-EOU 120M:** कम-memory multilingual streaming ASR, end-of-utterance tokens, optional beam search, contextual phrase biasing और over-bias cap।
 - **Native Whisper ONNX:** small से large-v3/turbo, language detection या fixed-language prompts, profiling और CPU tuning।
@@ -58,7 +58,7 @@ speech-core एक छोटे, model-agnostic orchestration layer को optio
 | [Chatterbox](https://huggingface.co/soniqo/Chatterbox-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/chatterbox) | 24 kHz text-to-speech | — | ✓ |
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/supertonic) | Text-to-speech | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/indic-mio) | हिन्दी/भारतीय भाषाओं की voice cloning + emotion | — | ✓ |
-| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/kokoro) | Text-to-speech | ✓ | — |
+| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/kokoro) | Text-to-speech | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/denoise) | Speech enhancement | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/sidon) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/respond) | Full-duplex speech-to-speech (CUDA) | structural | — |
@@ -124,7 +124,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Releases में amd64 और arm64 के लिए `.deb` व `.tar.gz` packages होते हैं। runtime libraries bundled हैं, models नहीं।
 
 ```bash
-VERSION=0.0.9
+VERSION=0.0.10
 ARCH="$(dpkg --print-architecture)"   # amd64 या arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"

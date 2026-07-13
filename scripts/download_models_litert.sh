@@ -31,6 +31,15 @@ FILES=(
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/parakeet-decoder-joint.tflite"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/vocab.json"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/config.json"
+    # Kokoro's validated release: three-stage 60-frame FP32 bundle + English
+    # phonemizer data + default voice.
+    "Kokoro-82M-LiteRT/kokoro-encoder.tflite"
+    "Kokoro-82M-LiteRT/kokoro-recurrent-equivalent32.tflite"
+    "Kokoro-82M-LiteRT/kokoro-vocoder.tflite"
+    "Kokoro-82M-LiteRT/vocab_index.json"
+    "Kokoro-82M-LiteRT/us_gold.json"
+    "Kokoro-82M-LiteRT/us_silver.json"
+    "Kokoro-82M-LiteRT/voices/af_heart.bin"
     # Diarization + multilingual ASR — fetched for the upstreamed cloud
     # wrappers (WeSpeaker / Pyannote / Omnilingual). Best-effort: if a repo is
     # private and HF_TOKEN is unset, the fetch warns and the gated test skips.
@@ -85,6 +94,7 @@ for entry in "${FILES[@]}"; do
 
     url="$BASE_URL/$repo/resolve/main/$rel"
     echo "[fetch] $rel"
+    mkdir -p "$(dirname "$dest")"
     # Best-effort: a missing/forbidden file (e.g. a private repo with no
     # HF_TOKEN) warns and continues so the rest still download. Gated tests
     # skip cleanly when a model is absent. The ${AUTH[@]+...} form is

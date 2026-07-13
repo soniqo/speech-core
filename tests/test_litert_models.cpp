@@ -16,6 +16,9 @@
 #include "speech_core/diarization/diarization_pipeline.h"
 #include "speech_core/models/litert_nemotron_streaming_stt.h"
 #include "speech_core/models/litert_nemotron_multilingual_stt.h"
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
+#include "speech_core/models/litert_kokoro_tts.h"
+#endif
 #include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_pyannote_segmentation.h"
@@ -151,6 +154,60 @@ std::string to_lower(std::string s) {
         [](unsigned char c) { return std::tolower(c); });
     return s;
 }
+
+// ---------------------------------------------------------------------------
+
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
+void test_litert_kokoro_tts(const std::string& dir) {
+    const std::string encoder = dir + "/kokoro-encoder.tflite";
+    const std::string recurrent =
+        dir + "/kokoro-recurrent-equivalent32.tflite";
+    const std::string vocoder = dir + "/kokoro-vocoder.tflite";
+    const std::string vocab = dir + "/vocab_index.json";
+    const std::string gold = dir + "/us_gold.json";
+    const std::string silver = dir + "/us_silver.json";
+    const std::string voice = dir + "/voices/af_heart.bin";
+    if (!file_exists(encoder) || !file_exists(recurrent) ||
+        !file_exists(vocoder) || !file_exists(vocab) || !file_exists(gold) ||
+        !file_exists(silver) || !file_exists(voice)) {
+        std::printf("  [skip] Kokoro LiteRT bundle not in %s\n", dir.c_str());
+        return;
+    }
+    std::printf("  test_litert_kokoro_tts ... ");
+
+    speech_core::LiteRTKokoroTts tts(
+        encoder, recurrent, vocoder, dir + "/voices", dir,
+        /*hw_accel=*/false, /*num_threads=*/4);
+    REQUIRE(tts.output_sample_rate() == 24000);
+    REQUIRE(tts.max_active_phonemes() == 32);
+    REQUIRE(tts.preferred_chunk_phonemes() == 14);
+    REQUIRE(tts.max_safe_frames() == 56);
+    tts.set_seed(1234);
+    tts.set_speed(1.0f);
+
+    std::vector<float> audio;
+    bool final = false;
+    tts.synthesize("Hello world.", "en",
+        [&](const float* samples, size_t length, bool is_final) {
+            if (samples && length) audio.insert(audio.end(), samples, samples + length);
+            final = final || is_final;
+        });
+    REQUIRE(final);
+    REQUIRE(audio.size() >= 6000);
+    REQUIRE(audio.size() <= 56 * 600);
+    REQUIRE(tts.model_runs_last_synthesis() == 1);
+    float peak = 0.0f;
+    double energy = 0.0;
+    for (float sample : audio) {
+        REQUIRE(std::isfinite(sample));
+        peak = std::max(peak, std::abs(sample));
+        energy += static_cast<double>(sample) * sample;
+    }
+    REQUIRE(peak > 0.01f && peak <= 2.0f);
+    REQUIRE(energy / audio.size() > 1e-6);
+    std::printf("ok (%zu samples, peak=%.3f)\n", audio.size(), peak);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 
@@ -1327,6 +1384,9 @@ int main() {
     };
 
     #define RUN(t) run(#t, t)
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
+    RUN(test_litert_kokoro_tts);
+#endif
     RUN(test_litert_silero_vad);
     RUN(test_litert_silero_vad_real_speech);
     RUN(test_litert_parakeet_stt);

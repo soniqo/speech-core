@@ -14,7 +14,7 @@ Ubuntu 22.04+, Ubuntu 24.04+, and Debian 12+ are supported (glibc 2.35 or
 newer). Releases contain `.deb` and `.tar.gz` packages for `amd64` and `arm64`.
 
 ```bash
-VERSION=0.0.9
+VERSION=0.0.10
 ARCH="$(dpkg --print-architecture)"   # amd64 or arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
