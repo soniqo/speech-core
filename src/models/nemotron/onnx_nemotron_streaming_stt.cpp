@@ -333,11 +333,9 @@ void OnnxNemotronStreamingStt::reset_stream_state() {
     // Beam search seeds one hypothesis from that same primed predictor state.
     beams_.clear();
     if (cfg_.beam_size > 1) {
-        BeamHyp seed;
-        seed.dec_h      = dec_h_;
-        seed.dec_c      = dec_c_;
-        seed.dec_hidden = dec_hidden_;
-        seed.ctx        = ctx_.start();
+        Beam seed;
+        seed.state = PredState{dec_h_, dec_c_, dec_hidden_};
+        seed.aux   = ctx_.start();
         beams_.push_back(std::move(seed));
     }
 }
@@ -618,13 +616,15 @@ std::string OnnxNemotronStreamingStt::decode_greedy(const std::vector<float>& en
     return emitted;
 }
 
-const OnnxNemotronStreamingStt::BeamHyp*
+const OnnxNemotronStreamingStt::Beam*
 OnnxNemotronStreamingStt::best_beam() const {
-    const BeamHyp* best = nullptr;
-    for (const auto& h : beams_) {
-        if (!best || h.score > best->score) best = &h;
-    }
-    return best;
+    return transducer::best_hyp(beams_);
+}
+
+std::string OnnxNemotronStreamingStt::beam_text(const Beam& b) const {
+    std::string text;
+    for (int id : b.tokens) text += token_to_text(id);
+    return text;
 }
 
 void OnnxNemotronStreamingStt::set_context_phrases(
@@ -633,124 +633,46 @@ void OnnxNemotronStreamingStt::set_context_phrases(
     ctx_ = ContextGraph(phrases, per_char, completion, max_bonus);
 }
 
-// Modified RNN-T beam search over the committed frames, with optional
-// contextual biasing. Frame-synchronous: within a frame each hypothesis may
-// emit up to max_symbols tokens (blank ends its emission for that frame). The
-// context graph adds a log-domain bonus that steers the beam toward hypotheses
-// spelling out a bias phrase. State (beams_) carries across windows exactly
-// like the greedy predictor state does.
+// Modified RNN-T beam search over the committed frames via the generic,
+// unit-tested transducer::beam_decode_frames (see transducer_beam.h). The
+// per-token emit reward corrects the blank bias that otherwise truncates the
+// transcript; contextual biasing rides on the same scoring. beams_ carries
+// across windows exactly like the greedy predictor state does.
 std::string OnnxNemotronStreamingStt::decode_beam(const std::vector<float>& encoded) {
-    const int    n_logits = cfg_.vocab_size + 1;
-    const int    beam     = std::max(2, cfg_.beam_size);
-    const size_t enc_h    = static_cast<size_t>(cfg_.encoder_hidden);
-    const bool   biasing  = !ctx_.empty();
+    const size_t enc_h   = static_cast<size_t>(cfg_.encoder_hidden);
+    const bool   biasing = !ctx_.empty();
 
-    struct Cand {
-        int    base;    // index into `active`
-        int    token;   // emitted token (blank_id = advance frame)
-        double score;   // base.score + logP(token) [+ context bonus]
+    transducer::BeamParams p;
+    p.beam_size   = std::max(2, cfg_.beam_size);
+    p.max_symbols = cfg_.max_symbols;
+    p.blank_id    = cfg_.blank_id;
+    p.eou_id      = cfg_.eou_token_id;
+    p.eob_id      = cfg_.eob_token_id;
+    p.emit_bonus  = cfg_.beam_emit_bonus;
+
+    std::vector<float> logits;  // reused joint-output buffer (valid per joint() call)
+
+    auto joint = [&](int frame, const PredState& s) -> const std::vector<float>& {
+        joint_logits(encoded.data() + static_cast<size_t>(frame) * enc_h, s.hidden, logits);
+        return logits;
+    };
+    auto predict = [&](int token, const PredState& s) -> PredState {
+        PredState out;
+        decoder_step(token, s.h, s.c, out.hidden, out.h, out.c);
+        return out;
+    };
+    auto bonus = [&](int token, const ContextGraph::State& aux)
+        -> std::pair<float, ContextGraph::State> {
+        if (!biasing) return {0.0f, aux};
+        auto step = ctx_.advance(aux, token_to_text(token));
+        return {step.bonus, step.state};
     };
 
-    std::vector<float> logits;
-    std::vector<std::pair<float, int>> ranked;  // (logit, token) for non-blank top-k
+    transducer::beam_decode_frames(beams_, /*frame_begin=*/0, output_frames_, p,
+                                   joint, predict, bonus);
 
-    for (int frame = 0; frame < output_frames_; ++frame) {
-        const float* enc = encoded.data() + static_cast<size_t>(frame) * enc_h;
-
-        // Terminal (EOU) hypotheses are carried forward untouched; only live
-        // ones expand at this frame.
-        std::vector<BeamHyp> active;
-        std::vector<BeamHyp> frozen;
-        for (auto& h : beams_) {
-            (h.eou ? frozen : active).push_back(std::move(h));
-        }
-        beams_.clear();
-
-        for (int step = 0; step < cfg_.max_symbols && !active.empty(); ++step) {
-            std::vector<Cand> cands;
-            cands.reserve(active.size() * (static_cast<size_t>(beam) + 1));
-
-            for (size_t i = 0; i < active.size(); ++i) {
-                joint_logits(enc, active[i].dec_hidden, logits);
-
-                float mx = logits[0];
-                for (int t = 1; t < n_logits; ++t) mx = std::max(mx, logits[t]);
-                double sum = 0.0;
-                for (int t = 0; t < n_logits; ++t) sum += std::exp(logits[t] - mx);
-                const double lse = static_cast<double>(mx) + std::log(sum);
-
-                // Blank: hypothesis advances a frame, predictor unchanged.
-                cands.push_back({static_cast<int>(i), cfg_.blank_id,
-                                 active[i].score + (logits[cfg_.blank_id] - lse)});
-
-                // Top-`beam` non-blank tokens (ranking by logit is monotone in logP).
-                ranked.clear();
-                for (int t = 0; t < n_logits; ++t) {
-                    if (t != cfg_.blank_id) ranked.emplace_back(logits[t], t);
-                }
-                const size_t keep = std::min(static_cast<size_t>(beam), ranked.size());
-                std::partial_sort(ranked.begin(), ranked.begin() + keep, ranked.end(),
-                                  [](const auto& a, const auto& b) { return a.first > b.first; });
-                for (size_t k = 0; k < keep; ++k) {
-                    const int t = ranked[k].second;
-                    double sc = active[i].score + (logits[t] - lse);
-                    if (biasing && t != cfg_.eou_token_id && t != cfg_.eob_token_id) {
-                        sc += ctx_.advance(active[i].ctx, token_to_text(t)).bonus;
-                    }
-                    cands.push_back({static_cast<int>(i), t, sc});
-                }
-            }
-
-            // Keep the best `beam` candidates across all active hypotheses.
-            const size_t keepc = std::min(static_cast<size_t>(beam), cands.size());
-            std::partial_sort(cands.begin(), cands.begin() + keepc, cands.end(),
-                              [](const Cand& a, const Cand& b) { return a.score > b.score; });
-            cands.resize(keepc);
-
-            std::vector<BeamHyp> next_active;
-            for (const Cand& cd : cands) {
-                BeamHyp h = active[cd.base];  // copy: several cands can share a base
-                h.score = cd.score;
-
-                if (cd.token == cfg_.blank_id) {
-                    frozen.push_back(std::move(h));           // frame done for this hyp
-                    continue;
-                }
-                if (cd.token == cfg_.eou_token_id) {
-                    h.eou = true;
-                    decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
-                                 h.dec_hidden, h.dec_h, h.dec_c);
-                    frozen.push_back(std::move(h));           // terminal
-                    continue;
-                }
-                if (cd.token == cfg_.eob_token_id) {
-                    decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
-                                 h.dec_hidden, h.dec_h, h.dec_c);
-                    next_active.push_back(std::move(h));      // soft boundary, no text
-                    continue;
-                }
-                if (biasing) h.ctx = ctx_.advance(active[cd.base].ctx, token_to_text(cd.token)).state;
-                h.text += token_to_text(cd.token);
-                decoder_step(cd.token, active[cd.base].dec_h, active[cd.base].dec_c,
-                             h.dec_hidden, h.dec_h, h.dec_c);
-                next_active.push_back(std::move(h));
-            }
-            active = std::move(next_active);
-        }
-
-        // Carry survivors (blanked = frozen; still-active hit the max_symbols cap)
-        // to the next frame, pruned to the beam width.
-        beams_ = std::move(frozen);
-        for (auto& h : active) beams_.push_back(std::move(h));
-        if (static_cast<int>(beams_.size()) > beam) {
-            std::partial_sort(beams_.begin(), beams_.begin() + beam, beams_.end(),
-                              [](const BeamHyp& a, const BeamHyp& b) { return a.score > b.score; });
-            beams_.resize(beam);
-        }
-    }
-
-    const BeamHyp* best = best_beam();
-    if (best && best->eou) eou_detected_ = true;
+    const Beam* best = best_beam();
+    if (best && best->terminal) eou_detected_ = true;
     // Beam mode reports the full best transcript from end_stream(), not an
     // incremental per-window delta, so return nothing here.
     return {};
@@ -780,8 +702,8 @@ PartialResult OnnxNemotronStreamingStt::push_chunk(const float* audio, size_t le
         // Beam mode: run_window() emits no incremental delta; the transcript
         // lives in the hypotheses. Report the current best as a full partial
         // (replace semantics — the best path can change as more audio arrives).
-        const BeamHyp* best = best_beam();
-        out.text = best ? best->text : std::string{};
+        const Beam* best = best_beam();
+        out.text = best ? beam_text(*best) : std::string{};
     } else {
         accumulated_text_ += text;
         out.text = std::move(text);
@@ -812,8 +734,8 @@ TranscriptionResult OnnxNemotronStreamingStt::end_stream() {
     flush_stream();
     TranscriptionResult out;
     if (cfg_.beam_size > 1) {
-        const BeamHyp* best = best_beam();
-        out.text = best ? best->text : std::string{};
+        const Beam* best = best_beam();
+        out.text = best ? beam_text(*best) : std::string{};
     } else {
         out.text = accumulated_text_;
     }
