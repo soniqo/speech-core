@@ -136,11 +136,14 @@ jobs:
       - name: Verify arm64 artefacts (cross — no execution possible)
         if: matrix.arch == 'arm64'
         run: |
-          # The .deb can't be installed on the x86_64 runner; assert the staged
-          # binaries are really aarch64 and carry the packaging RPATH.
-          for exe in build-pkg/examples/linux/speech_transcribe \
-                     build-pkg/examples/linux/speech_synthesize \
-                     build-pkg/examples/linux/speech_phonemize; do
+          # INSTALL_RPATH is applied while CPack installs into the package, so
+          # inspect the extracted .deb rather than the build-tree executables.
+          # The package can't be executed on the x86_64 release runner.
+          mkdir package-root
+          dpkg-deb -x dist/speech_*_arm64.deb package-root
+          for exe in package-root/usr/bin/speech_transcribe \
+                     package-root/usr/bin/speech_synthesize \
+                     package-root/usr/bin/speech_phonemize; do
             file "$exe" | tee /dev/stderr | grep -q "aarch64"
             readelf -d "$exe" | tee /dev/stderr | grep -E "RUNPATH|RPATH" | grep -q '\$ORIGIN/../lib'
           done
