@@ -99,7 +99,8 @@ std::vector<float> mel_spectrogram(
     const float* audio, size_t length,
     int sample_rate, int n_fft, int hop_length,
     int win_length, int num_mel_bins,
-    bool slaney_norm, float log_floor, bool center)
+    bool slaney_norm, float log_floor, bool center,
+    bool torch_stft_layout)
 {
     // Optional center padding: pad signal by n_fft/2 on each side using
     // reflect mode (matches torchaudio / NeMo center=True).
@@ -128,18 +129,28 @@ std::vector<float> mel_spectrogram(
     }
 
     int num_bins = n_fft / 2 + 1;
-    int num_frames = static_cast<int>((sig_len - static_cast<size_t>(win_length))
+    // torch.stft frames are n_fft samples long regardless of win_length
+    // (the window is applied inside); the legacy layout slices win_length
+    // samples, which at 400/512 starts every frame 56 samples later and
+    // yields one extra frame.
+    const int frame_span = torch_stft_layout ? n_fft : win_length;
+    int num_frames = static_cast<int>((sig_len - static_cast<size_t>(frame_span))
                                       / hop_length) + 1;
     if (num_frames <= 0) return {};
 
     auto fb = mel_filterbank(num_mel_bins, n_fft, sample_rate, slaney_norm);
 
-    // Hann window
+    // Hann window. torch.hann_window default is PERIODIC (denominator N);
+    // the legacy symmetric form (N-1) stays for the LiteRT-validated paths.
     std::vector<float> window(win_length);
+    const float denom = static_cast<float>(
+        torch_stft_layout ? win_length : win_length - 1);
     for (int i = 0; i < win_length; i++) {
         window[i] = 0.5f * (1.0f - std::cos(2.0f * kPi
-                    * static_cast<float>(i) / static_cast<float>(win_length - 1)));
+                    * static_cast<float>(i) / denom));
     }
+    // torch.stft centres a shorter window inside the n_fft frame.
+    const int win_offset = torch_stft_layout ? (n_fft - win_length) / 2 : 0;
 
     // STFT + mel
     std::vector<float> mel(num_mel_bins * num_frames);
@@ -150,7 +161,7 @@ std::vector<float> mel_spectrogram(
         // Windowed frame (zero-padded if win_length < n_fft)
         std::fill(frame.begin(), frame.end(), 0.0f);
         for (int i = 0; i < win_length; i++) {
-            frame[i] = sig[t * hop_length + i] * window[i];
+            frame[win_offset + i] = sig[t * hop_length + win_offset + i] * window[i];
         }
 
         fft_real(frame.data(), n_fft, spec_re.data(), spec_im.data());
