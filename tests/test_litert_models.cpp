@@ -16,7 +16,9 @@
 #include "speech_core/diarization/diarization_pipeline.h"
 #include "speech_core/models/litert_nemotron_streaming_stt.h"
 #include "speech_core/models/litert_nemotron_multilingual_stt.h"
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
 #include "speech_core/models/litert_kokoro_tts.h"
+#endif
 #include "speech_core/models/litert_omnilingual_stt.h"
 #include "speech_core/models/litert_parakeet_stt.h"
 #include "speech_core/models/litert_pyannote_segmentation.h"
@@ -155,6 +157,7 @@ std::string to_lower(std::string s) {
 
 // ---------------------------------------------------------------------------
 
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
 void test_litert_kokoro_tts(const std::string& dir) {
     const std::string encoder = dir + "/kokoro-encoder.tflite";
     const std::string recurrent =
@@ -204,6 +207,7 @@ void test_litert_kokoro_tts(const std::string& dir) {
     REQUIRE(energy / audio.size() > 1e-6);
     std::printf("ok (%zu samples, peak=%.3f)\n", audio.size(), peak);
 }
+#endif
 
 // ---------------------------------------------------------------------------
 
@@ -1380,7 +1384,9 @@ int main() {
     };
 
     #define RUN(t) run(#t, t)
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
     RUN(test_litert_kokoro_tts);
+#endif
     RUN(test_litert_silero_vad);
     RUN(test_litert_silero_vad_real_speech);
     RUN(test_litert_parakeet_stt);

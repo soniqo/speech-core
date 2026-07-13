@@ -88,7 +88,8 @@ The callback is invoked for each audio chunk during synthesis. `is_final=true` m
 **Reference implementations:** `KokoroTts` (Kokoro 82M via ONNX Runtime;
 sentence/chunk-split output with a final marker) and `LiteRTKokoroTts` (the
 guarded, three-stage 60-frame FP32 LiteRT bundle). Both emit 24 kHz Float32
-output.
+output. The LiteRT implementation is enabled on Windows and Android, whose
+validated runtimes export the required TensorFlow Lite interpreter C API.
 
 **Swift counterpart:** `SpeechGenerationModel`.
 

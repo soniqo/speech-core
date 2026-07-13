@@ -282,6 +282,11 @@ auto result = stt.transcribe(audio, length, 16000);
 
 ## LiteRTKokoroTts
 
+Available on Windows x86_64 and Android arm64. This wrapper uses the legacy
+TensorFlow Lite interpreter C API exported by the validated runtimes on those
+platforms; Google's current Linux and macOS `libLiteRt` packages do not export
+that API, so CMake leaves this implementation and its diagnostics disabled there.
+
 ```cpp
 #include <speech_core/models/litert_kokoro_tts.h>
 
