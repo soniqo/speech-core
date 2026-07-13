@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#ifdef SPEECH_CORE_HAS_LITERT_KOKORO
+
 struct TfLiteModel;
 struct TfLiteInterpreter;
 struct TfLiteOpaqueDelegate;
@@ -123,3 +125,5 @@ private:
 };
 
 }  // namespace speech_core
+
+#endif  // SPEECH_CORE_HAS_LITERT_KOKORO
