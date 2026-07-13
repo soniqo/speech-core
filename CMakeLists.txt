@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)." OFF)
-option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (Silero VAD, Parakeet STT)" OFF)
+option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with LiteRT (TFLite) reference implementations (including Silero VAD, Parakeet STT, and Kokoro TTS)" OFF)
 option(SPEECH_CORE_WITH_LITERT_LM "Build the liblitert-lm-backed reference LLM (LiteRTFunctionGemmaLLM) as a standalone target (speech_core_models_litert_lm). Independent of SPEECH_CORE_WITH_LITERT — Android consumers need this without libLiteRt. Requires LITERT_LM_DIR pointing at liblitert-lm.{so,dylib,dll}: on macOS use scripts/fetch_litert_lm.sh, on Android use scripts/build_litert_lm_android.sh." OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
@@ -41,6 +41,8 @@ add_library(speech_core
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
+    src/models/kokoro/kokoro_phonemizer.cpp
+    src/models/kokoro/kokoro_multilingual.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
@@ -118,8 +120,6 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/parakeet/parakeet_stt.cpp
         src/models/nemotron/nemotron_multilingual_stt.cpp
         src/models/kokoro/kokoro_tts.cpp
-        src/models/kokoro/kokoro_phonemizer.cpp
-        src/models/kokoro/kokoro_multilingual.cpp
         src/models/deepfilter/deepfilter.cpp
         src/models/sidon/onnx_sidon_restorer.cpp
         src/models/cosyvoice3/onnx_cosyvoice3_tts.cpp
@@ -254,6 +254,7 @@ if(SPEECH_CORE_WITH_LITERT)
     add_library(speech_core_models_litert
         src/models/litert/litert_silero_vad.cpp
         src/models/litert/litert_parakeet_stt.cpp
+        src/models/litert/litert_kokoro_tts.cpp
         src/models/litert/litert_voxcpm2_tts.cpp
         src/models/litert/voxcpm2_c.cpp
         src/models/litert/hf_download.cpp
@@ -369,6 +370,24 @@ if(SPEECH_CORE_WITH_LITERT)
         if(MSVC)
             target_compile_definitions(speech_supertonic_tts PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
+
+    endif()
+
+    # Kokoro staged 60-frame FP32 wrapper benchmark. Unlike the desktop-only example
+    # CLIs above, this target also cross-compiles for physical Android release
+    # measurements.
+    add_executable(speech_kokoro_litert_bench examples/litert/kokoro_tts_bench.cpp)
+    target_link_libraries(speech_kokoro_litert_bench PRIVATE speech_core_models_litert)
+    add_executable(speech_litert_tensor_bench examples/litert/tensor_bench.cpp)
+    target_include_directories(speech_litert_tensor_bench PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/models/litert)
+    target_link_libraries(speech_litert_tensor_bench PRIVATE litert)
+    if(ANDROID)
+        target_link_libraries(speech_kokoro_litert_bench PRIVATE log)
+        target_link_libraries(speech_litert_tensor_bench PRIVATE log)
+    endif()
+    if(MSVC)
+        target_compile_definitions(speech_kokoro_litert_bench PRIVATE _USE_MATH_DEFINES NOMINMAX)
     endif()
 
     # Debug CLI for the HF downloader (resume/retry testing). Links the internal

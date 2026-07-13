@@ -7,7 +7,7 @@ speech-core — voice agent pipeline engine in C++17. Provides:
 1. **Orchestration core** — state machine, turn detection, interruption handling, speech queue, conversation context, streaming VAD state machine, audio utilities. Zero ML dependencies, pure C++17.
 2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface` (with `SegmentationWindow` / `DiarizedSegment` / `DiarizerConfig` types) in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, speech-cloud, …) implement these with their own model backends.
 3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
-4. **Optional LiteRT reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt`, `LiteRTVoxCPM2Tts`, `LiteRTChatterboxTts`, `LiteRTWeSpeakerEmbedding`, `LiteRTPyannoteSegmentation`, `LiteRTOmnilingualStt`, `LiteRTNemotronStreamingStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Backed by `libLiteRt` from Google's `ai-edge-litert` package (extracted from the PyPI wheel by `scripts/fetch_litert.sh`). Kokoro and DeepFilter LiteRT exports don't exist yet; wrappers will follow once `speech-models` ships them. `LiteRTChatterboxTts` (multilingual TTS, `soniqo/Chatterbox-LiteRT`, C ABI in `chatterbox_c.h`) defaults to greedy decoding; ship the fp16 T3 bundle for Arabic (int8 is English-quality only).
+4. **Optional LiteRT reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt`, `LiteRTKokoroTts`, `LiteRTVoxCPM2Tts`, `LiteRTChatterboxTts`, `LiteRTWeSpeakerEmbedding`, `LiteRTPyannoteSegmentation`, `LiteRTOmnilingualStt`, `LiteRTNemotronStreamingStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Backed by `libLiteRt` from Google's `ai-edge-litert` package (extracted from the PyPI wheel by `scripts/fetch_litert.sh`). DeepFilter LiteRT does not exist yet. `LiteRTKokoroTts` ships the validated three-stage 60-frame FP32 bundle and enforces a 56-frame right-context guard. `LiteRTChatterboxTts` (multilingual TTS, `soniqo/Chatterbox-LiteRT`, C ABI in `chatterbox_c.h`) defaults to greedy decoding; ship the fp16 T3 bundle for Arabic (int8 is English-quality only).
 5. **Diarization** — `DiarizationPipeline` (`DiarizerInterface`) in `include/speech_core/diarization/`. Pure C++17, no ML-runtime dependency, built into the **core** library; composes a `SegmentationInterface` + `EmbeddingInterface` with constrained agglomerative clustering.
 
 ## Structure
@@ -64,7 +64,7 @@ cmake --build build
 
 - **`speech_core`** — static library, orchestration + interfaces + audio utilities. No ORT. Always built.
 - **`speech_core_models`** — static library, ONNX Runtime reference implementations. Links `speech_core` + imported `onnxruntime`. Only built when `SPEECH_CORE_WITH_ONNX=ON`.
-- **`speech_core_models_litert`** — static library, LiteRT reference implementations (Silero VAD, Parakeet STT, VoxCPM2 TTS, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT, VoxCPM2 tokenizer). Links `speech_core` + imported `litert` (`libLiteRt` from ai-edge-litert). Only built when `SPEECH_CORE_WITH_LITERT=ON`. (`DiarizationPipeline` is pure C++ and lives in `speech_core` itself, not here.)
+- **`speech_core_models_litert`** — static library, LiteRT reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, VoxCPM2 TTS, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT, VoxCPM2 tokenizer). Links `speech_core` + imported `litert` (`libLiteRt` from ai-edge-litert). Only built when `SPEECH_CORE_WITH_LITERT=ON`. (`DiarizationPipeline` is pure C++ and lives in `speech_core` itself, not here.)
 
 Consumers link the targets they need:
 
@@ -96,6 +96,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 | `include/speech_core/models/onnx_engine.h` | ORT singleton with NNAPI/QNN/CPU EP selection |
 | `include/speech_core/models/litert_silero_vad.h` | Silero VAD v5 (LiteRT) — implements `VADInterface` |
 | `include/speech_core/models/litert_parakeet_stt.h` | Parakeet TDT v3 (LiteRT, INT8 encoder) — implements `STTInterface` |
+| `include/speech_core/models/litert_kokoro_tts.h` | Kokoro 82M (LiteRT, 60-frame FP32) — implements `TTSInterface` |
 | `include/speech_core/models/litert_voxcpm2_tts.h` | VoxCPM2 (LiteRT) — implements `TTSInterface` (4-graph pipeline) |
 | `include/speech_core/models/litert_wespeaker_embedding.h` | WeSpeaker ResNet34-LM (LiteRT) — implements `EmbeddingInterface` |
 | `include/speech_core/models/litert_pyannote_segmentation.h` | Pyannote Segmentation 3.0 (LiteRT) — implements `SegmentationInterface` |

@@ -25,6 +25,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 |---|---|---|---|
 | `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
 | `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
+| `LiteRTKokoroTts` | `TTSInterface` | `speech_core/models/litert_kokoro_tts.h` | full (staged 60-frame FP32) |
 | `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | full (text-only) |
 | `LiteRTChatterboxTts` | `TTSInterface` | `speech_core/models/litert_chatterbox_tts.h` | full |
 | `LiteRTSupertonicTts` | `TTSInterface` | `speech_core/models/litert_supertonic_tts.h` | full |
@@ -79,7 +80,7 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 
 `DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`, implements `DiarizerInterface`) composes a segmenter + embedder + constrained clustering. It is pure C++ and ships in the **core** library (built always, no LiteRT dependency); pair it with the LiteRT segmenter + embedder above.
 
-Kokoro 82M and DeepFilterNet3 do not yet have LiteRT exports — see `speech-models` for conversion status. When they land, wrappers will be added alongside the existing two.
+DeepFilterNet3 does not yet have a LiteRT export; see `speech-models` for conversion status.
 
 `OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
@@ -99,7 +100,7 @@ combined reference + continuation clone mode.
 
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning is surfaced through `set_reference()`. Supplying `set_reference_transcript()` additionally uses VoxCPM2's upstream combined reference + continuation prompt layout. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
-All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. All LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`) which currently configures CPU-only inference with a configurable thread count. NNAPI / GPU / Hexagon delegates are not yet wired through the C API in this version.
+All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. Most LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`). Kokoro uses the stable TFLite Interpreter ABI exported by `libLiteRt` so its constructor can set the XNNPACK thread count directly. The current reference wrappers are CPU-only; NNAPI / GPU / Hexagon delegates are not wired here.
 
 ## Building with ONNX support
 
@@ -278,6 +279,37 @@ auto result = stt.transcribe(audio, length, 16000);
 - Encoder INT8 weight-quantized (~595 MB on disk vs ~840 MB ONNX FP32), decoder-joint stays FP32 to avoid LSTM drift
 - Decoder-joint exposes `(encoder_out, target, h, c)` as four discrete tensors (ORT bundles `target_length` and uses suffix-`_1`/`_2` for h/c)
 - Model files: [soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) — `parakeet-encoder.tflite`, `parakeet-decoder-joint.tflite`, `vocab.json`
+
+## LiteRTKokoroTts
+
+```cpp
+#include <speech_core/models/litert_kokoro_tts.h>
+
+speech_core::LiteRTKokoroTts tts(
+    "/models/kokoro-encoder.tflite",
+    "/models/kokoro-recurrent-equivalent32.tflite",
+    "/models/kokoro-vocoder.tflite",
+    "/models/voices",
+    "/models",
+    /*hw_accel=*/false,
+    /*num_threads=*/4);
+
+tts.set_seed(1234);  // optional deterministic harmonic phases
+tts.set_speed(1.0f);
+tts.synthesize("Hello world.", "en",
+    [](const float* samples, size_t length, bool is_final) {
+        // 24 kHz Float32 PCM; one final callback for the submitted text.
+    });
+```
+
+- The release is a fixed-shape, three-stage FP32 bundle: `kokoro-encoder.tflite`, `kokoro-recurrent-equivalent32.tflite`, and `kokoro-vocoder.tflite` (333,529,644 bytes total). The recurrent graph preserves the accepted 128-slot result by precomputing the state of the guaranteed 96-slot zero tail, then evaluating only 32 recurrent slots.
+- The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. The wrapper proactively chunks around 14 active tokens at speed 1.0.
+- The final convolutional stack needs unused right context. A model-reported duration above 56 frames (33,600 samples) is discarded and retried as smaller text; frames 57–60 are never accepted merely because they fit the 36,000-sample tensor.
+- Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, and short fades at chunk boundaries.
+- `num_threads` configures each XNNPACK interpreter directly. On a physical Galaxy S23 Ultra (`SM-S918B`), 8 threads was the best tested setting: 0.5502 warmed p50 RTF, 0.5807 p90 RTF, and 1,017.5 MiB peak RSS for `Hello world.` (one warm-up + ten measured runs). Android and Windows wrapper outputs correlated at 0.999795. Use `speech_kokoro_litert_bench <bundle-dir> --variant equivalent32 --threads 8 --warmup 1 --runs 10` to reproduce it.
+- The physical-device GPU audit was rejected; this wrapper is CPU/XNNPACK-only.
+- Use the staged bundle when `.tflite` format compatibility is required; the ONNX backend has separate full-graph and guarded short-turn profiles documented below.
+- Model files: [soniqo/Kokoro-82M-LiteRT](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) — the three graphs, `vocab_index.json`, `us_gold.json`, `us_silver.json`, and `voices/af_heart.bin`.
 
 ## OnnxVoxCPMTts
 
@@ -613,6 +645,7 @@ the LLM row reports tool-call decode throughput in tokens/s.
 | Kokoro-82M (full graph, published two-thread CPU default) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.81 RTF |
 | Kokoro-82M (full graph, four-thread local tuning) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.16 RTF |
 | Kokoro-82M (realtime 3.0 s short-turn graph) | TTS (preset voice) | ONNX FP32 | ~527 MiB | **0.75–0.88 RTF** |
+| Kokoro-82M (staged 60-frame reference) | TTS (preset voice) | LiteRT FP32 / XNNPACK | ~1.02 GiB | 0.55 p50 RTF |
 | FunctionGemma-270M | LLM (tool calls) | LiteRT-LM | ~611 MB | ~118 tok/s |
 
 - Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
@@ -1015,11 +1048,11 @@ SPEECH_MODEL_DIR=scripts/models ctest --test-dir build --output-on-failure
 
 `test_models` skips cleanly with exit code 0 when `SPEECH_MODEL_DIR` is unset or model files are missing — CI without model artifacts stays green.
 
-A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the LiteRT wrappers (Silero VAD, Parakeet STT, VoxCPM2 TTS, Indic-Mio TTS fixtures, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT) + the `DiarizationPipeline` + the VoxCPM2 tokenizer against `.tflite` artifacts:
+A separate `test_litert_models` target is added when `SPEECH_CORE_WITH_LITERT=ON`, exercising the LiteRT wrappers (Silero VAD, Parakeet STT, Kokoro TTS, VoxCPM2 TTS, Indic-Mio TTS fixtures, WeSpeaker embedding, Pyannote segmentation, Omnilingual STT, Nemotron streaming STT) + the `DiarizationPipeline` + the VoxCPM2 tokenizer against `.tflite` artifacts:
 
 ```bash
 scripts/fetch_litert.sh build/litert        # extracts libLiteRt from ai-edge-litert wheel
-scripts/download_models_litert.sh           # Silero + Parakeet
+scripts/download_models_litert.sh           # standard public LiteRT bundles, including Kokoro
 scripts/download_voxcpm2_litert.sh          # VoxCPM2 bundle (mixed int8/fp16, ~6.4 GB, optional)
 cmake -B build -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=$PWD/build/litert
 cmake --build build

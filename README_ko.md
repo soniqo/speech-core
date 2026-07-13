@@ -34,7 +34,7 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 - **이식 가능한 표면:** 네이티브 C++ API와 Kotlin/JNI, Swift/FFI, 임베디드 Linux 등에 적합한 C API.
 - **다중 타깃 검증:** Linux, Windows, macOS, Android 지향 arm64 빌드, Sanitizer, 모델 기반 nightly 레인.
 
-## v0.0.9 주요 변경 사항
+## v0.0.10 주요 변경 사항
 
 - **Parakeet-EOU 120M:** 발화 종료 토큰, 선택적 빔 검색, 문맥 구문 바이어싱, 과도한 바이어스 상한을 갖춘 저메모리 다국어 스트리밍 ASR.
 - **네이티브 Whisper ONNX:** small부터 large-v3/turbo까지, 언어 감지 또는 고정 언어 프롬프트, 프로파일링, CPU 튜닝 제어.
@@ -62,7 +62,7 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Chatterbox](https://huggingface.co/soniqo/Chatterbox-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/chatterbox) | 24 kHz 음성 합성 | — | ✓ |
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/supertonic) | 음성 합성 | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/indic-mio) | 힌디어/인도계 언어 음성 복제 + 감정 | — | ✓ |
-| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/kokoro) | 음성 합성 | ✓ | — |
+| [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/kokoro) | 음성 합성 | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/denoise) | 음성 향상 | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/sidon) | 노이즈 제거 + 잔향 제거(16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/respond) | 전이중 음성 대 음성(CUDA) | 구조 구현 | — |
@@ -138,7 +138,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 릴리스에는 amd64 및 arm64용 `.deb`와 `.tar.gz` 패키지가 포함됩니다. 런타임 라이브러리는 번들되지만 모델은 포함되지 않습니다.
 
 ```bash
-VERSION=0.0.9
+VERSION=0.0.10
 ARCH="$(dpkg --print-architecture)"   # amd64 또는 arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
