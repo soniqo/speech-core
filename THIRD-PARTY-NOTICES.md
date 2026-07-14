@@ -47,6 +47,16 @@ for the complete texts.
 
 ## Vendored source (source tree)
 
+### sherpa-onnx SentencePiece tokenizer algorithm
+
+- **Files:** `src/models/pocket/pocket_tts_tokenizer.cpp`
+- **Source:** adapted from `sherpa-onnx/csrc/sentence-piece-tokenizer.cc`
+  in https://github.com/k2-fsa/sherpa-onnx
+- **License:** Apache License 2.0
+- Copyright 2026 Xiaomi Corporation.
+- **Used by:** the Pocket TTS ONNX backend. No sherpa-onnx runtime code or
+  library is linked into speech-core.
+
 ### Ooura FFT
 
 - **Files:** `third_party/fftooura/`
@@ -64,3 +74,8 @@ are downloaded separately by the user at runtime (see
 `scripts/download_models.sh`, `scripts/download_models_litert.sh`, and
 `docs/models.md`) and are governed by their own licenses as published on
 their respective HuggingFace repositories.
+
+The optional Pocket TTS bundle is published separately at
+https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8 under CC BY 4.0. Its
+fixed voice was performed by Alba MacKenna; retain that attribution when the
+bundle is redistributed or used in product notices.

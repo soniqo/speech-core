@@ -1,0 +1,47 @@
+# category<TAB>synthesis text<TAB>acceptable transcription reference(s), separated by |
+assistant	Hello world.	Hello world.
+assistant	What can you do?	What can you do?
+assistant	I can call your contacts.	I can call your contacts.
+assistant	I can play music from your library.	I can play music from your library.
+assistant	Your volume is set to five.	Your volume is set to five.
+assistant	The music has been paused.	The music has been paused.
+assistant	I could not find Nina Simone on this phone.	I could not find Nina Simone on this phone.
+assistant	Opening the dialer for Alex.	Opening the dialer for Alex.
+assistant	Your timer is set for ten minutes.	Your timer is set for ten minutes.
+assistant	The alarm is set for seven thirty tomorrow morning.	The alarm is set for seven thirty tomorrow morning.
+assistant	Bluetooth is currently disconnected.	Bluetooth is currently disconnected.
+assistant	Please connect to a Wi-Fi network.	Please connect to a Wi-Fi network.|Please connect to a wifi network.
+assistant	The battery level is eighty three percent.	The battery level is eighty three percent.
+assistant	I did not understand that request.	I did not understand that request.
+assistant	Try saying play some jazz.	Try saying play some jazz.
+assistant	There are no new notifications.	There are no new notifications.
+assistant	Microphone permission is required.	Microphone permission is required.
+assistant	Speech recognition is working offline.	Speech recognition is working offline.
+assistant	Would you like me to call Sarah Johnson?	Would you like me to call Sarah Johnson?
+assistant	Send a message saying I will arrive in twenty minutes.	Send a message saying I will arrive in twenty minutes.
+general	The quick brown fox jumps over the lazy dog.	The quick brown fox jumps over the lazy dog.
+general	Pack my box with five dozen liquor jugs.	Pack my box with five dozen liquor jugs.
+general	She sells seashells by the seashore.	She sells seashells by the seashore.
+general	Peter Piper picked a peck of pickled peppers.	Peter Piper picked a peck of pickled peppers.
+general	Turn left at the next traffic light.	Turn left at the next traffic light.
+general	The meeting starts on Thursday at nine fifteen.	The meeting starts on Thursday at nine fifteen.
+general	The temperature is twenty one degrees Celsius.	The temperature is twenty one degrees Celsius.
+general	The weather will be cloudy with light rain.	The weather will be cloudy with light rain.
+numbers	Your confirmation code is four eight two six.	Your confirmation code is four eight two six.
+numbers	Navigate to one hundred twenty five Market Street.	Navigate to one hundred twenty five Market Street.
+numbers	I found twelve songs by David Bowie.	I found twelve songs by David Bowie.
+numbers	The train departs from platform seventeen.	The train departs from platform seventeen.
+numbers	The total is nineteen dollars and ninety five cents.	The total is nineteen dollars and ninety five cents.
+names	Play Nina Simone.	Play Nina Simone.
+names	Play Beyoncé and stop after this song.	Play Beyoncé and stop after this song.|Play Beyonce and stop after this song.
+names	Search for Sigur Ros in the music library.	Search for Sigur Ros in the music library.
+names	Call Doctor Muller.	Call Doctor Muller.|Call Doctor Mueller.
+names	Play Miles Davis and John Coltrane.	Play Miles Davis and John Coltrane.
+technical	The USB cable is not connected.	The USB cable is not connected.|The U S B cable is not connected.
+technical	The API returned an unexpected response.	The API returned an unexpected response.|The A P I returned an unexpected response.
+technical	Restart the application to apply the update.	Restart the application to apply the update.
+technical	Audio playback will resume automatically.	Audio playback will resume automatically.
+technical	The model is running entirely on device.	The model is running entirely on device.
+formatting	The meeting starts at 6:45 p.m.	The meeting starts at six forty five p m.|The meeting starts at 6 45 p m.|The meeting starts at six forty five pm.
+formatting	Your appointment is on July 14, 2026.	Your appointment is on July fourteenth twenty twenty six.|Your appointment is on July fourteen twenty twenty six.|Your appointment is on July 14 2026.
+formatting	Set the volume to 75%.	Set the volume to seventy five percent.|Set the volume to seventy five.|Set the volume to 75.

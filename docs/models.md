@@ -10,6 +10,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
 | `OnnxWhisperStt` | `STTInterface` | `speech_core/models/onnx_whisper_stt.h` | full |
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
+| `OnnxPocketTts` | `TTSInterface` | `speech_core/models/onnx_pocket_tts.h` | full (80 ms frame streaming, fixed Alba voice) |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
 | `OnnxSidonRestorer` | (own API; `EnhancerInterface` adapter) | `speech_core/models/onnx_sidon_restorer.h` | full — see [OnnxSidonRestorer](#onnxsidonrestorer) |
 | `OnnxCosyVoice3Tts` | `TTSInterface` | `speech_core/models/onnx_cosyvoice3_tts.h` | staged — ONNX runtime + cached conditioning |
@@ -315,6 +316,83 @@ tts.synthesize("Hello world.", "en",
 - The physical-device GPU audit was rejected; this wrapper is CPU/XNNPACK-only.
 - Use the staged bundle when `.tflite` format compatibility is required; the ONNX backend has separate full-graph and guarded short-turn profiles documented below.
 - Model files: [soniqo/Kokoro-82M-LiteRT](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) — the three graphs, `vocab_index.json`, `us_gold.json`, `us_silver.json`, and `voices/af_heart.bin`.
+
+## OnnxPocketTts
+
+Download and verify the public `v1.0.0` bundle (120.3 MiB):
+
+```bash
+bash scripts/download_pocket_tts_onnx.sh /models/pocket-tts-onnx
+```
+
+```cpp
+#include <speech_core/models/onnx_pocket_tts.h>
+
+speech_core::PocketTtsConfig config;
+config.intra_threads = 2;
+config.flow_steps = 4;
+
+speech_core::OnnxPocketTts tts("/models/pocket-tts-onnx", config);
+tts.synthesize("Hello world.", "en",
+    [](const float* samples, size_t length, bool is_final) {
+        // Each non-final callback is 1,920 Float32 samples: 80 ms at 24 kHz.
+    });
+```
+
+- Model files: [soniqo/Pocket-TTS-100M-ONNX-INT8](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8),
+  pinned by the downloader to tag `v1.0.0` (release commit
+  `ad5d3fae3fb2f10024583708597afca8337c094c`).
+- The bundle contains `lm_main.int8.onnx`, `lm_flow.int8.onnx`,
+  `decoder.int8.onnx`, `encoder.onnx`, `text_conditioner.onnx`, `vocab.json`,
+  and `token_scores.json`.
+- This public-checkpoint export is English-only and bakes in Kyutai's Alba
+  preset. It does not provide arbitrary voice cloning. The model and voice are
+  CC BY 4.0; retain the Alba MacKenna attribution from the bundle manifest.
+- Inference is genuinely interleaved: one autoregressive latent frame is
+  decoded and emitted before the next frame is generated. `last_metrics()`
+  reports conditioning, first-audio and total latency, frame/sample counts,
+  EOS state, cancellation and the effective random seed.
+- On a Galaxy S23 Ultra (`SM-S918B`, Android 16, ONNX Runtime 1.27, two
+  threads), ten warmed runs measured 130/136 ms p50/p95 TTFA for `Hello
+  world.` and 147/151 ms for `I can call your contacts,`. Peak RSS was about
+  376.5 MiB and median RTF remained below 0.46. These are direct CLI
+  measurements, not UI/pipeline timings.
+- A post-publication rerun from an anonymous `v1.0.0` download measured
+  127.7/133.7 ms p50/p95 TTFA, 467.5/485.3 ms total latency, 0.4495 median RTF
+  and 373.7 MiB peak RSS for `Hello world.`. The complete 46-phrase seed-42
+  TTS-to-ASR gate reproduced 8.00% WER / 3.47% CER with no empty output,
+  empty transcript, or EOS failure.
+- Build the device benchmark explicitly with
+  `cmake --build <build-dir> --target speech_pocket_tts_bench`. Run it as
+  `speech_pocket_tts_bench BUNDLE [TEXT] [THREADS] [STEPS] [WARMUP] [RUNS]
+  [OUTPUT_WAV]`.
+- Build the device-native intelligibility gate with
+  `cmake --build <build-dir> --target speech_pocket_tts_roundtrip`. It runs the
+  editable `examples/onnx/pocket_tts_roundtrip.tsv` corpus through Pocket TTS,
+  the 24-to-16 kHz production resampler, and the deployed Parakeet-EOU
+  streaming recognizer. The JSON report contains per-phrase transcripts,
+  WER/CER, audio duration, TTFA, synthesis/recognition latency, EOS status,
+  peak and RMS. The predeclared gate is corpus WER <=10%, CER <=5%, and no
+  empty audio, empty transcript, or EOS failure.
+- Three complete Galaxy S23 Ultra runs with different Pocket seeds passed.
+  Across 138 syntheses (46 phrases x three seeds), the deployed Parakeet-EOU
+  recognizer measured 6.79% micro WER and 2.91% CER, 103/138 transcripts were
+  exact, and every synthesis produced audio and stopped on EOS. The
+  assistant-response subset measured 1.96% WER and 0.06% CER.
+- As an independent check, locally cached Faster-Whisper Large-v3 scored all 46
+  untouched seed-123 device WAVs at 1.43% WER and 0.40% CER after its standard
+  English normalization, with 42/46 exact. Numbers and technical replies were
+  exact. Three of the four residual word errors were equivalent time formats
+  (`seven thirty` vs `7:30`); the sole lexical miss was `Play` vs `Plain` in a
+  short name command. Round-trip ASR measures intelligibility, not naturalness
+  or listener preference, so it complements rather than replaces listening
+  tests.
+- Set `SPEECH_POCKET_TTS_BUNDLE` to the bundle directory to enable the
+  tokenizer golden test and end-to-end streaming/cancellation test.
+- The published `manifest.json` records the exact source-checkpoint and ONNX
+  exporter revisions. Export source:
+  [csukuangfj/pocket-tts-onnx-export](https://github.com/csukuangfj/pocket-tts-onnx-export).
+  Public checkpoint: [kyutai/pocket-tts-without-voice-cloning](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning).
 
 ## OnnxVoxCPMTts
 
