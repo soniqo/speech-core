@@ -19,6 +19,7 @@ SileroVad::~SileroVad() {
 
 void SileroVad::reset() {
     state_.fill(0.0f);
+    context_.fill(0.0f);
 }
 
 float SileroVad::process_chunk(const float* samples, size_t length) {
@@ -26,10 +27,32 @@ float SileroVad::process_chunk(const float* samples, size_t length) {
 
     // --- input tensors ---
 
-    const int64_t input_shape[] = {1, static_cast<int64_t>(length)};
+    // v5 wants [context | chunk] — 64 + 512. Feeding the bare chunk does not
+    // error (the axis is dynamic); it just quietly returns near-zero speech
+    // probabilities. See the header for the measured damage.
+    if (length > kMaxChunk) length = kMaxChunk;
+    std::memcpy(input_buf_.data(), context_.data(),
+                kContextSize * sizeof(float));
+    std::memcpy(input_buf_.data() + kContextSize, samples,
+                length * sizeof(float));
+    const size_t input_len = kContextSize + length;
+
+    // Carry this chunk's tail into the next call. Short final chunks (< 64)
+    // still leave a well-defined context: shift what we have.
+    if (length >= kContextSize) {
+        std::memcpy(context_.data(), samples + (length - kContextSize),
+                    kContextSize * sizeof(float));
+    } else {
+        const size_t keep = kContextSize - length;
+        std::memmove(context_.data(), context_.data() + length,
+                     keep * sizeof(float));
+        std::memcpy(context_.data() + keep, samples, length * sizeof(float));
+    }
+
+    const int64_t input_shape[] = {1, static_cast<int64_t>(input_len)};
     OrtValue* t_input = nullptr;
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, const_cast<float*>(samples), length * sizeof(float),
+        mem, input_buf_.data(), input_len * sizeof(float),
         input_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t_input));
 
     // sr is a scalar (no shape dimensions)
