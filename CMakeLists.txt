@@ -41,6 +41,7 @@ add_library(speech_core
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
+    src/audio/wespeaker_fbank.cpp
     src/models/kokoro/kokoro_phonemizer.cpp
     src/models/kokoro/kokoro_multilingual.cpp
     src/tools/tool_registry.cpp
@@ -128,6 +129,8 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
         src/models/personaplex/onnx_personaplex.cpp
         src/models/whisper/onnx_whisper_stt.cpp
+        src/models/pyannote/onnx_pyannote_segmentation.cpp
+        src/models/wespeaker/onnx_wespeaker_embedding.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
     # avoid duplicate symbols when a downstream binary links both targets, we
@@ -197,6 +200,16 @@ if(SPEECH_CORE_WITH_ONNX)
         target_link_libraries(speech_sidon_restore PRIVATE speech_core_models)
         if(MSVC)
             target_compile_definitions(speech_sidon_restore PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # Diarization runtime gate: proves the C++ ONNX wrappers reproduce the
+        # models' geometry and feature contract. The frame->time mapping differs
+        # from the LiteRT path (589 frames/window vs 560), and getting it wrong
+        # leaves transcripts looking correct while speaker boundaries drift.
+        add_executable(speech_diarization_parity examples/onnx/diarization_parity.cpp)
+        target_link_libraries(speech_diarization_parity PRIVATE speech_core_models)
+        if(MSVC)
+            target_compile_definitions(speech_diarization_parity PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
     endif()
 endif()
