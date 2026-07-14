@@ -60,9 +60,9 @@ speech-core separa una pequeña capa de orquestación independiente del modelo d
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/es/guides/indic-mio) | Clonación hindi/índica + emoción | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/es/guides/kokoro) | Texto a voz | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/es/guides/denoise) | Mejora de voz | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/es/guides/sidon) | Reducción de ruido y reverberación (16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/es/guides/restore) | Reducción de ruido y reverberación (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/es/guides/respond) | Voz a voz full-duplex (CUDA) | estructura | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/es/guides/functiongemma) | Herramientas estructuradas locales | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/es/guides/function-calls) | Herramientas estructuradas locales | — | LiteRT-LM |
 
 Consulta [docs/models.md](docs/models.md) para conocer la madurez, estructura de bundles, preprocesado, memoria y ejemplos completos.
 

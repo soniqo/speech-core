@@ -66,9 +66,9 @@
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/indic-mio) | استنساخ هندي/لغات الهند + عاطفة | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/kokoro) | تحويل النص إلى كلام | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/denoise) | تحسين الكلام | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/sidon) | إزالة الضوضاء والصدى (16 ← 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/restore) | إزالة الضوضاء والصدى (16 ← 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/respond) | كلام إلى كلام مزدوج الاتجاه (CUDA) | هيكلي | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ar/guides/functiongemma) | استدعاءات أدوات منظمة على الجهاز | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ar/guides/function-calls) | استدعاءات أدوات منظمة على الجهاز | — | LiteRT-LM |
 
 راجع [docs/models.md](docs/models.md) للنضج وبنية الحزم والمعالجة المسبقة والذاكرة والأمثلة الكاملة.
 

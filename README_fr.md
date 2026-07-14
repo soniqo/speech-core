@@ -60,9 +60,9 @@ speech-core sépare une petite couche d'orchestration indépendante des modèles
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/indic-mio) | Clonage hindi/langues indiennes + émotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/kokoro) | Synthèse vocale | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/denoise) | Amélioration de la parole | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/sidon) | Débruitage + déréverbération (16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/restore) | Débruitage + déréverbération (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/respond) | Parole-à-parole full-duplex (CUDA) | structurel | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/fr/guides/functiongemma) | Appels d'outils structurés embarqués | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/fr/guides/function-calls) | Appels d'outils structurés embarqués | — | LiteRT-LM |
 
 Consultez [docs/models.md](docs/models.md) pour la maturité, les bundles, le prétraitement, la mémoire et les exemples complets.
 
