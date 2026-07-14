@@ -121,6 +121,8 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/parakeet/parakeet_stt.cpp
         src/models/nemotron/nemotron_multilingual_stt.cpp
         src/models/kokoro/kokoro_tts.cpp
+        src/models/pocket/onnx_pocket_tts.cpp
+        src/models/pocket/pocket_tts_tokenizer.cpp
         src/models/deepfilter/deepfilter.cpp
         src/models/sidon/onnx_sidon_restorer.cpp
         src/models/cosyvoice3/onnx_cosyvoice3_tts.cpp
@@ -149,6 +151,7 @@ if(SPEECH_CORE_WITH_ONNX)
             $<INSTALL_INTERFACE:include>
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     )
 
     if(MSVC)
@@ -165,6 +168,26 @@ if(SPEECH_CORE_WITH_ONNX)
     set_target_properties(speech_core_models PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(speech_core_models PUBLIC speech_core onnxruntime)
+
+    # Device-friendly Pocket TTS benchmark. Unlike the other ONNX CLIs this
+    # target is also built for Android so it can be pushed and run through adb.
+    add_executable(speech_pocket_tts_bench EXCLUDE_FROM_ALL
+        examples/onnx/pocket_tts_bench.cpp)
+    target_link_libraries(speech_pocket_tts_bench PRIVATE speech_core_models)
+
+    # Device-native intelligibility gate: Pocket TTS -> 24/16 kHz resample ->
+    # the deployed streaming Parakeet/Nemotron STT graphs, with WER/CER output.
+    add_executable(speech_pocket_tts_roundtrip EXCLUDE_FROM_ALL
+        examples/onnx/pocket_tts_roundtrip.cpp)
+    target_link_libraries(speech_pocket_tts_roundtrip PRIVATE speech_core_models)
+    if(ANDROID)
+        target_link_libraries(speech_pocket_tts_bench PRIVATE log)
+        target_link_libraries(speech_pocket_tts_roundtrip PRIVATE log)
+    endif()
+    if(MSVC)
+        target_compile_definitions(speech_pocket_tts_bench PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        target_compile_definitions(speech_pocket_tts_roundtrip PRIVATE NOMINMAX)
+    endif()
 
     # VoxCPM2 ONNX voice-cloning CLI — the in-repo runner for the ONNX path:
     # the full 4-graph AR loop through OnnxVoxCPM2Tts, on CPU or CUDA/TensorRT
@@ -577,6 +600,8 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_indic_mio_istft"
            OR TEST_NAME STREQUAL "test_indic_mio_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_indic_mio"
+           OR TEST_NAME STREQUAL "test_pocket_tts"
+           OR TEST_NAME STREQUAL "test_pocket_tts_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
@@ -637,7 +662,25 @@ if(SPEECH_CORE_BUILD_TESTS)
             endif()
             target_compile_definitions(bench_ort_models PRIVATE
                 SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+            if(MSVC)
+                target_compile_definitions(bench_ort_models PRIVATE NOMINMAX)
+            endif()
         endif()
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pocket_tts_tokenizer.cpp)
+        add_executable(test_pocket_tts_tokenizer
+            tests/test_pocket_tts_tokenizer.cpp)
+        target_link_libraries(test_pocket_tts_tokenizer PRIVATE speech_core_models)
+        add_test(NAME test_pocket_tts_tokenizer COMMAND test_pocket_tts_tokenizer)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pocket_tts.cpp)
+        add_executable(test_pocket_tts tests/test_pocket_tts.cpp)
+        target_link_libraries(test_pocket_tts PRIVATE speech_core_models)
+        add_test(NAME test_pocket_tts COMMAND test_pocket_tts)
     endif()
 
     # LiteRT model integration tests — require SPEECH_CORE_WITH_LITERT=ON.
