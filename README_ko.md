@@ -64,9 +64,9 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/indic-mio) | 힌디어/인도계 언어 음성 복제 + 감정 | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/kokoro) | 음성 합성 | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/denoise) | 음성 향상 | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/sidon) | 노이즈 제거 + 잔향 제거(16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/restore) | 노이즈 제거 + 잔향 제거(16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/respond) | 전이중 음성 대 음성(CUDA) | 구조 구현 | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ko/guides/functiongemma) | 온디바이스 구조화 도구 호출 | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ko/guides/function-calls) | 온디바이스 구조화 도구 호출 | — | LiteRT-LM |
 
 성숙도, 번들 구성, 전처리, 메모리 정보, 전체 예제는 [docs/models.md](docs/models.md)를 참고하세요.
 

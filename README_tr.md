@@ -60,9 +60,9 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/indic-mio) | Hint dilleri ses klonlama + duygu | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/kokoro) | Metinden konuşma | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/denoise) | Konuşma iyileştirme | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/sidon) | Gürültü ve yankı giderme (16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/restore) | Gürültü ve yankı giderme (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/respond) | Full-duplex konuşmadan konuşmaya (CUDA) | yapısal | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/tr/guides/functiongemma) | Cihaz içi yapılandırılmış araç çağrıları | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/tr/guides/function-calls) | Cihaz içi yapılandırılmış araç çağrıları | — | LiteRT-LM |
 
 Olgunluk, bundle yapısı, ön işleme, bellek ve tam örnekler için [docs/models.md](docs/models.md) belgesine bakın.
 

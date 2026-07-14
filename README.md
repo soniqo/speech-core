@@ -64,9 +64,9 @@ speech-core separates a small, model-agnostic orchestration layer from optional 
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/indic-mio) | Hindi/Indic voice cloning + emotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/kokoro) | Text-to-speech | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/guides/denoise) | Speech enhancement | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/guides/sidon) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/guides/restore) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/guides/respond) | Full-duplex speech-to-speech (CUDA) | structural | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/guides/functiongemma) | On-device structured tool calls | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/guides/function-calls) | On-device structured tool calls | — | LiteRT-LM |
 
 See [docs/models.md](docs/models.md) for maturity, bundle layouts, preprocessing, memory notes, and complete examples.
 

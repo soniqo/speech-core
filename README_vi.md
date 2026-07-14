@@ -60,9 +60,9 @@ speech-core tách lớp điều phối nhỏ, độc lập với mô hình khỏ
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/indic-mio) | Nhân bản giọng Hindi/Ấn Độ + cảm xúc | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/kokoro) | Tổng hợp giọng nói | ✓ | ✓ |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/denoise) | Tăng cường giọng nói | ✓ | — |
-| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/sidon) | Khử nhiễu + khử vang (16 → 48 kHz) | ✓ | — |
+| [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/restore) | Khử nhiễu + khử vang (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/respond) | Giọng nói hai chiều full-duplex (CUDA) | cấu trúc | — |
-| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/vi/guides/functiongemma) | Gọi công cụ có cấu trúc trên thiết bị | — | LiteRT-LM |
+| [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/vi/guides/function-calls) | Gọi công cụ có cấu trúc trên thiết bị | — | LiteRT-LM |
 
 Xem [docs/models.md](docs/models.md) để biết độ hoàn thiện, layout bundle, tiền xử lý, bộ nhớ và ví dụ đầy đủ.
 
