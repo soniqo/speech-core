@@ -25,6 +25,16 @@ endif()
 # speech_core — orchestration core (always built, no ML deps)
 # ---------------------------------------------------------------------------
 
+# The project enables CXX only, so build the C++-clean kissfft sources as C++.
+# Keeping one copy in speech_core lets both the ONNX DeepFilterNet3 frontend
+# and the LiteRT Indic-Mio ISTFT use arbitrary-size real FFTs without duplicate
+# symbols when both optional model targets are linked into one application.
+set_source_files_properties(
+    third_party/kissfft/kiss_fft.c
+    third_party/kissfft/kiss_fftr.c
+    PROPERTIES LANGUAGE CXX
+)
+
 add_library(speech_core
     src/pipeline/voice_pipeline.cpp
     src/pipeline/turn_detector.cpp
@@ -38,6 +48,8 @@ add_library(speech_core
     src/audio/offline_spectral_de_esser.cpp
     third_party/fftooura/ooura_fft_engine.cpp
     third_party/fftooura/fft4g.cpp
+    third_party/kissfft/kiss_fft.c
+    third_party/kissfft/kiss_fftr.c
     src/audio/mel.cpp
     src/audio/stft.cpp
     src/audio/seamless_fbank.cpp
@@ -61,6 +73,7 @@ target_include_directories(speech_core
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fftooura
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft
 )
 
 if(MSVC)
@@ -124,6 +137,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/pocket/onnx_pocket_tts.cpp
         src/models/pocket/pocket_tts_tokenizer.cpp
         src/models/deepfilter/deepfilter.cpp
+        src/models/deepfilter/deepfilter_dsp.cpp
         src/models/sidon/onnx_sidon_restorer.cpp
         src/models/cosyvoice3/onnx_cosyvoice3_tts.cpp
         src/models/voxcpm/onnx_voxcpm_tts.cpp
@@ -309,10 +323,6 @@ if(SPEECH_CORE_WITH_LITERT)
         src/models/litert/indic_mio_istft.cpp
         src/models/litert/litert_indic_mio_tts.cpp
         src/models/litert/indic_mio_c.cpp
-        # kissfft (BSD-3): arbitrary-N real FFT for the Indic-Mio host ISTFT
-        # (n_fft 1920 = 2^7*3*5; the in-tree Ooura engine is radix-2 only).
-        third_party/kissfft/kiss_fft.c
-        third_party/kissfft/kiss_fftr.c
     )
 
     # Kokoro uses the legacy TensorFlow Lite interpreter C API. The validated
@@ -326,14 +336,6 @@ if(SPEECH_CORE_WITH_LITERT)
         target_compile_definitions(speech_core_models_litert
             PUBLIC SPEECH_CORE_HAS_LITERT_KOKORO=1)
     endif()
-
-    # The project enables CXX only, so .c sources would be silently dropped —
-    # build the (C++-clean) kissfft translation units as C++.
-    set_source_files_properties(
-        third_party/kissfft/kiss_fft.c
-        third_party/kissfft/kiss_fftr.c
-        PROPERTIES LANGUAGE CXX
-    )
 
     target_include_directories(speech_core_models_litert
         PUBLIC
@@ -595,6 +597,7 @@ if(SPEECH_CORE_BUILD_TESTS)
         # LiteRT — handled below when SPEECH_CORE_WITH_LITERT=ON.
         if(TEST_NAME STREQUAL "test_models" OR TEST_NAME STREQUAL "test_litert_models"
            OR TEST_NAME STREQUAL "test_litert_chatterbox"
+           OR TEST_NAME STREQUAL "test_deepfilter_dsp"
            OR TEST_NAME STREQUAL "test_hf_download"
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_indic_mio_istft"
@@ -613,6 +616,21 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_link_libraries(${TEST_NAME} PRIVATE speech_core)
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+
+    # DeepFilterNet3's frontend/postfilter is pure DSP but normally compiled
+    # into the optional ONNX target. Build it directly here so native-960 FFT,
+    # normalization/layout, temporal filtering, and delay parity remain covered
+    # in the dependency-free test configuration too.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepfilter_dsp.cpp)
+        add_executable(test_deepfilter_dsp
+            tests/test_deepfilter_dsp.cpp
+            src/models/deepfilter/deepfilter_dsp.cpp)
+        target_include_directories(test_deepfilter_dsp PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        target_link_libraries(test_deepfilter_dsp PRIVATE speech_core)
+        add_test(NAME test_deepfilter_dsp COMMAND test_deepfilter_dsp)
+    endif()
 
     # HF downloader decision-logic test — the pure resume/skip/restart rules
     # behind sc_voxcpm2_create_from_pretrained. Needs no libcurl or LiteRT, so it

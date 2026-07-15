@@ -521,14 +521,16 @@ void test_kokoro_short_turn_profile(const std::string& dir) {
 
 void test_deepfilter(const std::string& dir) {
     std::string model = dir + "/deepfilter.onnx";
-    std::string aux = dir + "/deepfilter-auxiliary.bin";
-    if (!file_exists(model) || !file_exists(aux)) {
-        std::printf("  [skip] deepfilter files not in %s\n", dir.c_str());
+    std::string auxiliary = dir + "/deepfilter-auxiliary.bin";
+    if (!file_exists(model)) {
+        std::printf("  [skip] deepfilter.onnx not in %s\n", dir.c_str());
         return;
     }
     std::printf("  test_deepfilter ... ");
 
-    speech_core::DeepFilterEnhancer enh(model, aux, /*hw_accel=*/false);
+    speech_core::DeepFilterEnhancer enh(model,
+                                        file_exists(auxiliary) ? auxiliary : std::string{},
+                                        /*hw_accel=*/false);
     REQUIRE(enh.input_sample_rate() == 48000);
 
     // 1 second of low-amplitude noise at 48 kHz
@@ -542,14 +544,20 @@ void test_deepfilter(const std::string& dir) {
     // Output should not be all zeros and not contain NaN/Inf
     bool has_signal = false;
     bool has_nan = false;
+    float peak = 0.0f;
     for (float v : clean) {
         if (std::isnan(v) || std::isinf(v)) { has_nan = true; break; }
         if (std::abs(v) > 1e-6f) has_signal = true;
+        peak = std::max(peak, std::abs(v));
     }
     REQUIRE(!has_nan);
     REQUIRE(has_signal);
+    // The previous broken STFT/ERB path produced peaks above 150 for this
+    // 0.05-amplitude input while still satisfying the finite/nonzero smoke
+    // checks. A speech enhancer must remain in a sane PCM range.
+    REQUIRE(peak < 2.0f);
 
-    std::printf("ok\n");
+    std::printf("ok (peak=%.4f)\n", peak);
 }
 
 // ---------------------------------------------------------------------------
