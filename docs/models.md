@@ -1073,8 +1073,7 @@ Voice embeddings are 256-float `.bin` files in `voices_dir`. Default voice is `a
 #include <speech_core/models/deepfilter.h>
 
 speech_core::DeepFilterEnhancer enh(
-    "/models/deepfilter.onnx",
-    "/models/deepfilter_aux.bin");
+    "/models/deepfilter.onnx");
 
 std::vector<float> clean(audio.size());
 enh.enhance(audio.data(), audio.size(), 48000, clean.data());
@@ -1082,9 +1081,18 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 
 - DeepFilterNet3 — ~2.1M params, real-time speech enhancement
 - 48 kHz input (caller must resample if needed)
-- STFT (960/480) → ERB filterbank → neural mask + deep filter coefficients → inverse STFT
-- Auxiliary binary file holds precomputed ERB filterbanks and Vorbis window: `erb_fb [481*32] | erb_inv_fb [32*481] | window [960]` (float32)
-- Model files: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
+- Native 960-point STFT (480-sample hop) with libdf analysis scaling, ERB and
+  complex-feature normalization, neural mask + deep-filter coefficients, and
+  streaming overlap-add with 480-sample delay compensation
+- The canonical Vorbis window, disjoint ERB widths, and normalization states
+  are generated in-process. The optional legacy `auxiliary_path` argument
+  accepts `deepfilter-auxiliary.bin` and validates it for compatibility, but
+  does not trust artifact matrices for inference.
+- The ONNX graph contract is `feat_erb [1,1,T,32]`,
+  `feat_spec [1,2,T,96]` → `erb_mask [1,1,T,32]`,
+  `df_coefs [1,5,T,96,2]`; incompatible output shapes fail explicitly.
+- Distribution repository: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX). The runtime needs `deepfilter.onnx`
+  (~8.2 MiB, FP32); `deepfilter-auxiliary.bin` is legacy/optional.
 
 ## OnnxSidonRestorer
 

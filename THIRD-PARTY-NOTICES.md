@@ -67,6 +67,15 @@ for the complete texts.
 - Copyright Takuya OOURA, 1996-2001.
 - **Used by:** `speech_core::audio::fft_real` / `speech_core::audio::ifft_real`
 
+### KISS FFT
+
+- **Files:** `third_party/kissfft/`
+- **Source:** https://github.com/mborgerding/kissfft
+- **License:** BSD 3-Clause (see `third_party/kissfft/COPYING`)
+- Copyright (c) 2003-2010 Mark Borgerding.
+- **Used by:** the native 960-point DeepFilterNet3 STFT/iSTFT and the
+  arbitrary-size Indic-Mio host ISTFT.
+
 ## Models
 
 No machine-learning models are included in any speech-core package. Models

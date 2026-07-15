@@ -36,8 +36,9 @@ FILES=(
     "Kokoro-82M-ONNX/dict_pt.json"
     "Kokoro-82M-ONNX/dict_hi.json"
     "Kokoro-82M-ONNX/voices/af_heart.bin"
+    # DeepFilterNet3's libdf DSP tables are generated in-process, so the legacy
+    # auxiliary binary is no longer a runtime dependency.
     "DeepFilterNet3-ONNX/deepfilter.onnx"
-    "DeepFilterNet3-ONNX/deepfilter-auxiliary.bin"
 )
 
 for entry in "${FILES[@]}"; do
