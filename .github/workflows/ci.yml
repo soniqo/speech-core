@@ -235,6 +235,34 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $help -notmatch "/v1/audio/speech") {
             throw "Packaged speech-server.exe failed its help smoke test"
           }
+          foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe")) {
+            $executablePath = Join-Path $root.FullName "bin/$executable"
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $executablePath
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.CreateNoWindow = $true
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            try {
+              if (-not $process.Start()) {
+                throw "$executable did not start"
+              }
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              $process.WaitForExit()
+              $output = [string]::Concat(
+                $stdout.GetAwaiter().GetResult(),
+                $stderr.GetAwaiter().GetResult()
+              )
+              if ($process.ExitCode -ne 2 -or [string]::IsNullOrWhiteSpace($output)) {
+                throw "$executable did not reach its expected usage boundary"
+              }
+            } finally {
+              $process.Dispose()
+            }
+          }
 
   # LiteRT build lanes — prove the speech_core_models_litert target compiles
   # and links against a real libLiteRt on Linux and Windows. The runtime is

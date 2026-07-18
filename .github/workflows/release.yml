@@ -3,9 +3,18 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   # Linux CLI packages — .deb + .tar.gz per arch, attached to the release.
@@ -25,6 +34,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify release tag checkout
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
 
       - name: Install build deps (amd64)
         if: matrix.arch == 'amd64'
@@ -66,7 +83,7 @@ jobs:
               -DSPEECH_CORE_BUILD_TESTS=OFF \
               -DSPEECH_LINUX_BUILD_TESTS=OFF \
               -DSPEECH_CORE_PACKAGE=ON \
-              "-DSPEECH_CORE_PACKAGE_VERSION=${GITHUB_REF_NAME#v}" \
+              "-DSPEECH_CORE_PACKAGE_VERSION=${RELEASE_TAG#v}" \
               -DORT_DIR=ort-linux
 
       - name: Configure (arm64 cross)
@@ -85,7 +102,7 @@ jobs:
               -DSPEECH_LINUX_BUILD_DEMO=OFF \
               -DSPEECH_LINUX_BUILD_TESTS=OFF \
               -DSPEECH_CORE_PACKAGE=ON \
-              "-DSPEECH_CORE_PACKAGE_VERSION=${GITHUB_REF_NAME#v}" \
+              "-DSPEECH_CORE_PACKAGE_VERSION=${RELEASE_TAG#v}" \
               -DORT_DIR=ort-linux
 
       - name: Build
@@ -174,6 +191,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify release tag checkout
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
 
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -213,7 +239,7 @@ jobs:
               -DSPEECH_LINUX_BUILD_DEMO=OFF \
               -DSPEECH_LINUX_BUILD_TESTS=OFF \
               -DSPEECH_CORE_PACKAGE=ON \
-              "-DSPEECH_CORE_PACKAGE_VERSION=${GITHUB_REF_NAME#v}" \
+              "-DSPEECH_CORE_PACKAGE_VERSION=${RELEASE_TAG#v}" \
               -DORT_DIR="$PWD/ort-windows"
 
       - name: Build
@@ -268,10 +294,31 @@ jobs:
             throw "speech-server.exe did not start and print endpoint help"
           }
           foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe")) {
-            $output = & (Join-Path $root.FullName "bin/$executable") 2>&1 | Out-String
-            $usageExit = $LASTEXITCODE
-            if ($usageExit -ne 2 -or [string]::IsNullOrWhiteSpace($output)) {
-              throw "$executable did not reach its expected usage boundary"
+            $executablePath = Join-Path $root.FullName "bin/$executable"
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $executablePath
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.CreateNoWindow = $true
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            try {
+              if (-not $process.Start()) {
+                throw "$executable did not start"
+              }
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              $process.WaitForExit()
+              $output = [string]::Concat(
+                $stdout.GetAwaiter().GetResult(),
+                $stderr.GetAwaiter().GetResult()
+              )
+              if ($process.ExitCode -ne 2 -or [string]::IsNullOrWhiteSpace($output)) {
+                throw "$executable did not reach its expected usage boundary"
+              }
+            } finally {
+              $process.Dispose()
             }
           }
 
@@ -290,6 +337,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify release tag checkout
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
 
       - name: Build XCFramework
         run: ./scripts/build_xcframework.sh
@@ -338,6 +393,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/*.deb
             dist/*.tar.gz
@@ -360,7 +416,7 @@ jobs:
             ```swift
             .binaryTarget(
                 name: "CSpeechCore",
-                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SpeechCore.xcframework.zip",
+                url: "https://github.com/${{ github.repository }}/releases/download/${{ env.RELEASE_TAG }}/SpeechCore.xcframework.zip",
                 checksum: "${{ needs.build-xcframework.outputs.checksum }}"
             )
             ```
