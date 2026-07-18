@@ -557,7 +557,7 @@ if(SPEECH_CORE_WITH_OLLAMA)
     if(MSVC)
         target_compile_options(speech_core_llm_ollama PRIVATE /W4)
         target_compile_definitions(speech_core_llm_ollama PRIVATE
-            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0A00)
     else()
         target_compile_options(speech_core_llm_ollama PRIVATE
             -Wall -Wextra
@@ -597,7 +597,7 @@ if(SPEECH_CORE_BUILD_HTTP_SERVER OR SPEECH_CORE_BUILD_TESTS)
     if(MSVC)
         target_compile_options(speech_core_http_support PRIVATE /W4)
         target_compile_definitions(speech_core_http_support PRIVATE
-            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0A00)
     else()
         target_compile_options(speech_core_http_support PRIVATE
             -Wall -Wextra $<$<CONFIG:Release>:-O2>)
@@ -619,7 +619,7 @@ if(SPEECH_CORE_BUILD_HTTP_SERVER)
     if(MSVC)
         target_compile_options(speech_server PRIVATE /W4)
         target_compile_definitions(speech_server PRIVATE
-            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0A00)
     else()
         target_compile_options(speech_server PRIVATE
             -Wall -Wextra $<$<CONFIG:Release>:-O2>)
@@ -688,7 +688,7 @@ if(SPEECH_CORE_BUILD_TESTS)
             speech_core_http_support)
         if(MSVC)
             target_compile_definitions(test_openai_tts_server PRIVATE
-                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0A00)
         endif()
         add_test(NAME test_openai_tts_server COMMAND test_openai_tts_server)
     endif()
