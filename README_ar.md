@@ -20,8 +20,18 @@
 
 </div>
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio على YouTube"></a></p>
-<p align="center"><em>استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio على YouTube</em></p>
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="وكيل صوتي كامل يعمل دون اتصال في 1.2 GB على Android — شاهد العرض على YouTube"></a>
+      <br><em>وكيل صوتي كامل يعمل دون اتصال في 1.2 GB على Android — عرض control-demo من speech-android</em>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio على YouTube"></a>
+      <br><em>استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio</em>
+    </td>
+  </tr>
+</table>
 
 <div dir="rtl">
 

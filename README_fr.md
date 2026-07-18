@@ -16,8 +16,18 @@ Tout s'exécute localement sur CPU. Aucun cloud, aucun Python à l'inférence et
 
 ## Démonstration
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Clonage de voix avec VoxCPM2 — démonstration de Speech Studio sur YouTube"></a></p>
-<p align="center"><em>Clonage de voix avec VoxCPM2 — démonstration de Speech Studio sur YouTube</em></p>
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="Un agent vocal entièrement hors ligne dans 1,2 Go sur Android — voir la démo sur YouTube"></a>
+      <br><em>Un agent vocal entièrement hors ligne dans 1,2 Go sur Android — la control-demo de speech-android</em>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="Clonage de voix avec VoxCPM2 — démonstration de Speech Studio sur YouTube"></a>
+      <br><em>Clonage de voix avec VoxCPM2 — la démo Speech Studio</em>
+    </td>
+  </tr>
+</table>
 
 ## Pourquoi speech-core
 

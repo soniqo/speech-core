@@ -16,8 +16,18 @@
 
 ## Демонстрация
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Клонирование голоса с VoxCPM2 — демонстрация Speech Studio на YouTube"></a></p>
-<p align="center"><em>Клонирование голоса с VoxCPM2 — демонстрация Speech Studio на YouTube</em></p>
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="Полностью офлайновый голосовой агент в 1,2 ГБ на Android — смотреть демо на YouTube"></a>
+      <br><em>Полностью офлайновый голосовой агент в 1,2 ГБ на Android — control-demo из speech-android</em>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="Клонирование голоса с VoxCPM2 — демонстрация Speech Studio на YouTube"></a>
+      <br><em>Клонирование голоса с VoxCPM2 — демонстрация Speech Studio</em>
+    </td>
+  </tr>
+</table>
 
 ## Зачем нужен speech-core
 

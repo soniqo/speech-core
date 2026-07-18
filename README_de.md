@@ -16,8 +16,18 @@ Läuft lokal auf der CPU. Keine Cloud, kein Python bei der Inferenz und keine Au
 
 ## Demo
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Stimmklonen mit VoxCPM2 — Speech-Studio-Demo auf YouTube"></a></p>
-<p align="center"><em>Stimmklonen mit VoxCPM2 — Speech-Studio-Demo auf YouTube</em></p>
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="Ein komplett offline laufender Sprachagent in 1,2 GB auf Android — Demo auf YouTube ansehen"></a>
+      <br><em>Ein vollständig offline laufender Sprachagent in 1,2 GB auf Android — die speech-android control-demo</em>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="Stimmklonen mit VoxCPM2 — Speech-Studio-Demo auf YouTube"></a>
+      <br><em>Stimmklonen mit VoxCPM2 — die Speech-Studio-Demo</em>
+    </td>
+  </tr>
+</table>
 
 ## Warum speech-core
 
