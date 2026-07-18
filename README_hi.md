@@ -10,7 +10,7 @@
 
 यह CPU पर पूरी तरह स्थानीय रूप से चलता है। inference के समय cloud या Python नहीं चाहिए और audio device से बाहर नहीं जाता।
 
-**[📚 पूरा documentation →](https://soniqo.audio/hi/speech-core)** · **[🐧 Linux](https://soniqo.audio/hi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/hi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 पूरा documentation →](https://soniqo.audio/hi/speech-core)** · **[🐧 Linux](https://soniqo.audio/hi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/hi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP audio](docs/http-server.md)**
 
 **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple sibling](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

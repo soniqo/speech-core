@@ -10,7 +10,7 @@
 
 CPU üzerinde yerel çalışır. Çıkarımda bulut veya Python yoktur; ses cihazdan ayrılmaz.
 
-**[📚 Tam belgeler →](https://soniqo.audio/tr/speech-core)** · **[🐧 Linux](https://soniqo.audio/tr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/tr/getting-started/windows)** · **[⌨️ Masaüstü CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Tam belgeler →](https://soniqo.audio/tr/speech-core)** · **[🐧 Linux](https://soniqo.audio/tr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/tr/getting-started/windows)** · **[⌨️ Masaüstü CLI](docs/cli.md)** · **[🔊 HTTP ses](docs/http-server.md)**
 
 **[🤗 Modeller](https://huggingface.co/soniqo)** · **[🍎 Apple kardeş projesi](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

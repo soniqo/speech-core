@@ -131,7 +131,9 @@ jobs:
           test -x "$server"
           test -x "$dispatcher"
           "$server" --help | grep -q /v1/audio/speech
+          "$server" --help | grep -q /v1/audio/transcriptions
           "$dispatcher" serve --help | grep -q /v1/audio/speech
+          "$dispatcher" serve --help | grep -q /v1/audio/transcriptions
 
       - name: Test
         # Integration tests (test_models, speech_linux_pipeline) skip
@@ -232,7 +234,9 @@ jobs:
           }
           $help = & (Join-Path $root.FullName "bin/speech-server.exe") --help 2>&1 |
             Out-String
-          if ($LASTEXITCODE -ne 0 -or $help -notmatch "/v1/audio/speech") {
+          if ($LASTEXITCODE -ne 0 -or
+              $help -notmatch "/v1/audio/speech" -or
+              $help -notmatch "/v1/audio/transcriptions") {
             throw "Packaged speech-server.exe failed its help smoke test"
           }
           foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe")) {

@@ -8,7 +8,7 @@ than the Apple CLI documented at [soniqo.audio/cli](https://soniqo.audio/cli).
 **[Speech Core overview](https://soniqo.audio/speech-core)** ·
 **[Linux guide](https://soniqo.audio/getting-started/linux)** ·
 **[Windows guide](https://soniqo.audio/getting-started/windows)** ·
-**[HTTP TTS server](http-server.md)**
+**[HTTP audio server](http-server.md)**
 
 ## Install a release package
 
@@ -48,7 +48,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 | Transcription | `speech transcribe` | `speech_transcribe.exe` | ✓ | ✓ | ✓ |
 | Kokoro synthesis | `speech speak` | `speech_synthesize.exe` | ✓ | ✓ | ✓ |
 | Kokoro phonemizer | `speech phonemize` | `speech_phonemize.exe` | ✓ | ✓ | ✓ |
-| OpenAI-compatible HTTP TTS | `speech serve` | `speech-server.exe` | ✓ | ✓ | ✓ |
+| OpenAI-compatible HTTP audio | `speech serve` | `speech-server.exe` | ✓ | ✓ | ✓ |
 | VoxCPM2 voice cloning | `speech clone` | — | ✓ | — | — |
 | ALSA microphone pipeline | `speech demo` | — | ✓ | — | — |
 | ONNX model downloader | `speech download-models` | `speech_download_models.ps1` | ✓ | ✓ | ✓ |

@@ -10,7 +10,7 @@
 
 ทำงานภายในเครื่องบน CPU ไม่ใช้คลาวด์หรือ Python ระหว่าง inference และเสียงไม่ออกจากอุปกรณ์
 
-**[📚 เอกสารฉบับเต็ม →](https://soniqo.audio/th/speech-core)** · **[🐧 Linux](https://soniqo.audio/th/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/th/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 เอกสารฉบับเต็ม →](https://soniqo.audio/th/speech-core)** · **[🐧 Linux](https://soniqo.audio/th/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/th/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 เสียง HTTP](docs/http-server.md)**
 
 **[🤗 โมเดล](https://huggingface.co/soniqo)** · **[🍎 โปรเจกต์สำหรับ Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

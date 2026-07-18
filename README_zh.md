@@ -10,7 +10,7 @@
 
 完全在本地 CPU 上运行。推理不依赖云端或 Python，音频不会离开设备。
 
-**[📚 完整文档 →](https://soniqo.audio/zh/speech-core)** · **[🐧 Linux](https://soniqo.audio/zh/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/zh/getting-started/windows)** · **[⌨️ 桌面 CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 完整文档 →](https://soniqo.audio/zh/speech-core)** · **[🐧 Linux](https://soniqo.audio/zh/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/zh/getting-started/windows)** · **[⌨️ 桌面 CLI](docs/cli.md)** · **[🔊 HTTP 音频](docs/http-server.md)**
 
 **[🤗 模型](https://huggingface.co/soniqo)** · **[🍎 Apple 端项目](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

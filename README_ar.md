@@ -12,7 +12,7 @@
 
 تعمل محلياً على المعالج. لا سحابة ولا Python أثناء الاستدلال، ولا يغادر الصوت الجهاز.
 
-**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة سطح المكتب](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة سطح المكتب](docs/cli.md)** · **[🔊 صوت HTTP](docs/http-server.md)**
 
 **[🤗 النماذج](https://huggingface.co/soniqo)** · **[🍎 مشروع Apple الشقيق](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

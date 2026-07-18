@@ -12,7 +12,7 @@ option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with 
 option(SPEECH_CORE_WITH_LITERT_LM "Build the liblitert-lm-backed reference LLM (LiteRTFunctionGemmaLLM) as a standalone target (speech_core_models_litert_lm). Independent of SPEECH_CORE_WITH_LITERT — Android consumers need this without libLiteRt. Requires LITERT_LM_DIR pointing at liblitert-lm.{so,dylib,dll}: on macOS use scripts/fetch_litert_lm.sh, on Android use scripts/build_litert_lm_android.sh." OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
-option(SPEECH_CORE_BUILD_HTTP_SERVER "Build the OpenAI-compatible speech-server sidecar. Requires SPEECH_CORE_WITH_ONNX=ON for Kokoro TTS." OFF)
+option(SPEECH_CORE_BUILD_HTTP_SERVER "Build the OpenAI-compatible speech-server sidecar. Requires SPEECH_CORE_WITH_ONNX=ON for Kokoro TTS and Parakeet STT." OFF)
 option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
 option(SPEECH_CORE_PACKAGE "Add install rules for CLI/server tools and bundled runtimes, then configure CPack (Linux .deb/.tar.gz or Windows .zip)." OFF)
 set(SPEECH_CORE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into binary packages. The release workflow passes the git tag (e.g. 0.0.8); local builds default to the project version.")
@@ -25,7 +25,7 @@ endif()
 if(SPEECH_CORE_BUILD_HTTP_SERVER AND NOT SPEECH_CORE_WITH_ONNX)
     message(FATAL_ERROR
         "SPEECH_CORE_BUILD_HTTP_SERVER=ON requires SPEECH_CORE_WITH_ONNX=ON "
-        "(the released sidecar uses Kokoro ONNX)")
+        "(the released sidecar uses Kokoro and Parakeet ONNX)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -575,12 +575,12 @@ if(SPEECH_CORE_WITH_OLLAMA)
 endif()
 
 # ---------------------------------------------------------------------------
-# OpenAI-compatible local TTS HTTP sidecar (optional executable)
+# OpenAI-compatible local audio HTTP sidecar (optional executable)
 #
 # The protocol/encoding adapter is also built for the default unit suite so
 # its HTTP contract stays covered without ONNX Runtime or model downloads.
 # The executable itself is gated on SPEECH_CORE_BUILD_HTTP_SERVER and links
-# the released Kokoro ONNX backend.
+# the released Kokoro and Parakeet ONNX backends.
 # ---------------------------------------------------------------------------
 
 if(SPEECH_CORE_BUILD_HTTP_SERVER OR SPEECH_CORE_BUILD_TESTS)
@@ -666,6 +666,8 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_pocket_tts_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_openai_tts_server"
+           OR TEST_NAME STREQUAL "test_openai_stt_server_e2e"
+           OR TEST_NAME STREQUAL "test_mel_parakeet_contract"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
            OR TEST_NAME STREQUAL "test_fdb_bench_smoke"
@@ -715,11 +717,8 @@ if(SPEECH_CORE_BUILD_TESTS)
     # models, no ORT.
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mel_parakeet_contract.cpp)
         add_executable(test_mel_parakeet_contract
-            tests/test_mel_parakeet_contract.cpp
-            src/audio/mel.cpp
-            src/audio/fft.cpp)
-        target_include_directories(test_mel_parakeet_contract PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+            tests/test_mel_parakeet_contract.cpp)
+        target_link_libraries(test_mel_parakeet_contract PRIVATE speech_core)
         add_test(NAME test_mel_parakeet_contract
                  COMMAND test_mel_parakeet_contract)
     endif()
@@ -779,6 +778,26 @@ if(SPEECH_CORE_BUILD_TESTS)
                 target_compile_definitions(bench_ort_models PRIVATE NOMINMAX)
             endif()
         endif()
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_openai_stt_server_e2e.cpp)
+        add_executable(test_openai_stt_server_e2e
+            tests/test_openai_stt_server_e2e.cpp)
+        target_include_directories(test_openai_stt_server_e2e PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/http
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        target_link_libraries(test_openai_stt_server_e2e PRIVATE
+            speech_core_http_support speech_core_models)
+        target_compile_definitions(test_openai_stt_server_e2e PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        if(MSVC)
+            target_compile_definitions(test_openai_stt_server_e2e PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0A00)
+        endif()
+        add_test(NAME test_openai_stt_server_e2e
+                 COMMAND test_openai_stt_server_e2e)
     endif()
 
     if(SPEECH_CORE_WITH_ONNX AND

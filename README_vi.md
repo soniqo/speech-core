@@ -10,7 +10,7 @@ Hạ tầng giọng nói chạy trên thiết bị bằng **C++17** cho **Linux,
 
 Chạy cục bộ trên CPU. Không đám mây, không Python khi suy luận và âm thanh không rời khỏi thiết bị.
 
-**[📚 Tài liệu đầy đủ →](https://soniqo.audio/vi/speech-core)** · **[🐧 Linux](https://soniqo.audio/vi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/vi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Tài liệu đầy đủ →](https://soniqo.audio/vi/speech-core)** · **[🐧 Linux](https://soniqo.audio/vi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/vi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 Âm thanh HTTP](docs/http-server.md)**
 
 **[🤗 Mô hình](https://huggingface.co/soniqo)** · **[🍎 Dự án Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

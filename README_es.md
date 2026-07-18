@@ -10,7 +10,7 @@ Infraestructura de voz local en **C++17** para **Linux, Windows y Android**: det
 
 Se ejecuta localmente en CPU. Sin nube, sin Python durante la inferencia y sin enviar audio fuera del dispositivo.
 
-**[📚 Documentación completa →](https://soniqo.audio/es/speech-core)** · **[🐧 Linux](https://soniqo.audio/es/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/es/getting-started/windows)** · **[⌨️ CLI de escritorio](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Documentación completa →](https://soniqo.audio/es/speech-core)** · **[🐧 Linux](https://soniqo.audio/es/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/es/getting-started/windows)** · **[⌨️ CLI de escritorio](docs/cli.md)** · **[🔊 Audio HTTP](docs/http-server.md)**
 
 **[🤗 Modelos](https://huggingface.co/soniqo)** · **[🍎 Proyecto hermano para Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

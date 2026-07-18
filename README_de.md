@@ -10,7 +10,7 @@ Lokale Sprachinfrastruktur in **C++17** für **Linux, Windows und Android**: Spr
 
 Läuft lokal auf der CPU. Keine Cloud, kein Python bei der Inferenz und keine Audiodaten verlassen das Gerät.
 
-**[📚 Vollständige Dokumentation →](https://soniqo.audio/de/speech-core)** · **[🐧 Linux](https://soniqo.audio/de/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/de/getting-started/windows)** · **[⌨️ Desktop-CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Vollständige Dokumentation →](https://soniqo.audio/de/speech-core)** · **[🐧 Linux](https://soniqo.audio/de/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/de/getting-started/windows)** · **[⌨️ Desktop-CLI](docs/cli.md)** · **[🔊 HTTP-Audio](docs/http-server.md)**
 
 **[🤗 Modelle](https://huggingface.co/soniqo)** · **[🍎 Apple-Schwesterprojekt](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
