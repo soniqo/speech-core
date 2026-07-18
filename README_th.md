@@ -16,18 +16,8 @@
 
 ## เดโม
 
-<table align="center">
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — ชมเดโมบน YouTube"></a>
-      <br><em>เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — control-demo ของ speech-android</em>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="โคลนเสียงด้วย VoxCPM2 — เดโม Speech Studio บน YouTube"></a>
-      <br><em>โคลนเสียงด้วย VoxCPM2 — เดโม Speech Studio</em>
-    </td>
-  </tr>
-</table>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — ชมเดโมบน YouTube"></a></p>
+<p align="center"><em>เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — control-demo ของ speech-android</em></p>
 
 ## เหตุผลที่ใช้ speech-core
 

@@ -16,18 +16,8 @@ CPU üzerinde yerel çalışır. Çıkarımda bulut veya Python yoktur; ses ciha
 
 ## Demo
 
-<table align="center">
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="Android'de 1.2 GB'a sığan tamamen çevrimdışı sesli ajan — demoyu YouTube'da izleyin"></a>
-      <br><em>Android'de 1.2 GB içinde tamamen çevrimdışı sesli ajan — speech-android control-demo</em>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="VoxCPM2 ile ses klonlama — YouTube'da Speech Studio demosu"></a>
-      <br><em>VoxCPM2 ile ses klonlama — Speech Studio demosu</em>
-    </td>
-  </tr>
-</table>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Android'de 1.2 GB'a sığan tamamen çevrimdışı sesli ajan — demoyu YouTube'da izleyin"></a></p>
+<p align="center"><em>Android'de 1.2 GB içinde tamamen çevrimdışı sesli ajan — speech-android control-demo</em></p>
 
 ## Neden speech-core
 

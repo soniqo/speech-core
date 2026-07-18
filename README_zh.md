@@ -16,18 +16,12 @@
 
 ## 演示
 
-<table align="center">
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="我们把完整的离线语音代理装进 Android 的 1.2 GB — 在 YouTube 观看演示"></a>
-      <br><em>在 Android 上以 1.2 GB 运行的完整离线语音代理 — speech-android control-demo</em>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="使用 VoxCPM2 进行声音克隆 — 在 YouTube 观看 Speech Studio 演示"></a>
-      <br><em>使用 VoxCPM2 进行声音克隆 — Speech Studio 演示</em>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="我们把完整的离线语音代理装进 Android 的 1.2 GB — 在 YouTube 观看演示">
+  </a>
+</p>
+<p align="center"><em>在 Android 上以 1.2 GB 运行的完整离线语音代理 — speech-android control-demo</em></p>
 
 ## 为什么选择 speech-core
 

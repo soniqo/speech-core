@@ -16,18 +16,12 @@ CPU에서 완전히 로컬로 실행됩니다. 추론 시 클라우드나 Python
 
 ## 데모
 
-<table align="center">
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" alt="완전 오프라인 음성 에이전트를 Android의 1.2 GB에 담았습니다 — YouTube에서 데모 보기"></a>
-      <br><em>Android에서 1.2 GB로 실행되는 완전 오프라인 음성 에이전트 — speech-android control-demo</em>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" alt="VoxCPM2 음성 복제 — YouTube에서 Speech Studio 데모 보기"></a>
-      <br><em>VoxCPM2 음성 복제 — Speech Studio 데모</em>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="완전 오프라인 음성 에이전트를 Android의 1.2 GB에 담았습니다 — YouTube에서 데모 보기">
+  </a>
+</p>
+<p align="center"><em>Android에서 1.2 GB로 실행되는 완전 오프라인 음성 에이전트 — speech-android control-demo</em></p>
 
 ## speech-core를 선택하는 이유
 
