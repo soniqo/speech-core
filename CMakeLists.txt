@@ -732,6 +732,9 @@ if(SPEECH_CORE_BUILD_TESTS)
         endif()
         target_compile_definitions(test_models PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        if(MSVC)
+            target_compile_definitions(test_models PRIVATE NOMINMAX)
+        endif()
         add_test(NAME test_models COMMAND test_models)
 
         # PersonaPlex standalone CLI smoke harness — load the wrapper against
