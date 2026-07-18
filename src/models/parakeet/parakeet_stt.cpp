@@ -141,33 +141,45 @@ std::vector<float> ParakeetStt::compute_mel(const float* audio, size_t length) {
         emphasized[i] = audio[i] - cfg_.pre_emphasis * audio[i - 1];
     }
 
-    // Keeps the mel_spectrogram defaults (HTK spacing, 1e-10 floor,
-    // uncentered) rather than the NeMo training contract (Slaney, 2^-24,
-    // centered): A/B on real recordings shows the published INT8 export
-    // transcribes better with these defaults ("What music do we have?"
-    // vs "What müzik do we have?" and a dropped segment under the NeMo
-    // flags), so the shipped behavior is the empirically correct one.
+    // NeMo/Parakeet training contract (torch.stft center=True
+    // pad_mode="constant", hann periodic=False, Slaney bank, log(x+2^-24)):
+    // matches the reference feature extractor element-wise to float32 noise.
+    // The earlier HTK/1e-10/uncentered defaults came from a two-clip A/B
+    // against an earlier INT8 export; re-measured 2026-07-18 on the
+    // same-items bench (540 items, en/de/fr/de-en code-switch) against the
+    // served per-channel+reduce_range artifact, the off-contract frontend
+    // costs +0.40..+1.00 WER per slice (mean +0.70) and fully accounts for
+    // the prod-vs-offline-model gap. Steno's frontend already follows its
+    // own training contract and shows a ~0.00 prod gap — same rule here.
     auto mel = audio::mel_spectrogram(
         emphasized.data(), emphasized.size(),
         cfg_.sample_rate, cfg_.n_fft, cfg_.hop_length,
-        cfg_.win_length, cfg_.num_mel_bins);
+        cfg_.win_length, cfg_.num_mel_bins,
+        /*slaney_norm=*/true, /*log_floor=*/5.960464478e-8f,
+        /*center=*/true, /*torch_stft_layout=*/true,
+        /*center_pad_zeros=*/true, /*symmetric_torch_window=*/true);
 
-    // Per-feature normalization (NeMo AudioToMelSpectrogramPreprocessor)
+    // Per-feature normalization, matching the reference extractor exactly:
+    // sample variance (Bessel, N-1 divisor) and a +1e-5 epsilon on the
+    // stddev — NOT population variance with no epsilon.
     // mel layout: [num_mel_bins * num_frames], mel[m * num_frames + t]
     int num_frames = static_cast<int>(mel.size() / cfg_.num_mel_bins);
     if (num_frames > 1) {
         for (int m = 0; m < cfg_.num_mel_bins; m++) {
-            float sum = 0, sq_sum = 0;
+            float sum = 0;
             for (int t = 0; t < num_frames; t++) {
-                float v = mel[m * num_frames + t];
-                sum += v;
-                sq_sum += v * v;
+                sum += mel[m * num_frames + t];
             }
-            float mean = sum / num_frames;
-            float var = sq_sum / num_frames - mean * mean;
-            float stddev = (var > 0) ? std::sqrt(var) : 1.0f;
+            const float mean = sum / num_frames;
+            float sq_dev = 0;
             for (int t = 0; t < num_frames; t++) {
-                mel[m * num_frames + t] = (mel[m * num_frames + t] - mean) / stddev;
+                const float d = mel[m * num_frames + t] - mean;
+                sq_dev += d * d;
+            }
+            const float var = sq_dev / (num_frames - 1);
+            const float denom = ((var > 0) ? std::sqrt(var) : 0.0f) + 1e-5f;
+            for (int t = 0; t < num_frames; t++) {
+                mel[m * num_frames + t] = (mel[m * num_frames + t] - mean) / denom;
             }
         }
     }

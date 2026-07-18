@@ -708,6 +708,22 @@ if(SPEECH_CORE_BUILD_TESTS)
         add_test(NAME test_deepfilter_dsp COMMAND test_deepfilter_dsp)
     endif()
 
+    # Parakeet/NeMo mel-contract test — pins the training-contract mode of
+    # mel_spectrogram (torch zero-pad centering, symmetric window in the
+    # torch layout, Slaney bank, additive 2^-24 floor) to expectations from
+    # the element-wise-verified Python reference replica. Pure DSP, no
+    # models, no ORT.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mel_parakeet_contract.cpp)
+        add_executable(test_mel_parakeet_contract
+            tests/test_mel_parakeet_contract.cpp
+            src/audio/mel.cpp
+            src/audio/fft.cpp)
+        target_include_directories(test_mel_parakeet_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_test(NAME test_mel_parakeet_contract
+                 COMMAND test_mel_parakeet_contract)
+    endif()
+
     # HF downloader decision-logic test — the pure resume/skip/restart rules
     # behind sc_voxcpm2_create_from_pretrained. Needs no libcurl or LiteRT, so it
     # compiles hf_download.cpp's no-network branch directly and runs in every
