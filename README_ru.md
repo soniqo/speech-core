@@ -10,7 +10,7 @@
 
 Работает локально на CPU. Без облака и Python во время инференса; аудио не покидает устройство.
 
-**[📚 Полная документация →](https://soniqo.audio/ru/speech-core)** · **[🐧 Linux](https://soniqo.audio/ru/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ru/getting-started/windows)** · **[⌨️ Настольный CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Полная документация →](https://soniqo.audio/ru/speech-core)** · **[🐧 Linux](https://soniqo.audio/ru/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ru/getting-started/windows)** · **[⌨️ Настольный CLI](docs/cli.md)** · **[🔊 HTTP-аудио](docs/http-server.md)**
 
 **[🤗 Модели](https://huggingface.co/soniqo)** · **[🍎 Проект для Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

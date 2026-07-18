@@ -10,7 +10,7 @@
 
 CPU 上でローカルに動作します。推論時にクラウドや Python は不要で、音声が端末の外へ送信されることもありません。
 
-**[📚 完全なドキュメント →](https://soniqo.audio/ja/speech-core)** · **[🐧 Linux](https://soniqo.audio/ja/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ja/getting-started/windows)** · **[⌨️ デスクトップ CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 完全なドキュメント →](https://soniqo.audio/ja/speech-core)** · **[🐧 Linux](https://soniqo.audio/ja/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ja/getting-started/windows)** · **[⌨️ デスクトップ CLI](docs/cli.md)** · **[🔊 HTTP オーディオ](docs/http-server.md)**
 
 **[🤗 モデル](https://huggingface.co/soniqo)** · **[🍎 Apple 向け兄弟プロジェクト](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

@@ -1,6 +1,7 @@
 #include "openai_tts_server.h"
 
 #include "speech_core/models/kokoro_tts.h"
+#include "speech_core/models/parakeet_stt.h"
 
 #include "default_model_dir.h"
 #include "httplib.h"
@@ -45,13 +46,15 @@ void print_usage(const char* executable) {
     std::cout
         << "usage: " << executable << " [options]\n"
         << "\n"
-        << "OpenAI-compatible local TTS server backed by Kokoro ONNX.\n"
-        << "Endpoint: POST /v1/audio/speech\n"
+        << "OpenAI-compatible local audio server backed by ONNX models.\n"
+        << "Endpoints:\n"
+        << "  POST /v1/audio/speech          Kokoro text-to-speech\n"
+        << "  POST /v1/audio/transcriptions  Parakeet speech-to-text\n"
         << "\n"
         << "options:\n"
         << "  --host HOST       bind address (default: 127.0.0.1)\n"
         << "  --port PORT       listen port (default: 8080)\n"
-        << "  --model-dir PATH  Kokoro ONNX bundle directory\n"
+        << "  --model-dir PATH  Kokoro and Parakeet ONNX bundle directory\n"
         << "                    (default: $SPEECH_MODEL_DIR or platform cache)\n"
         << "  --api-key KEY     require Authorization: Bearer KEY\n"
         << "                    (default: $SPEECH_SERVER_API_KEY or no auth)\n"
@@ -119,6 +122,11 @@ int main(int argc, char** argv) {
         const fs::path model_dir(options.model_dir);
         const fs::path model_path = model_dir / "kokoro-e2e.onnx";
         const fs::path voices_dir = model_dir / "voices";
+        const fs::path stt_encoder_path =
+            model_dir / "parakeet-encoder-int8.onnx";
+        const fs::path stt_decoder_path =
+            model_dir / "parakeet-decoder-joint-int8.onnx";
+        const fs::path stt_vocab_path = model_dir / "vocab.json";
         if (!is_nonempty_regular_file(model_path)) {
             throw std::runtime_error(
                 "missing " + model_path.string() +
@@ -150,6 +158,7 @@ int main(int argc, char** argv) {
             voices_dir.string(),
             model_dir.string(),
             /*hw_accel=*/false);
+        std::unique_ptr<speech_core::ParakeetStt> stt;
         std::mutex inference_mutex;
 
         httplib::Server server;
@@ -176,6 +185,29 @@ int main(int argc, char** argv) {
                     std::move(samples), tts->output_sample_rate()};
             },
             options.api_key);
+        speech_core::http::register_openai_transcription_routes(
+            server,
+            [&](const speech_core::http::OpenAITranscriptionRequest& request) {
+                std::lock_guard<std::mutex> lock(inference_mutex);
+                if (!stt) {
+                    for (const fs::path& path : {
+                             stt_encoder_path, stt_decoder_path, stt_vocab_path}) {
+                        if (!is_nonempty_regular_file(path)) {
+                            throw std::runtime_error(
+                                "missing or empty " + path.string());
+                        }
+                    }
+                    stt = std::make_unique<speech_core::ParakeetStt>(
+                        stt_encoder_path.string(),
+                        stt_decoder_path.string(),
+                        stt_vocab_path.string(),
+                        /*hw_accel=*/false);
+                }
+                return stt->transcribe(
+                    request.samples.data(), request.samples.size(),
+                    request.sample_rate);
+            },
+            options.api_key);
 
         if (!is_loopback_host(options.host) &&
             options.allow_unauthenticated_remote && options.api_key.empty()) {
@@ -187,7 +219,8 @@ int main(int argc, char** argv) {
         }
         std::cout << "speech-server listening on http://" << options.host << ':'
                   << options.port << "\n";
-        std::cout << "POST /v1/audio/speech\n" << std::flush;
+        std::cout << "POST /v1/audio/speech\n"
+                  << "POST /v1/audio/transcriptions\n" << std::flush;
         if (!server.listen_after_bind()) {
             throw std::runtime_error("server stopped before accepting requests");
         }

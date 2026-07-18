@@ -137,7 +137,9 @@ jobs:
               # Multiplexer dispatch must reach the real binaries.
               /usr/bin/speech --help | grep -q transcribe
               /usr/bin/speech-server --help | grep -q /v1/audio/speech
+              /usr/bin/speech-server --help | grep -q /v1/audio/transcriptions
               /usr/bin/speech serve --help | grep -q /v1/audio/speech
+              /usr/bin/speech serve --help | grep -q /v1/audio/transcriptions
               out=$(/usr/bin/speech phonemize 2>&1 | head -2 || true)
               [ -n "$out" ] || { echo "speech phonemize dispatch failed"; exit 1; }
               out=$(/usr/bin/speech download-models voxcpm2 /proc/not-writable 2>&1 | head -2 || true)
@@ -290,7 +292,9 @@ jobs:
           }
           $server = Join-Path $root.FullName "bin/speech-server.exe"
           $help = & $server --help 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0 -or $help -notmatch "/v1/audio/speech") {
+          if ($LASTEXITCODE -ne 0 -or
+              $help -notmatch "/v1/audio/speech" -or
+              $help -notmatch "/v1/audio/transcriptions") {
             throw "speech-server.exe did not start and print endpoint help"
           }
           foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe")) {
@@ -406,7 +410,7 @@ jobs:
 
             - Linux amd64/arm64: `.deb` and `.tar.gz` CLI/server packages
             - Windows x64: self-contained `.zip` with ONNX Runtime and PowerShell model downloader
-            - OpenAI-compatible local TTS: `POST /v1/audio/speech`
+            - OpenAI-compatible local audio: `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`
 
             ## SpeechCore XCFramework
 

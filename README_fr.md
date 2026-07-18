@@ -10,7 +10,7 @@ Infrastructure vocale embarquée en **C++17** pour **Linux, Windows et Android**
 
 Tout s'exécute localement sur CPU. Aucun cloud, aucun Python à l'inférence et aucun son ne quitte l'appareil.
 
-**[📚 Documentation complète →](https://soniqo.audio/fr/speech-core)** · **[🐧 Linux](https://soniqo.audio/fr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/fr/getting-started/windows)** · **[⌨️ CLI desktop](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
+**[📚 Documentation complète →](https://soniqo.audio/fr/speech-core)** · **[🐧 Linux](https://soniqo.audio/fr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/fr/getting-started/windows)** · **[⌨️ CLI desktop](docs/cli.md)** · **[🔊 Audio HTTP](docs/http-server.md)**
 
 **[🤗 Modèles](https://huggingface.co/soniqo)** · **[🍎 Projet Apple associé](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 

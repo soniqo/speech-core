@@ -1,14 +1,17 @@
-# OpenAI-compatible local TTS server
+# OpenAI-compatible local audio server
 
-`speech-server` exposes Kokoro ONNX through the OpenAI speech-synthesis request
-shape. It runs locally on Linux and Windows and does not send text or audio to
-a remote service.
+`speech-server` exposes Kokoro ONNX text-to-speech and Parakeet ONNX
+speech-to-text through OpenAI-compatible request shapes. It runs locally on
+Linux and Windows and does not send text or audio to a remote service.
 
 ```text
 POST /v1/audio/speech
+POST /v1/audio/transcriptions
 ```
 
-The server is included in speech-core release packages starting with v0.0.11.
+The server is included in speech-core release packages. Parakeet is loaded only
+on the first transcription request, so TTS-only startup time and resident model
+memory remain unchanged.
 
 ## Install and start
 
@@ -47,7 +50,7 @@ needed:
 .\speech-server.exe --model-dir D:\speech-models
 ```
 
-## Request contract
+## Speech synthesis
 
 The JSON body follows the OpenAI speech endpoint shape:
 
@@ -104,6 +107,34 @@ The model downloader installs `af_alloy`, `af_bella`, `af_heart`, `af_nicole`,
 `af_sky`, `am_adam`, `am_michael`, `bf_emma`, and `bm_george`. A native voice
 ID selects the matching file from the model directory's `voices` folder.
 
+## Speech transcription
+
+The transcription endpoint accepts the standard multipart form shape. The
+`file` must be an uncompressed RIFF/WAVE file containing PCM16, PCM24, PCM32,
+or Float32 audio. Mono and multichannel input from 8 kHz through 384 kHz is
+accepted; the adapter downmixes and resamples it to the Parakeet model's 16 kHz
+mono Float32 input.
+
+| Field | Required | Behavior |
+|---|:---:|---|
+| `file` | ✓ | One WAV file, at most 25 MiB and 10 minutes |
+| `model` | ✓ | A non-empty OpenAI model name such as `whisper-1`; the local server always routes it to the installed Parakeet model |
+| `response_format` |  | `json` by default, or `text`, `verbose_json`, `srt`, or `vtt` |
+| `language` |  | Accepted for client compatibility; Parakeet auto-detects language and cannot force it |
+| `prompt` |  | Accepted for client compatibility; the Parakeet export has no prompt channel |
+| `temperature` |  | Accepted in the OpenAI range `0...1`; greedy Parakeet decoding does not sample |
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/transcriptions \
+  -F 'file=@recording.wav;type=audio/wav' \
+  -F 'model=whisper-1'
+```
+
+The default JSON response is `{"text":"..."}`. `verbose_json`, SRT, and VTT
+contain one utterance-level segment because the bundled Parakeet interface does
+not expose word or segment timestamps. Compressed inputs such as MP3, M4A, and
+WebM are rejected so the package does not need an additional codec runtime.
+
 ## Authentication and network exposure
 
 The default bind address is `127.0.0.1`. Configure a bearer token with the
@@ -114,7 +145,8 @@ export SPEECH_SERVER_API_KEY='replace-with-a-random-value'
 speech serve --host 0.0.0.0
 ```
 
-Clients then send `Authorization: Bearer replace-with-a-random-value`.
+Clients then send `Authorization: Bearer replace-with-a-random-value` to either
+audio endpoint.
 `--api-key` is also accepted for short-lived local sessions. A non-loopback
 bind is rejected when no key is configured unless
 `--allow-unauthenticated-remote` is passed explicitly. That override should be
@@ -124,9 +156,11 @@ The server speaks plaintext HTTP. For access beyond a trusted, isolated
 network, keep bearer authentication enabled and place it behind a
 TLS-terminating reverse proxy and firewall.
 
-The server limits request bodies to 1 MiB, caps input at 4,096 characters, and
-serializes inference through one resident Kokoro instance. Text is not written
-to server logs.
+The server keeps speech-synthesis requests at the existing 1 MiB limit and caps
+uploaded transcription files at 25 MiB. It caps synthesis text and transcription
+prompts at 4,096 characters. Kokoro remains resident, Parakeet loads lazily, and
+all inference is serialized through one model lock. Text and transcripts are
+not written to server logs.
 
 ## Build from source
 
@@ -142,5 +176,7 @@ cmake --build build-server --parallel --target speech_server
 ```
 
 The model-independent HTTP contract tests are part of the default CTest suite
-and do not download model weights. A build with ONNX additionally compiles and
-links the production `speech-server` executable.
+and do not download model weights. A build with ONNX additionally compiles the
+production `speech-server` executable and a real-model transcription endpoint
+test. Set `SPEECH_MODEL_DIR` to a downloaded model bundle to run that E2E path;
+it skips when the bundle is unavailable.

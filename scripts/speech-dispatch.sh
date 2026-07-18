@@ -48,7 +48,7 @@ usage: speech <command> [args]
 commands:
   transcribe <input.wav>             speech-to-text (Parakeet + Silero VAD)
   speak "<text>" [out.wav]           text-to-speech (Kokoro)
-  serve [--host HOST] [--port PORT]  OpenAI-compatible local TTS server
+  serve [--host HOST] [--port PORT]  OpenAI-compatible local audio server
   clone <ref.wav> "<text>" <out.wav> voice cloning (VoxCPM2)
   phonemize "<text>" [language]      text -> phonemes (Kokoro phonemizer)
   demo [--transcribe-only]           live ALSA mic loop
