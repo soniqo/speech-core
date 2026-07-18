@@ -16,8 +16,8 @@ Chạy cục bộ trên CPU. Không đám mây, không Python khi suy luận và
 
 ## Demo
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Nhân bản giọng nói với VoxCPM2 — demo Speech Studio trên YouTube"></a></p>
-<p align="center"><em>Nhân bản giọng nói với VoxCPM2 — demo Speech Studio trên YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Tác nhân giọng nói hoàn toàn ngoại tuyến trong 1.2 GB trên Android — xem demo trên YouTube"></a></p>
+<p align="center"><em>Tác nhân giọng nói hoàn toàn ngoại tuyến trong 1.2 GB trên Android — control-demo của speech-android</em></p>
 
 ## Vì sao chọn speech-core
 

@@ -16,8 +16,8 @@ Executa localmente na CPU. Sem nuvem, sem Python na inferência e sem áudio sai
 
 ## Demonstração
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Clonagem de voz com VoxCPM2 — demonstração do Speech Studio no YouTube"></a></p>
-<p align="center"><em>Clonagem de voz com VoxCPM2 — demonstração do Speech Studio no YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Um agente de voz totalmente offline em 1.2 GB no Android — assista à demo no YouTube"></a></p>
+<p align="center"><em>Um agente de voz totalmente offline em 1.2 GB no Android — o control-demo do speech-android</em></p>
 
 ## Por que speech-core
 

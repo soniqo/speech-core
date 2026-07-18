@@ -17,11 +17,11 @@ Runs locally on CPU. No cloud, no Python at inference, and no audio leaves the m
 ## Demo
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg">
-    <img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Voice cloning with VoxCPM2 — watch the speech-studio demo on YouTube">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="We fit a full offline voice agent into 1.2 GB on Android — watch the demo on YouTube">
   </a>
 </p>
-<p align="center"><em>Voice cloning with VoxCPM2 — watch the speech-studio demo on YouTube</em></p>
+<p align="center"><em>A full offline voice agent in 1.2 GB on Android — the speech-android control-demo</em></p>
 
 ## Why speech-core
 

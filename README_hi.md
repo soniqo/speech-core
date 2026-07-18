@@ -16,8 +16,8 @@
 
 ## Demo
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="VoxCPM2 से voice cloning — YouTube पर Speech Studio demo"></a></p>
-<p align="center"><em>VoxCPM2 से voice cloning — YouTube पर Speech Studio demo</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="पूरा offline voice agent Android पर 1.2 GB में — YouTube पर demo देखें"></a></p>
+<p align="center"><em>Android पर 1.2 GB में पूरा offline voice agent — speech-android का control-demo</em></p>
 
 ## speech-core क्यों
 
