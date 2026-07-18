@@ -12,13 +12,20 @@ option(SPEECH_CORE_WITH_LITERT "Build the speech_core_models_litert target with 
 option(SPEECH_CORE_WITH_LITERT_LM "Build the liblitert-lm-backed reference LLM (LiteRTFunctionGemmaLLM) as a standalone target (speech_core_models_litert_lm). Independent of SPEECH_CORE_WITH_LITERT — Android consumers need this without libLiteRt. Requires LITERT_LM_DIR pointing at liblitert-lm.{so,dylib,dll}: on macOS use scripts/fetch_litert_lm.sh, on Android use scripts/build_litert_lm_android.sh." OFF)
 option(SPEECH_CORE_WITH_HF_DOWNLOAD "Enable libcurl-backed Hugging Face model downloads (sc_voxcpm2_create_from_pretrained: resumable, retried first-run fetch of the LiteRT bundle). Requires SPEECH_CORE_WITH_LITERT=ON and libcurl (find_package(CURL))." OFF)
 option(SPEECH_CORE_BUILD_EXAMPLES "Build examples/ (Linux C ABI lib, ALSA demo, CLI tools, integration tests). Requires SPEECH_CORE_WITH_ONNX=ON." OFF)
+option(SPEECH_CORE_BUILD_HTTP_SERVER "Build the OpenAI-compatible speech-server sidecar. Requires SPEECH_CORE_WITH_ONNX=ON for Kokoro TTS." OFF)
 option(SPEECH_CORE_WITH_OLLAMA "Build the speech_core_llm_ollama target — Ollama HTTP LLM adapter (tool-calling agents over /api/chat). Vendors cpp-httplib + nlohmann/json under third_party/; no system deps beyond OS sockets." OFF)
-option(SPEECH_CORE_PACKAGE "Add install rules for the CLI tools + bundled runtime libraries and configure CPack (Linux .deb / .tar.gz). Linux-only; see the Packaging section at the bottom of this file." OFF)
+option(SPEECH_CORE_PACKAGE "Add install rules for CLI/server tools and bundled runtimes, then configure CPack (Linux .deb/.tar.gz or Windows .zip)." OFF)
 set(SPEECH_CORE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into binary packages. The release workflow passes the git tag (e.g. 0.0.8); local builds default to the project version.")
 
 if(SPEECH_CORE_WITH_HF_DOWNLOAD AND NOT SPEECH_CORE_WITH_LITERT)
     message(FATAL_ERROR "SPEECH_CORE_WITH_HF_DOWNLOAD=ON requires SPEECH_CORE_WITH_LITERT=ON "
                         "(the download feature fetches the LiteRT VoxCPM2 bundle).")
+endif()
+
+if(SPEECH_CORE_BUILD_HTTP_SERVER AND NOT SPEECH_CORE_WITH_ONNX)
+    message(FATAL_ERROR
+        "SPEECH_CORE_BUILD_HTTP_SERVER=ON requires SPEECH_CORE_WITH_ONNX=ON "
+        "(the released sidecar uses Kokoro ONNX)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -568,6 +575,58 @@ if(SPEECH_CORE_WITH_OLLAMA)
 endif()
 
 # ---------------------------------------------------------------------------
+# OpenAI-compatible local TTS HTTP sidecar (optional executable)
+#
+# The protocol/encoding adapter is also built for the default unit suite so
+# its HTTP contract stays covered without ONNX Runtime or model downloads.
+# The executable itself is gated on SPEECH_CORE_BUILD_HTTP_SERVER and links
+# the released Kokoro ONNX backend.
+# ---------------------------------------------------------------------------
+
+if(SPEECH_CORE_BUILD_HTTP_SERVER OR SPEECH_CORE_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+    add_library(speech_core_http_support STATIC
+        src/http/openai_tts_server.cpp)
+    target_include_directories(speech_core_http_support
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/http
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+    target_link_libraries(speech_core_http_support
+        PUBLIC speech_core Threads::Threads)
+    if(MSVC)
+        target_compile_options(speech_core_http_support PRIVATE /W4)
+        target_compile_definitions(speech_core_http_support PRIVATE
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+    else()
+        target_compile_options(speech_core_http_support PRIVATE
+            -Wall -Wextra $<$<CONFIG:Release>:-O2>)
+    endif()
+    if(WIN32)
+        target_link_libraries(speech_core_http_support PUBLIC ws2_32)
+    endif()
+endif()
+
+if(SPEECH_CORE_BUILD_HTTP_SERVER)
+    add_executable(speech_server examples/http/speech_server.cpp)
+    set_target_properties(speech_server PROPERTIES OUTPUT_NAME "speech-server")
+    target_include_directories(speech_server PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/http
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib)
+    target_link_libraries(speech_server PRIVATE
+        speech_core_http_support speech_core_models)
+    if(MSVC)
+        target_compile_options(speech_server PRIVATE /W4)
+        target_compile_definitions(speech_server PRIVATE
+            _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+    else()
+        target_compile_options(speech_server PRIVATE
+            -Wall -Wextra $<$<CONFIG:Release>:-O2>)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -606,6 +665,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_pocket_tts"
            OR TEST_NAME STREQUAL "test_pocket_tts_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
+           OR TEST_NAME STREQUAL "test_openai_tts_server"
            OR TEST_NAME STREQUAL "test_ollama_llm"
            OR TEST_NAME STREQUAL "test_pipeline_ollama_e2e"
            OR TEST_NAME STREQUAL "test_fdb_bench_smoke"
@@ -616,6 +676,22 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_link_libraries(${TEST_NAME} PRIVATE speech_core)
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_openai_tts_server.cpp)
+        add_executable(test_openai_tts_server
+            tests/test_openai_tts_server.cpp)
+        target_include_directories(test_openai_tts_server PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/http
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+        target_link_libraries(test_openai_tts_server PRIVATE
+            speech_core_http_support)
+        if(MSVC)
+            target_compile_definitions(test_openai_tts_server PRIVATE
+                _USE_MATH_DEFINES NOMINMAX _WIN32_WINNT=0x0601)
+        endif()
+        add_test(NAME test_openai_tts_server COMMAND test_openai_tts_server)
+    endif()
 
     # DeepFilterNet3's frontend/postfilter is pure DSP but normally compiled
     # into the optional ONNX target. Build it directly here so native-960 FFT,
@@ -967,7 +1043,7 @@ if(SPEECH_CORE_BUILD_EXAMPLES)
 endif()
 
 # ---------------------------------------------------------------------------
-# Packaging (optional) — Linux .deb / .tar.gz with the CLI tools
+# Packaging (optional) — Linux .deb/.tar.gz or Windows .zip with CLI/server tools
 #
 # Adds RUNTIME install rules for whichever CLI executables the enabled options
 # produced, bundles the runtime shared libraries that no distro packages
@@ -976,7 +1052,7 @@ endif()
 # never packaged — they are fetched at runtime from HuggingFace (see
 # scripts/download_models*.sh and docs/models.md).
 #
-# Driven by .github/workflows/release.yml on v* tags; for a local package:
+# Driven by .github/workflows/release.yml on v* tags; for a local Linux package:
 #   cmake -B build-pkg -DCMAKE_BUILD_TYPE=Release \
 #       -DSPEECH_CORE_WITH_ONNX=ON -DORT_DIR=ort-linux \
 #       -DSPEECH_CORE_WITH_LITERT=ON -DLITERT_DIR=litert-linux \
@@ -986,14 +1062,14 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(SPEECH_CORE_PACKAGE)
-    if(NOT UNIX OR APPLE OR ANDROID)
-        message(FATAL_ERROR "SPEECH_CORE_PACKAGE=ON currently targets Linux only")
+    if((NOT UNIX OR APPLE OR ANDROID) AND NOT WIN32)
+        message(FATAL_ERROR "SPEECH_CORE_PACKAGE=ON supports Linux and Windows desktop builds")
     endif()
 
     # Collect whichever CLI targets this configuration actually built.
     set(_pkg_cli_targets "")
     foreach(_t speech_demo speech_transcribe speech_synthesize speech_phonemize
-               speech_voxcpm2_clone)
+               speech_server speech_voxcpm2_clone)
         if(TARGET ${_t})
             list(APPEND _pkg_cli_targets ${_t})
         endif()
@@ -1001,10 +1077,74 @@ if(SPEECH_CORE_PACKAGE)
     if(NOT _pkg_cli_targets)
         message(FATAL_ERROR
             "SPEECH_CORE_PACKAGE=ON but no CLI executables are enabled — turn on"
-            " SPEECH_CORE_BUILD_EXAMPLES (ONNX tools) and/or SPEECH_CORE_WITH_LITERT"
-            " (speech_voxcpm2_clone)")
+            " SPEECH_CORE_BUILD_EXAMPLES (ONNX tools),"
+            " SPEECH_CORE_BUILD_HTTP_SERVER, and/or SPEECH_CORE_WITH_LITERT")
     endif()
 
+    if(WIN32)
+        # The Windows ZIP is self-contained: executables and ONNX Runtime sit
+        # together in bin/ so the standard DLL search path resolves without a
+        # machine-wide install or PATH mutation.
+        install(TARGETS ${_pkg_cli_targets} RUNTIME DESTINATION bin)
+        if(TARGET speech)
+            install(TARGETS speech
+                RUNTIME DESTINATION bin
+                ARCHIVE DESTINATION lib)
+            install(FILES examples/linux/include/speech.h DESTINATION include)
+        endif()
+
+        if(SPEECH_CORE_WITH_ONNX)
+            if(NOT EXISTS "${ORT_DIR}/lib/onnxruntime.dll")
+                message(FATAL_ERROR
+                    "SPEECH_CORE_PACKAGE: no onnxruntime.dll under ${ORT_DIR}/lib")
+            endif()
+            install(FILES "${ORT_DIR}/lib/onnxruntime.dll" DESTINATION bin)
+            if(EXISTS "${ORT_DIR}/lib/onnxruntime_providers_shared.dll")
+                install(FILES "${ORT_DIR}/lib/onnxruntime_providers_shared.dll"
+                    DESTINATION bin)
+            endif()
+            if(EXISTS "${ORT_DIR}/LICENSE")
+                install(FILES "${ORT_DIR}/LICENSE"
+                    DESTINATION . RENAME ONNXRUNTIME-LICENSE)
+            endif()
+            if(EXISTS "${ORT_DIR}/ThirdPartyNotices.txt")
+                install(FILES "${ORT_DIR}/ThirdPartyNotices.txt"
+                    DESTINATION . RENAME ONNXRUNTIME-THIRD-PARTY-NOTICES.txt)
+            endif()
+        endif()
+        if(SPEECH_CORE_WITH_LITERT)
+            if(NOT EXISTS "${LITERT_DIR}/libLiteRt.dll")
+                message(FATAL_ERROR
+                    "SPEECH_CORE_PACKAGE: no libLiteRt.dll under ${LITERT_DIR}")
+            endif()
+            install(FILES "${LITERT_DIR}/libLiteRt.dll" DESTINATION bin)
+        endif()
+
+        install(FILES scripts/download_models.ps1
+            DESTINATION bin RENAME speech_download_models.ps1)
+        install(FILES LICENSE THIRD-PARTY-NOTICES.md DESTINATION .)
+
+        # ONNX Runtime's official Windows binary uses the dynamic MSVC runtime.
+        # Install the matching redistributable DLLs beside the executables so
+        # the ZIP also works on machines without a system-wide VC++ install.
+        if(MSVC)
+            set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION bin)
+            include(InstallRequiredSystemLibraries)
+        endif()
+
+        set(CPACK_GENERATOR "ZIP")
+        set(CPACK_PACKAGE_NAME "speech")
+        set(CPACK_PACKAGE_VERSION "${SPEECH_CORE_PACKAGE_VERSION}")
+        set(CPACK_PACKAGE_CONTACT "ivan-digital <ivan.aufkl@gmail.com>")
+        set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+            "speech — local STT/TTS tools and OpenAI-compatible TTS server")
+        set(CPACK_PACKAGE_HOMEPAGE_URL "https://soniqo.audio/speech-core")
+        set(CPACK_PACKAGE_FILE_NAME
+            "speech-${SPEECH_CORE_PACKAGE_VERSION}-windows-x64")
+        set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+        set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+        include(CPack)
+    else()
     # Executables install to bin/, bundled runtimes to lib/speech/, the
     # example C ABI lib (libspeech.so) to lib/. $ORIGIN RPATHs make the package
     # self-contained without ld.so.conf entries.
@@ -1089,4 +1229,5 @@ if(SPEECH_CORE_PACKAGE)
     endif()
 
     include(CPack)
+    endif()
 endif()

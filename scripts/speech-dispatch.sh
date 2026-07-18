@@ -32,6 +32,7 @@ case "$cmd" in
         fi
         run_tool speech_synthesize ;;
     phonemize)         run_tool speech_phonemize "$@" ;;
+    serve|server)      run_tool speech-server "$@" ;;
     clone)             run_tool speech_voxcpm2_clone "$@" ;;
     demo)              run_tool speech_demo "$@" ;;
     download-models)
@@ -47,13 +48,14 @@ usage: speech <command> [args]
 commands:
   transcribe <input.wav>             speech-to-text (Parakeet + Silero VAD)
   speak "<text>" [out.wav]           text-to-speech (Kokoro)
+  serve [--host HOST] [--port PORT]  OpenAI-compatible local TTS server
   clone <ref.wav> "<text>" <out.wav> voice cloning (VoxCPM2)
   phonemize "<text>" [language]      text -> phonemes (Kokoro phonemizer)
   demo [--transcribe-only]           live ALSA mic loop
   download-models [litert|voxcpm2]   fetch models to ~/.cache/speech-core
 
-Each command is also available as a standalone speech_<command> binary with
-extra options — run it with no arguments for full usage. Model directories
+Each command is also available as a standalone speech_<command> binary
+(speech-server for serve) with extra options. Model directories
 default to \$SPEECH_MODEL_DIR / \$SPEECH_LITERT_MODEL_DIR, else the per-user
 cache populated by download-models.
 USAGE

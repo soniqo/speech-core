@@ -152,6 +152,7 @@ KokoroTts::KokoroTts(
 
     // Load default voice
     set_voice("af_heart");
+    voice_overridden_ = false;
     current_lang_ = "en";
 }
 
@@ -161,6 +162,14 @@ KokoroTts::~KokoroTts() {
 
 void KokoroTts::set_voice(const std::string& name) {
     voice_embedding_ = load_voice_embedding(name);
+    voice_overridden_ = true;
+}
+
+void KokoroTts::set_speed(float speed) {
+    if (!std::isfinite(speed) || speed < 0.25f || speed > 4.0f) {
+        throw std::invalid_argument("Kokoro speed must be in 0.25...4.0");
+    }
+    speed_ = speed;
 }
 
 std::vector<float> KokoroTts::load_voice_embedding(const std::string& name) {
@@ -179,6 +188,7 @@ std::vector<float> KokoroTts::load_voice_embedding(const std::string& name) {
 void KokoroTts::auto_switch_voice(const std::string& lang) {
     if (lang == current_lang_) return;
     current_lang_ = lang;
+    if (voice_overridden_) return;
 
     // Map language to default voice
     struct LangVoice { const char* lang; const char* voice; };
@@ -313,7 +323,8 @@ KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
 
     size_t token_count = raw_tokens.size();
 
-    LOGI("TTS: text='%.60s' tokens=%zu", text.c_str(), token_count);
+    // Never log synthesis input: callers may send private or sensitive text.
+    LOGI("TTS: tokens=%zu", token_count);
 
     // Pad to fixed MAX_PHONEMES with attention mask
     std::vector<int64_t> input_ids(MAX_PHONEMES, 0);
@@ -347,10 +358,9 @@ KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
         style_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputs[2]));
 
     // speed [1]
-    float speed = 0.85f;
     const int64_t speed_shape[] = {1};
     ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
-        mem, &speed, sizeof(float),
+        mem, &speed_, sizeof(float),
         speed_shape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputs[3]));
 
     // random_phases [1, 9]
@@ -426,8 +436,9 @@ KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
             if (a > peak) peak = a;
         }
         if (!finite || peak > 2.0f) {
-            LOGI("TTS: unstable output finite=%d peak=%.2f; splitting and retrying "
-                 "(text='%.40s')", finite ? 1 : 0, peak, text.c_str());
+            LOGI("TTS: unstable output finite=%d peak=%.2f tokens=%zu; "
+                 "splitting and retrying", finite ? 1 : 0, peak,
+                 token_count);
             return ChunkResult::RetrySmaller;
         }
 

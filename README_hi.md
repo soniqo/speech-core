@@ -10,7 +10,7 @@
 
 यह CPU पर पूरी तरह स्थानीय रूप से चलता है। inference के समय cloud या Python नहीं चाहिए और audio device से बाहर नहीं जाता।
 
-**[📚 पूरा documentation →](https://soniqo.audio/hi/speech-core)** · **[🐧 Linux](https://soniqo.audio/hi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/hi/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 पूरा documentation →](https://soniqo.audio/hi/speech-core)** · **[🐧 Linux](https://soniqo.audio/hi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/hi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
 
 **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple sibling](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
@@ -30,14 +30,13 @@ speech-core एक छोटे, model-agnostic orchestration layer को optio
 - **Portable API:** native C++ और Kotlin/JNI, Swift/FFI, embedded Linux जैसे hosts के लिए C APIs।
 - **कई targets पर tested:** Linux, Windows, macOS, Android-oriented arm64 builds, sanitizers और model-backed nightly lanes।
 
-## v0.0.10 की मुख्य बातें
+## v0.0.11 की मुख्य बातें
 
-- **Parakeet-EOU 120M:** कम-memory multilingual streaming ASR, end-of-utterance tokens, optional beam search, contextual phrase biasing और over-bias cap।
-- **Native Whisper ONNX:** small से large-v3/turbo, language detection या fixed-language prompts, profiling और CPU tuning।
-- **अधिक TTS:** Kokoro के साथ VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic और Indic-Mio; buffered post-processing और transcript-guided cloning।
-- **तेज़ conversations:** छोटे turns के लिए Kokoro optimization, लंबे text का sentence chunking और playback के आसपास continuous pre-speech buffer।
-- **On-device LLM tools:** LiteRT-LM से FunctionGemma, Ollama adapter और pipeline tool-call loop।
-- **Release-grade Linux CLI:** amd64/arm64 packages, model download helpers, architecture-aware commands और clean-container smoke tests।
+- **OpenAI-compatible local TTS:** `speech-server` `POST /v1/audio/speech` देता है, जिसमें OpenAI model aliases, native और generic voices, language/speed control, WAV/PCM output और optional Bearer authentication है।
+- **Windows release package:** self-contained x64 ZIP में server, ONNX CLI tools, `speech.dll`, ONNX Runtime और PowerShell model downloader हैं; CI निकाले गए package का smoke test करता है।
+- **DeepFilterNet3 parity:** libdf-compatible STFT scaling, ERB/complex normalization, deep filtering, overlap-add और 480-sample delay compensation reference DSP behavior बहाल करते हैं।
+- **Streaming Pocket TTS:** ONNX backend fixed 80 ms frames, bounded decoder cache और optional model-backed round-trip validation देता है।
+- **सही Silero v5 context:** हर ONNX inference को graph के आवश्यक 64-sample left context मिलते हैं।
 
 ## Supported models
 
@@ -59,6 +58,7 @@ speech-core एक छोटे, model-agnostic orchestration layer को optio
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/supertonic) | Text-to-speech | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/indic-mio) | हिन्दी/भारतीय भाषाओं की voice cloning + emotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/hi/guides/kokoro) | Text-to-speech | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Streaming TTS (fixed Alba voice) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/denoise) | Speech enhancement | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/restore) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/hi/guides/respond) | Full-duplex speech-to-speech (CUDA) | structural | — |
@@ -124,7 +124,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Releases में amd64 और arm64 के लिए `.deb` व `.tar.gz` packages होते हैं। runtime libraries bundled हैं, models नहीं।
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 या arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +132,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 amd64 package में LiteRT VoxCPM2 voice cloning भी है। x86 bundle लगभग 13 GB है:

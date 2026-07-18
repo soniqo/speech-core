@@ -10,7 +10,7 @@ Infraestrutura de voz no dispositivo em **C++17** para **Linux, Windows e Androi
 
 Executa localmente na CPU. Sem nuvem, sem Python na inferência e sem áudio saindo do dispositivo.
 
-**[📚 Documentação completa →](https://soniqo.audio/pt/speech-core)** · **[🐧 Linux](https://soniqo.audio/pt/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/pt/getting-started/windows)** · **[⌨️ CLI Linux](docs/cli.md)**
+**[📚 Documentação completa →](https://soniqo.audio/pt/speech-core)** · **[🐧 Linux](https://soniqo.audio/pt/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/pt/getting-started/windows)** · **[⌨️ CLI desktop](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
 
 **[🤗 Modelos](https://huggingface.co/soniqo)** · **[🍎 Projeto irmão para Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
@@ -30,14 +30,13 @@ speech-core separa uma pequena camada de orquestração independente de modelo d
 - **API portátil:** C++ nativo e APIs C para Kotlin/JNI, Swift/FFI, Linux embarcado e outros hosts.
 - **Testes amplos:** Linux, Windows, macOS, builds arm64 voltadas ao Android, sanitizers e testes noturnos com modelos.
 
-## Destaques da v0.0.10
+## Destaques da v0.0.11
 
-- **Parakeet-EOU 120M:** ASR streaming multilíngue de baixa memória, tokens de fim de enunciado, beam search opcional, viés contextual e limite contra excesso de viés.
-- **Whisper ONNX nativo:** small até large-v3/turbo, detecção ou prompt de idioma fixo, profiling e controles de CPU.
-- **Mais TTS:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic e Indic-Mio junto ao Kokoro; pós-processamento bufferizado e clonagem guiada por transcrição.
-- **Conversas mais rápidas:** otimizações Kokoro para turnos curtos, divisão de textos longos e buffer pré-fala contínuo.
-- **Ferramentas LLM locais:** FunctionGemma via LiteRT-LM, adaptador Ollama e loop de ferramentas do pipeline.
-- **CLI Linux pronta para release:** pacotes amd64/arm64, download de modelos, disponibilidade por arquitetura e smoke tests em contêineres limpos.
+- **TTS local compatível com OpenAI:** `speech-server` expõe `POST /v1/audio/speech` com aliases OpenAI, vozes nativas e genéricas, idioma e velocidade, saída WAV/PCM e autenticação Bearer opcional.
+- **Pacote Windows:** ZIP x64 autocontido com servidor, ferramentas ONNX CLI, `speech.dll`, ONNX Runtime e downloader PowerShell; o CI extrai e testa o pacote.
+- **Paridade DeepFilterNet3:** escala STFT compatível com libdf, normalização ERB/complexa, deep filtering, overlap-add e compensação de 480 amostras restauram o DSP de referência.
+- **Pocket TTS em streaming:** o backend ONNX emite frames fixos de 80 ms, usa cache limitado e oferece validação round-trip opcional com o modelo.
+- **Contexto correto do Silero v5:** cada inferência ONNX recebe agora as 64 amostras de contexto à esquerda exigidas.
 
 ## Modelos compatíveis
 
@@ -59,6 +58,7 @@ speech-core separa uma pequena camada de orquestração independente de modelo d
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/pt/guides/supertonic) | Texto para voz | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/pt/guides/indic-mio) | Clonagem hindi/índica + emoção | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/pt/guides/kokoro) | Texto para voz | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS streaming (voz Alba fixa) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/pt/guides/denoise) | Aprimoramento de voz | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/pt/guides/restore) | Redução de ruído e reverberação (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/pt/guides/respond) | Voz para voz full-duplex (CUDA) | estrutural | — |
@@ -124,7 +124,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Releases incluem `.deb` e `.tar.gz` para amd64 e arm64, com bibliotecas de runtime mas sem modelos.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 ou arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +132,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 O pacote amd64 também inclui clonagem VoxCPM2 com LiteRT. O bundle x86 tem cerca de 13 GB:

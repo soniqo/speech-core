@@ -1,15 +1,21 @@
 # Third-party notices
 
-Binary distributions of the `speech` package (the `.deb` / `.tar.gz` packages published
-on GitHub Releases) bundle the following third-party runtime libraries. The
-speech-core source tree also vendors the source-only components noted below.
+Binary distributions of the `speech` package (the `.deb`, `.tar.gz`, and
+Windows `.zip` packages published on GitHub Releases) bundle the following
+third-party runtime libraries. The speech-core source tree also vendors the
+source-only components noted below.
 
 ## ONNX Runtime
 
-- **Files:** `lib/speech/libonnxruntime.so*`
+- **Files:** `lib/speech/libonnxruntime.so*` on Linux;
+  `bin/onnxruntime.dll` and `bin/onnxruntime_providers_shared.dll` on Windows
 - **Source:** https://github.com/microsoft/onnxruntime (prebuilt release binaries)
 - **License:** MIT — https://github.com/microsoft/onnxruntime/blob/main/LICENSE
 - Copyright (c) Microsoft Corporation
+
+The Windows ZIP also includes the Microsoft Visual C++ runtime DLLs needed by
+the official ONNX Runtime binary. They are redistributed under the Visual
+Studio license terms that accompany the Microsoft build tools.
 
 ## LiteRT (`libLiteRt.so`)
 

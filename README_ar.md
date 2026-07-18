@@ -12,7 +12,7 @@
 
 تعمل محلياً على المعالج. لا سحابة ولا Python أثناء الاستدلال، ولا يغادر الصوت الجهاز.
 
-**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة Linux](docs/cli.md)**
+**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة سطح المكتب](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
 
 **[🤗 النماذج](https://huggingface.co/soniqo)** · **[🍎 مشروع Apple الشقيق](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
@@ -36,14 +36,13 @@
 - **واجهة قابلة للنقل:** C++ أصلية وواجهات C مناسبة لـ Kotlin/JNI وSwift/FFI وLinux المضمن.
 - **اختبارات متعددة الأهداف:** Linux وWindows وmacOS وبناء arm64 الموجّه إلى Android وsanitizers واختبارات ليلية بالنماذج.
 
-## أبرز ما في v0.0.10
+## أبرز ما في v0.0.11
 
-- **Parakeet-EOU 120M:** ASR متدفق متعدد اللغات قليل الذاكرة، مع رموز نهاية القول وbeam search اختياري وترجيح سياقي وحد أعلى لمنع الإفراط في الترجيح.
-- **Whisper ONNX أصلي:** من small إلى large-v3/turbo، مع اكتشاف اللغة أو prompt ثابت، وprofiling وضبط CPU.
-- **TTS أوسع:** VoxCPM/VoxCPM2 وCosyVoice3 وChatterbox وSupertonic وIndic-Mio إلى جانب Kokoro، مع معالجة لاحقة مخزنة واستنساخ موجّه بالنص المرجعي.
-- **محادثات أسرع:** تحسين Kokoro للأدوار القصيرة، وتقسيم النص الطويل إلى جمل، واستمرار مخزن ما قبل الكلام حول التشغيل.
-- **أدوات LLM على الجهاز:** FunctionGemma عبر LiteRT-LM، ومحوّل Ollama، وحلقة الأدوات داخل خط الأنابيب.
-- **CLI لـLinux بجودة إصدار:** حزم amd64/arm64، ومساعدات تنزيل النماذج، وتوافر الأوامر حسب المعمارية، واختبارات في حاويات نظيفة.
+- **TTS محلي متوافق مع OpenAI:** يوفّر `speech-server` المسار `POST /v1/audio/speech` مع أسماء نماذج OpenAI البديلة، وأصوات أصلية وعامة، والتحكم باللغة والسرعة، وخروج WAV/PCM، ومصادقة Bearer اختيارية.
+- **حزمة Windows:** ملف ZIP مستقل لمعمارية x64 يضم الخادم وأدوات ONNX CLI و`speech.dll` وONNX Runtime ومنزّل نماذج PowerShell؛ وتفك CI الحزمة وتختبرها.
+- **تطابق DeepFilterNet3:** استعادة سلوك DSP المرجعي عبر STFT متوافق مع libdf، وتطبيع ERB/المركّب، والترشيح العميق، وoverlap-add، وتعويض تأخير 480 عينة.
+- **Pocket TTS متدفق:** تُخرج خلفية ONNX إطارات ثابتة بطول 80 مللي ثانية مع ذاكرة decoder محدودة واختبار round-trip اختياري بالنموذج.
+- **سياق Silero v5 الصحيح:** تتلقى كل عملية ONNX الآن 64 عينة من السياق الأيسر الذي تتطلبه الشبكة.
 
 ## النماذج المدعومة
 
@@ -65,6 +64,7 @@
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/supertonic) | تحويل النص إلى كلام | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/indic-mio) | استنساخ هندي/لغات الهند + عاطفة | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/kokoro) | تحويل النص إلى كلام | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS متدفق (صوت Alba ثابت) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/denoise) | تحسين الكلام | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/restore) | إزالة الضوضاء والصدى (16 ← 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/respond) | كلام إلى كلام مزدوج الاتجاه (CUDA) | هيكلي | — |
@@ -144,7 +144,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 </div>
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 or arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -152,6 +152,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 <div dir="rtl">

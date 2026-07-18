@@ -96,6 +96,9 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DSPEECH_CORE_WITH_ONNX=ON \
               -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_HTTP_SERVER=ON \
+              -DSPEECH_CORE_PACKAGE=ON \
+              -DSPEECH_CORE_PACKAGE_VERSION=0.0.0-ci \
               -DORT_DIR=ort-linux
 
       - name: Build
@@ -110,14 +113,128 @@ jobs:
           file build/examples/linux/speech_transcribe
           file build/examples/linux/speech_synthesize
           file build/examples/linux/speech_phonemize
+          file build/speech-server
           # ALSA must actually be linked (the message "ALSA not found"
           # would mean we built a no-op stub instead of the real demo).
           ldd build/examples/linux/speech_demo | grep -q libasound
+
+      - name: Package smoke test
+        run: |
+          set -euo pipefail
+          cpack --config build/CPackConfig.cmake -G TGZ -B dist-ci
+          archive=$(find dist-ci -maxdepth 1 -name 'speech-*-linux-amd64.tar.gz' -print -quit)
+          test -n "$archive"
+          mkdir package-root
+          tar -xzf "$archive" -C package-root
+          server=$(find package-root -path '*/bin/speech-server' -print -quit)
+          dispatcher=$(find package-root -path '*/bin/speech' -print -quit)
+          test -x "$server"
+          test -x "$dispatcher"
+          "$server" --help | grep -q /v1/audio/speech
+          "$dispatcher" serve --help | grep -q /v1/audio/speech
 
       - name: Test
         # Integration tests (test_models, speech_linux_pipeline) skip
         # cleanly when SPEECH_MODEL_DIR isn't set; everything else runs.
         run: ctest --test-dir build --output-on-failure
+
+  # Windows ONNX distribution lane — builds the same CLI/server/package shape
+  # released from tags. This catches MSVC, DLL-export, CPack, and archive-layout
+  # regressions before a release tag is created.
+  windows-onnx-package:
+    runs-on: windows-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download ONNX Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORT_VERSION=1.19.0
+          curl -fL --retry 3 \
+            -o ort.zip \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip"
+          echo "1d796da7001e4843858d0587aa8232976abf9e0ae7fba8deb7fa8156e440efb7  ort.zip" \
+            | sha256sum -c -
+          unzip -q ort.zip
+          mkdir -p ort-windows/include ort-windows/lib
+          cp onnxruntime-win-x64-${ORT_VERSION}/include/*.h ort-windows/include/
+          cp onnxruntime-win-x64-${ORT_VERSION}/lib/onnxruntime.dll \
+             onnxruntime-win-x64-${ORT_VERSION}/lib/onnxruntime_providers_shared.dll \
+             onnxruntime-win-x64-${ORT_VERSION}/lib/onnxruntime.lib \
+             ort-windows/lib/
+          cp onnxruntime-win-x64-${ORT_VERSION}/LICENSE \
+             onnxruntime-win-x64-${ORT_VERSION}/ThirdPartyNotices.txt \
+             ort-windows/
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -B build-windows -A x64 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPEECH_CORE_WITH_ONNX=ON \
+              -DSPEECH_CORE_BUILD_EXAMPLES=ON \
+              -DSPEECH_CORE_BUILD_HTTP_SERVER=ON \
+              -DSPEECH_LINUX_BUILD_DEMO=OFF \
+              -DSPEECH_LINUX_BUILD_TESTS=OFF \
+              -DSPEECH_CORE_PACKAGE=ON \
+              -DSPEECH_CORE_PACKAGE_VERSION=0.0.0-ci \
+              -DORT_DIR="$PWD/ort-windows"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-windows --parallel --config Release
+
+      - name: Test
+        shell: bash
+        run: |
+          export PATH="$PWD/ort-windows/lib:$PATH"
+          ctest --test-dir build-windows --output-on-failure -C Release
+
+      - name: Package and verify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cpack --config build-windows/CPackConfig.cmake -C Release -B dist
+          if ($LASTEXITCODE -ne 0) { throw "CPack failed" }
+          $archive = Get-ChildItem dist -Filter "speech-*-windows-x64.zip" |
+            Select-Object -First 1
+          if (-not $archive) { throw "Windows package was not produced" }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath unpacked
+          $root = Get-ChildItem unpacked -Directory | Select-Object -First 1
+          foreach ($relative in @(
+            "bin/speech-server.exe",
+            "bin/speech_transcribe.exe",
+            "bin/speech_synthesize.exe",
+            "bin/speech_phonemize.exe",
+            "bin/speech.dll",
+            "bin/onnxruntime.dll",
+            "bin/onnxruntime_providers_shared.dll",
+            "bin/msvcp140.dll",
+            "bin/vcruntime140.dll",
+            "bin/vcruntime140_1.dll",
+            "bin/speech_download_models.ps1",
+            "include/speech.h",
+            "lib/speech.lib",
+            "LICENSE",
+            "THIRD-PARTY-NOTICES.md",
+            "ONNXRUNTIME-LICENSE",
+            "ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root.FullName $relative))) {
+              throw "Missing packaged file: $relative"
+            }
+          }
+          $help = & (Join-Path $root.FullName "bin/speech-server.exe") --help 2>&1 |
+            Out-String
+          if ($LASTEXITCODE -ne 0 -or $help -notmatch "/v1/audio/speech") {
+            throw "Packaged speech-server.exe failed its help smoke test"
+          }
 
   # LiteRT build lanes — prove the speech_core_models_litert target compiles
   # and links against a real libLiteRt on Linux and Windows. The runtime is
@@ -153,7 +270,7 @@ jobs:
           cmake -B build \
               -DCMAKE_BUILD_TYPE=Release \
               -DSPEECH_CORE_WITH_LITERT=ON \
-              -DLITERT_DIR=$PWD/litert
+              -DLITERT_DIR="$PWD/litert"
 
       - name: Build
         run: cmake --build build --parallel
@@ -194,7 +311,7 @@ jobs:
           cmake -B build \
               -DCMAKE_BUILD_TYPE=Release \
               -DSPEECH_CORE_WITH_LITERT=ON \
-              -DLITERT_DIR=$PWD/litert
+              -DLITERT_DIR="$PWD/litert"
 
       - name: Build
         shell: bash
@@ -262,4 +379,3 @@ jobs:
           file build-aarch64/libspeech_core_models.a
           file build-aarch64/examples/linux/libspeech.so | tee /dev/stderr | grep -q "aarch64"
           file build-aarch64/examples/linux/speech_transcribe | tee /dev/stderr | grep -q "aarch64"
-
