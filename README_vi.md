@@ -10,7 +10,7 @@ Hạ tầng giọng nói chạy trên thiết bị bằng **C++17** cho **Linux,
 
 Chạy cục bộ trên CPU. Không đám mây, không Python khi suy luận và âm thanh không rời khỏi thiết bị.
 
-**[📚 Tài liệu đầy đủ →](https://soniqo.audio/vi/speech-core)** · **[🐧 Linux](https://soniqo.audio/vi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/vi/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 Tài liệu đầy đủ →](https://soniqo.audio/vi/speech-core)** · **[🐧 Linux](https://soniqo.audio/vi/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/vi/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP TTS](docs/http-server.md)**
 
 **[🤗 Mô hình](https://huggingface.co/soniqo)** · **[🍎 Dự án Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
@@ -30,14 +30,13 @@ speech-core tách lớp điều phối nhỏ, độc lập với mô hình khỏ
 - **API di động:** C++ native và C API cho Kotlin/JNI, Swift/FFI, Linux nhúng và các host khác.
 - **Kiểm thử nhiều mục tiêu:** Linux, Windows, macOS, build arm64 hướng Android, sanitizer và nightly dùng mô hình.
 
-## Điểm mới trong v0.0.10
+## Điểm mới trong v0.0.11
 
-- **Parakeet-EOU 120M:** ASR streaming đa ngôn ngữ ít bộ nhớ, token kết thúc phát ngôn, beam search tùy chọn, bias theo ngữ cảnh và giới hạn chống bias quá mức.
-- **Whisper ONNX native:** từ small đến large-v3/turbo, nhận diện hoặc prompt ngôn ngữ cố định, profiling và tinh chỉnh CPU.
-- **TTS phong phú hơn:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic, Indic-Mio bên cạnh Kokoro; hậu xử lý buffer và cloning có transcript hướng dẫn.
-- **Hội thoại nhanh hơn:** tối ưu Kokoro cho lượt ngắn, chia văn bản dài theo câu và buffer trước lời nói liên tục.
-- **Công cụ LLM trên thiết bị:** FunctionGemma qua LiteRT-LM, adapter Ollama và vòng lặp công cụ của pipeline.
-- **Linux CLI đạt chuẩn phát hành:** gói amd64/arm64, trình tải mô hình, lệnh theo kiến trúc và smoke test trong container sạch.
+- **TTS local tương thích OpenAI:** `speech-server` cung cấp `POST /v1/audio/speech` với alias model OpenAI, giọng native/phổ thông, điều khiển ngôn ngữ và tốc độ, đầu ra WAV/PCM và Bearer authentication tùy chọn.
+- **Gói Windows:** ZIP x64 độc lập gồm server, công cụ ONNX CLI, `speech.dll`, ONNX Runtime và trình tải model PowerShell; CI giải nén và smoke test gói này.
+- **DeepFilterNet3 parity:** STFT scaling tương thích libdf, chuẩn hóa ERB/phức, deep filtering, overlap-add và bù trễ 480 mẫu khôi phục DSP tham chiếu.
+- **Pocket TTS streaming:** backend ONNX phát frame cố định 80 ms, dùng decoder cache giới hạn và có kiểm thử round-trip với model tùy chọn.
+- **Silero v5 context chính xác:** mỗi lần ONNX inference giờ nhận đủ 64 mẫu left context mà graph yêu cầu.
 
 ## Mô hình được hỗ trợ
 
@@ -59,6 +58,7 @@ speech-core tách lớp điều phối nhỏ, độc lập với mô hình khỏ
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/supertonic) | Tổng hợp giọng nói | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/indic-mio) | Nhân bản giọng Hindi/Ấn Độ + cảm xúc | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/kokoro) | Tổng hợp giọng nói | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS streaming (giọng Alba cố định) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/denoise) | Tăng cường giọng nói | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/restore) | Khử nhiễu + khử vang (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/respond) | Giọng nói hai chiều full-duplex (CUDA) | cấu trúc | — |
@@ -124,7 +124,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Release có `.deb` và `.tar.gz` cho amd64 và arm64. Thư viện runtime được đóng gói, mô hình thì không.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 hoặc arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +132,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 Gói amd64 còn có lệnh nhân bản VoxCPM2 bằng LiteRT. Bundle x86 khoảng 13 GB:

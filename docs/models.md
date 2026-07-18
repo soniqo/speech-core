@@ -118,6 +118,7 @@ cmake --build build
 |---|---|
 | macOS | `lib/libonnxruntime.dylib` |
 | Linux | `lib/libonnxruntime.so` |
+| Windows | `lib/onnxruntime.dll` + `lib/onnxruntime.lib` |
 | Android | `lib/${ANDROID_ABI}/libonnxruntime.so` |
 
 Hardware-accelerated execution providers are picked automatically: NNAPI on Android, QNN on non-Android (if available), CPU fallback otherwise.
@@ -1001,6 +1002,8 @@ speech_core::KokoroTts tts(
     "/models/kokoro_voices",   // directory of .bin voice embeddings
     "/models/kokoro_data");    // directory of vocab + dictionaries
 
+tts.set_voice("af_heart");
+tts.set_speed(1.0f);            // accepted range: 0.25...4.0
 tts.synthesize("Hello world", "en",
     [](const float* samples, size_t len, bool is_final) {
         // append to playback buffer
@@ -1035,6 +1038,7 @@ fewer split/retries are more important than the shorter graph's latency.
 - 24 kHz Float32 output
 - One callback per safe internal text chunk; `is_final=true` marks the final one
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
+  until `set_voice()` selects an explicit persistent voice
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
 - Unsafe length, non-finite PCM, or numerical instability triggers bounded split/retry; output is never clamped or silently dropped
 - Output post-processing: trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
