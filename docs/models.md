@@ -18,6 +18,9 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
 | `NemotronMultilingualStt` | `STTInterface` | `speech_core/models/nemotron_multilingual_stt.h` | full (streaming, prompt-conditioned) |
+| `OnnxMossTranscribeDiarize` | `TranscribeDiarizeInterface` | `speech_core/models/onnx_moss_transcribe_diarize.h` | full (joint paragraph text/activity) |
+| `OnnxReDimNetSpeakerEmbedding` | `EmbeddingInterface` | `speech_core/models/onnx_redimnet_speaker_embedding.h` | full (long identity + short retrieval probe) |
+| `OnnxLocalVQEEchoCanceller` | `FrameEchoCancellerInterface`, `EchoCancellerInterface` | `speech_core/models/onnx_localvqe_echo_canceller.h` | full (hybrid DSP + neural AEC) |
 | `OnnxPersonaPlex` | `FullDuplexSpeechInterface` | `speech_core/models/onnx_personaplex.h` | structural — see [OnnxPersonaPlex](#onnxpersonaplex) |
 
 ### LiteRT backend (`SPEECH_CORE_WITH_LITERT`)
@@ -102,6 +105,48 @@ combined reference + continuation clone mode.
 `LiteRTVoxCPM2Tts` runs the full 4-graph orchestration end-to-end: `text_prefill → token_step ×N → audio_decode` with explicit K/V cache handoff every step. Voice cloning is surfaced through `set_reference()`. Supplying `set_reference_transcript()` additionally uses VoxCPM2's upstream combined reference + continuation prompt layout. The bundle is large (~8.7 GB fp16 `selective` for ARM at the repo root; ~13 GB fp32-token-step for x86 in the `fp32-p16/` subdir) and inference is slow on CPU, so end-to-end validation runs in the **weekly** workflow (`.github/workflows/weekly-voxcpm2.yml`) rather than the daily nightly.
 
 All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. Most LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`). Kokoro uses the stable TFLite Interpreter ABI exported by `libLiteRt` so its constructor can set the XNNPACK thread count directly. The current reference wrappers are CPU-only; NNAPI / GPU / Hexagon delegates are not wired here.
+
+## Passive meeting transcription models
+
+The portable passive-recording stack mirrors speech-swift's fixed meeting
+pipeline:
+
+- `NemotronMultilingualStt` emits revisable, text-only previews.
+- `OnnxMossTranscribeDiarize` replaces them with authoritative paragraph text
+  and paragraph-local speaker activity.
+- `OnnxReDimNetSpeakerEmbedding` maps clean, non-overlapped activity audio to
+  recording-local or saved voice identities.
+- `OnnxLocalVQEEchoCanceller` removes an independently captured playback
+  reference from microphone audio before microphone VAD or ASR.
+
+Each model remains independently usable. `MeetingTranscriptionTrack`,
+`RecordingSpeakerIdentity`, and `TimestampedEchoCancellationStream` in
+`speech_core/pipeline/` provide the shared orchestration used by applications.
+Construct one meeting track per capture source; do not mix system and
+microphone PCM or share source-local VAD/streaming state.
+
+```cpp
+#include <speech_core/models/onnx_localvqe_echo_canceller.h>
+#include <speech_core/models/onnx_moss_transcribe_diarize.h>
+#include <speech_core/models/onnx_redimnet_speaker_embedding.h>
+
+speech_core::OnnxMossTranscribeDiarize moss("/models/moss");
+speech_core::OnnxReDimNetSpeakerEmbedding identity(
+    "/models/redimnet/ReDimNet2B6.onnx");
+speech_core::OnnxLocalVQEEchoCanceller aec("/models/localvqe");
+```
+
+MOSS's `S01`… values are result-local activity labels, never durable people.
+ReDimNet embeddings are identity hints, not authentication. The ordinary
+identity path requires at least two seconds of clean audio; the strict
+0.6-to-2-second path may only retrieve an already-established identity.
+
+LocalVQE's ONNX graph is only the recurrent residual-mask network. Its C++
+wrapper also runs the released delay estimator, adaptive filter/controller,
+STFT codec, and overlap-add state. Passive recorders should timestamp-align
+the still-separate microphone and playback streams through
+`TimestampedEchoCancellationStream`; alignment or inference failures must be
+handled explicitly rather than substituting raw microphone PCM.
 
 ## Building with ONNX support
 

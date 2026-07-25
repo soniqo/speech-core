@@ -43,6 +43,46 @@ struct PartialResult {
     float confidence = 0.0f;
 };
 
+/// One paragraph-local segment emitted by a joint transcription/diarization
+/// model. `speaker` is activity-routing metadata scoped to this result only;
+/// callers must never persist it as a person identity.
+struct DiarizedTranscriptionSegment {
+    float start_time = 0.0f;
+    float end_time = 0.0f;
+    std::string speaker;
+    std::string text;
+};
+
+/// Structured output from a joint transcription/diarization pass.
+struct DiarizedTranscriptionResult {
+    /// Plain lexical transcript assembled from `segments` when structured
+    /// activity was valid. If the model emitted usable but unstructured text,
+    /// this remains visible here while `segments` stays empty.
+    std::string text;
+    std::vector<DiarizedTranscriptionSegment> segments;
+    /// Original model output retained for application-side fail-closed
+    /// validation. It must not be presented directly to users.
+    std::string raw_text;
+};
+
+/// Joint paragraph-final transcription and speaker-activity interface.
+///
+/// Unlike `DiarizerInterface`, implementations produce text and paragraph-
+/// local activity in one authoritative pass. Speaker tokens never identify a
+/// person and must be reconciled by a separate identity encoder.
+class TranscribeDiarizeInterface {
+public:
+    virtual ~TranscribeDiarizeInterface() = default;
+
+    virtual DiarizedTranscriptionResult transcribe_diarized(
+        const float* audio, size_t length, int sample_rate) = 0;
+
+    virtual int input_sample_rate() const = 0;
+
+    /// Cancel any in-progress generation. Thread-safe when supported.
+    virtual void cancel() {}
+};
+
 class STTInterface {
 public:
     virtual ~STTInterface() = default;
@@ -270,6 +310,38 @@ public:
     virtual void reset() = 0;
 };
 
+/// Frame-synchronous acoustic echo cancellation used by passive recorders.
+///
+/// Unlike EchoCancellerInterface's conversational playback queue, this seam
+/// requires the caller to supply microphone and independently captured
+/// playback-reference frames for the exact same timestamp range. It supports
+/// bounded batch delay acquisition before any cleaned microphone PCM is
+/// published.
+class FrameEchoCancellerInterface {
+public:
+    virtual ~FrameEchoCancellerInterface() = default;
+
+    virtual int input_sample_rate() const = 0;
+    virtual size_t frame_size() const = 0;
+
+    virtual void process_frame(
+        const float* microphone,
+        const float* reference,
+        float* output) = 0;
+
+    /// Estimate bulk playback delay from an equal-length synchronized clip.
+    /// A false return means no confident delay was acquired; processing may
+    /// still continue with the implementation's safe zero/current delay.
+    virtual bool prime_delay(
+        const float* microphone,
+        const float* reference,
+        size_t sample_count) = 0;
+
+    virtual int current_delay_samples() const { return 0; }
+    virtual float delay_confidence() const { return 0.0f; }
+    virtual void reset() = 0;
+};
+
 // ---------------------------------------------------------------------------
 // Diarization — speaker segmentation, embedding, and clustering
 // ---------------------------------------------------------------------------
@@ -328,6 +400,14 @@ public:
     /// Embed an audio span into a speaker vector.
     virtual std::vector<float> embed(
         const float* audio, size_t length, int sample_rate) = 0;
+
+    /// Optional strict short-utterance retrieval probe. Implementations that
+    /// support it return an embedding for their documented minimum duration.
+    /// Callers must never create or update an identity from this result alone.
+    virtual std::vector<float> embed_short_utterance(
+        const float* /*audio*/, size_t /*length*/, int /*sample_rate*/) {
+        return {};
+    }
 
     /// Output embedding dimensionality.
     virtual int embedding_dim() const = 0;

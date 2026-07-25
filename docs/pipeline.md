@@ -39,6 +39,37 @@ Speech-to-text only — emits `TranscriptionCompleted` events but produces no au
 audio → VAD → STT → text
 ```
 
+## Passive meeting tracks
+
+`MeetingTranscriptionTrack` is separate from the conversational
+`VoicePipeline`. It implements the fixed source-local path used by passive
+meeting recorders:
+
+```text
+timestamped PCM -> Silero VAD -> Nemotron revisable preview
+                              -> MOSS authoritative paragraph text/activity
+```
+
+Construct one instance per capture source. PCM, VAD state, Nemotron stream,
+paragraph state, and timestamps never cross instances. A MOSS runtime may be
+shared when its implementation serializes inference. The default meeting
+configuration closes a paragraph after 550 ms of silence, retains 200 ms of
+pre/post-roll, first publishes continuous speech at ten seconds, and then
+revises a rolling window capped at twenty seconds.
+
+`MeetingTrackEvent::Preview` is non-durable text. A
+`MeetingTrackEvent::Revision` supplies an exact source-local replacement
+interval and authoritative blocks. MOSS activity labels remain scoped to that
+one result. `RecordingSpeakerIdentity` applies independent embedding evidence,
+within-result different-speaker constraints, conservative short-fragment
+galleries, and exact-range backfills. Ambiguous evidence remains unlabelled.
+
+For microphone capture, feed raw microphone and the independently captured
+playback reference to `TimestampedEchoCancellationStream`. Only its cleaned
+output should enter the microphone meeting track. Missing timestamps, buffer
+overrun, or AEC inference errors surface as failures; the class never emits
+raw microphone PCM as a fallback.
+
 ## State Machine
 
 Five states with automatic transitions:

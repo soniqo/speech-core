@@ -1,6 +1,9 @@
 param(
     [Parameter(Position = 0)]
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+
+    [ValidateSet("default", "stenograf")]
+    [string]$ModelSet = "default"
 )
 
 Set-StrictMode -Version Latest
@@ -24,7 +27,7 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 $voicesDirectory = Join-Path $outputRoot "voices"
 New-Item -ItemType Directory -Force -Path $voicesDirectory | Out-Null
 
-$files = @(
+$defaultFiles = @(
     "Silero-VAD-v5-ONNX/silero-vad.onnx",
     "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx",
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx",
@@ -51,11 +54,44 @@ $files = @(
     "DeepFilterNet3-ONNX/deepfilter.onnx"
 )
 
+$stenografFiles = @(
+    "Silero-VAD-v5-ONNX/silero-vad.onnx",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/encoder.onnx",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/decoder.onnx",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/decoder.onnx.data",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/joint.onnx",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/joint.onnx.data",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/vocab.json",
+    "Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-INT8/languages.json",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/audio_encoder.onnx",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/decoder.onnx",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/config.json",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/processor_config.json",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/preprocessor_config.json",
+    "MOSS-Transcribe-Diarize-0.9B-ONNX-FP16/vocab.json",
+    "ReDimNet2-B6-ONNX-FP32/ReDimNet2B6.onnx",
+    "ReDimNet2-B6-ONNX-FP32/config.json",
+    "LocalVQE-v1.4-AEC-200K-ONNX-FP32/LocalVQEAECResidualMask.onnx",
+    "LocalVQE-v1.4-AEC-200K-ONNX-FP32/LocalVQEAECFrontend.json",
+    "LocalVQE-v1.4-AEC-200K-ONNX-FP32/config.json"
+)
+
+$files = if ($ModelSet -eq "stenograf") {
+    $stenografFiles
+} else {
+    $defaultFiles
+}
+
 foreach ($entry in $files) {
     $slash = $entry.IndexOf('/')
     $repository = $entry.Substring(0, $slash)
     $relativePath = $entry.Substring($slash + 1)
-    if ($relativePath.StartsWith("voices/")) {
+    if ($ModelSet -eq "stenograf") {
+        # Keep each application model in its repository directory. Nemotron
+        # external-data references and common config/vocab filenames require
+        # this layout.
+        $destination = Join-Path (Join-Path $outputRoot $repository) ($relativePath.Replace('/', '\'))
+    } elseif ($relativePath.StartsWith("voices/")) {
         $destination = Join-Path $outputRoot ($relativePath.Replace('/', '\'))
     } else {
         $destination = Join-Path $outputRoot ([System.IO.Path]::GetFileName($relativePath))
@@ -91,5 +127,5 @@ foreach ($entry in $files) {
 }
 
 Write-Host ""
-Write-Host "Models downloaded to: $outputRoot"
+Write-Host "$ModelSet models downloaded to: $outputRoot"
 Write-Host "Start the server with: speech-server.exe --model-dir `"$outputRoot`""

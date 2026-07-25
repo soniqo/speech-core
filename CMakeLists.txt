@@ -47,7 +47,11 @@ add_library(speech_core
     src/pipeline/turn_detector.cpp
     src/pipeline/speech_queue.cpp
     src/pipeline/conversation_context.cpp
+    src/pipeline/meeting_transcription_track.cpp
+    src/pipeline/recording_speaker_identity.cpp
+    src/pipeline/timestamped_echo_cancellation_stream.cpp
     src/vad/streaming_vad.cpp
+    src/transcription/moss_transcript_parser.cpp
     src/audio/audio_buffer.cpp
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
@@ -63,6 +67,8 @@ add_library(speech_core
     src/audio/wespeaker_fbank.cpp
     src/models/kokoro/kokoro_phonemizer.cpp
     src/models/kokoro/kokoro_multilingual.cpp
+    src/models/moss/moss_prompt_processor.cpp
+    src/models/moss/moss_whisper_features.cpp
     src/tools/tool_registry.cpp
     src/tools/intent_matcher.cpp
     src/tools/tool_executor.cpp
@@ -150,9 +156,13 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/voxcpm/onnx_voxcpm_tts.cpp
         src/models/voxcpm2/onnx_voxcpm2_tts.cpp
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
+        src/models/moss/onnx_moss_transcribe_diarize.cpp
+        src/models/localvqe/localvqe_aec_frontend.cpp
+        src/models/localvqe/onnx_localvqe_echo_canceller.cpp
         src/models/personaplex/onnx_personaplex.cpp
         src/models/whisper/onnx_whisper_stt.cpp
         src/models/pyannote/onnx_pyannote_segmentation.cpp
+        src/models/redimnet/onnx_redimnet_speaker_embedding.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
@@ -664,6 +674,10 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_litert_indic_mio"
            OR TEST_NAME STREQUAL "test_pocket_tts"
            OR TEST_NAME STREQUAL "test_pocket_tts_tokenizer"
+           OR TEST_NAME STREQUAL "test_onnx_moss_model"
+           OR TEST_NAME STREQUAL "test_onnx_localvqe_model"
+           OR TEST_NAME STREQUAL "test_onnx_redimnet_model"
+           OR TEST_NAME STREQUAL "test_redimnet_audio_preparation"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_openai_tts_server"
            OR TEST_NAME STREQUAL "test_openai_stt_server_e2e"
@@ -778,6 +792,48 @@ if(SPEECH_CORE_BUILD_TESTS)
                 target_compile_definitions(bench_ort_models PRIVATE NOMINMAX)
             endif()
         endif()
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_redimnet_audio_preparation.cpp)
+        add_executable(test_redimnet_audio_preparation
+            tests/test_redimnet_audio_preparation.cpp)
+        target_link_libraries(test_redimnet_audio_preparation
+            PRIVATE speech_core_models)
+        add_test(NAME test_redimnet_audio_preparation
+                 COMMAND test_redimnet_audio_preparation)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_onnx_moss_model.cpp)
+        add_executable(test_onnx_moss_model
+            tests/test_onnx_moss_model.cpp)
+        target_link_libraries(test_onnx_moss_model
+            PRIVATE speech_core_models)
+        target_compile_definitions(test_onnx_moss_model PRIVATE
+            SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME test_onnx_moss_model
+                 COMMAND test_onnx_moss_model)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_onnx_localvqe_model.cpp)
+        add_executable(test_onnx_localvqe_model
+            tests/test_onnx_localvqe_model.cpp)
+        target_link_libraries(test_onnx_localvqe_model
+            PRIVATE speech_core_models)
+        add_test(NAME test_onnx_localvqe_model
+                 COMMAND test_onnx_localvqe_model)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_onnx_redimnet_model.cpp)
+        add_executable(test_onnx_redimnet_model
+            tests/test_onnx_redimnet_model.cpp)
+        target_link_libraries(test_onnx_redimnet_model
+            PRIVATE speech_core_models)
+        add_test(NAME test_onnx_redimnet_model
+                 COMMAND test_onnx_redimnet_model)
     endif()
 
     if(SPEECH_CORE_WITH_ONNX AND
