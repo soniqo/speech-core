@@ -131,6 +131,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/nemotron/onnx_nemotron_streaming_stt.cpp
         src/models/personaplex/onnx_personaplex.cpp
         src/models/whisper/onnx_whisper_stt.cpp
+        src/models/canary/onnx_canary_stt.cpp
         src/models/pyannote/onnx_pyannote_segmentation.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp
     )
