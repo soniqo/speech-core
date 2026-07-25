@@ -47,10 +47,12 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/whisper) | เสียงเป็นข้อความหลายภาษา | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/nemotron) | STT streaming | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/th/guides/nemotron) | STT streaming แบบมี prompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | การถอดเสียงหลายภาษา + กิจกรรมผู้พูด | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/th/guides/dictate) | STT streaming + จบคำพูด | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/omnilingual) | STT หลายภาษา | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/diarize) | segmentation สำหรับ diarization | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/embed-speaker) | speaker embedding | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | การฝังตัวผู้พูด | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS 16 kHz + โคลนเสียง | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/voxcpm2) | TTS 48 kHz + โคลนเสียง | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/cosyvoice) | TTS แบบมี conditioning 24 kHz | เป็นขั้น | — |
@@ -60,6 +62,7 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/kokoro) | สังเคราะห์เสียง | ✓ | ✓ |
 | [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS streaming (เสียง Alba คงที่) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/denoise) | ปรับปรุงเสียงพูด | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | การตัดเสียงสะท้อนทางเสียง | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/restore) | ลดเสียงรบกวน + ลดเสียงก้อง (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/respond) | speech-to-speech แบบ full-duplex (CUDA) | โครงสร้าง | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/th/guides/function-calls) | structured tool call บนอุปกรณ์ | — | LiteRT-LM |

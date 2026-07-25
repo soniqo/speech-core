@@ -47,10 +47,12 @@ speech-core отделяет компактный, независимый от �
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/whisper) | Многоязычное распознавание | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковое распознавание | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковый STT с prompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Многоязычная транскрипция + активность говорящих | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ru/guides/dictate) | Потоковый STT + конец реплики | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/omnilingual) | Многоязычный STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/diarize) | Сегментация для диаризации | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/embed-speaker) | Эмбеддинг говорящего | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Эмбеддинг говорящего | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS 16 кГц + клонирование | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/voxcpm2) | TTS 48 кГц + клонирование | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/cosyvoice) | Условный TTS 24 кГц | поэтапно | — |
@@ -60,6 +62,7 @@ speech-core отделяет компактный, независимый от �
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/kokoro) | Синтез речи | ✓ | ✓ |
 | [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Потоковый TTS (фиксированный голос Alba) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/denoise) | Улучшение речи | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Акустическое эхоподавление | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/restore) | Шумоподавление + дереверберация (16 → 48 кГц) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/respond) | Полнодуплексная речь-в-речь (CUDA) | структура | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ru/guides/function-calls) | Локальные структурированные tool calls | — | LiteRT-LM |

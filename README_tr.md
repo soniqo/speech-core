@@ -47,10 +47,12 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/whisper) | Çok dilli konuşmadan metne | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/nemotron) | Akışlı STT | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/tr/guides/nemotron) | Prompt koşullu akışlı STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Çok dilli transkripsiyon + konuşmacı etkinliği | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/tr/guides/dictate) | Akışlı STT + söz sonu | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/omnilingual) | Çok dilli STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/diarize) | Diarization segmentasyonu | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/embed-speaker) | Konuşmacı embedding'i | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Konuşmacı embedding'i | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + ses klonlama | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/voxcpm2) | 48 kHz TTS + ses klonlama | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/cosyvoice) | Koşullu 24 kHz TTS | aşamalı | — |
@@ -60,6 +62,7 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/kokoro) | Metinden konuşma | ✓ | ✓ |
 | [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Akışlı TTS (sabit Alba sesi) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/denoise) | Konuşma iyileştirme | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Akustik yankı giderme | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/restore) | Gürültü ve yankı giderme (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/respond) | Full-duplex konuşmadan konuşmaya (CUDA) | yapısal | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/tr/guides/function-calls) | Cihaz içi yapılandırılmış araç çağrıları | — | LiteRT-LM |

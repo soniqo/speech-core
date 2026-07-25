@@ -143,6 +143,57 @@ void test_24k_to_16k() {
     printf("  PASS: 24k_to_16k (max_err=%.5f)\n", max_err);
 }
 
+void test_streaming_long_run_sample_conservation() {
+    // Seven 48 kHz samples never divide evenly into the 16 kHz clock. A
+    // packet-local floor would lose one output sample every callback; carrying
+    // the rational phase must remain exact across a long callback run.
+    constexpr size_t kCallbacks = 100000;
+    constexpr size_t kPacketSamples = 7;
+    StreamingResampler streaming(48000, 16000);
+    std::vector<float> packet(kPacketSamples, 0.0f);
+    uint64_t produced = 0;
+    for (size_t callback = 0; callback < kCallbacks; ++callback) {
+        auto output = streaming.process(packet.data(), packet.size());
+        produced += output.size();
+    }
+    produced += streaming.flush().size();
+    const uint64_t expected =
+        static_cast<uint64_t>(kCallbacks) * kPacketSamples / 3;
+    assert(produced == expected);
+    assert(streaming.total_input_samples()
+           == static_cast<uint64_t>(kCallbacks) * kPacketSamples);
+    assert(streaming.total_output_samples() == expected);
+    printf("  PASS: streaming_long_run_sample_conservation\n");
+}
+
+void test_streaming_packet_boundaries_match_one_shot_interior() {
+    auto sine = make_sine(1000.0f, 48000, 48000);
+    auto expected =
+        Resampler::resample(sine.data(), sine.size(), 48000, 16000);
+    StreamingResampler streaming(48000, 16000);
+    std::vector<float> actual;
+    const std::vector<size_t> packet_sizes = {137, 480, 1024, 53, 997};
+    size_t offset = 0;
+    size_t packet = 0;
+    while (offset < sine.size()) {
+        const size_t count = std::min(
+            packet_sizes[packet++ % packet_sizes.size()],
+            sine.size() - offset);
+        auto output = streaming.process(sine.data() + offset, count);
+        actual.insert(actual.end(), output.begin(), output.end());
+        offset += count;
+    }
+    auto tail = streaming.flush();
+    actual.insert(actual.end(), tail.begin(), tail.end());
+    assert(actual.size() == expected.size());
+    // Both paths use the same polyphase table. Ignore only the one-shot
+    // implementation's independently clamped right edge.
+    for (size_t index = 0; index + 16 < actual.size(); ++index) {
+        assert(std::abs(actual[index] - expected[index]) < 1e-6f);
+    }
+    printf("  PASS: streaming_packet_boundaries_match_one_shot_interior\n");
+}
+
 int main() {
     printf("test_resampler:\n");
 
@@ -154,6 +205,8 @@ int main() {
     test_upsample();
     test_kernel_cache();
     test_24k_to_16k();
+    test_streaming_long_run_sample_conservation();
+    test_streaming_packet_boundaries_match_one_shot_interior();
 
     Resampler::clear_cache();
     printf("All resampler tests passed.\n");

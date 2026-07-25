@@ -57,6 +57,26 @@ public:
 
 **Swift counterpart:** `SpeechRecognitionModel` in `AudioCommon/Protocols.swift`.
 
+## TranscribeDiarizeInterface — Joint paragraph transcription and activity
+
+```cpp
+class TranscribeDiarizeInterface {
+public:
+    virtual DiarizedTranscriptionResult transcribe_diarized(
+        const float* audio, size_t length, int sample_rate) = 0;
+    virtual int input_sample_rate() const = 0;
+    virtual void cancel() {}
+};
+```
+
+`DiarizedTranscriptionResult` carries plain lexical `text`, parsed
+`segments{start_time,end_time,speaker,text}`, and the original model
+`raw_text` for fail-closed wire validation. Segment speaker values are scoped
+to one result and are activity-routing metadata, not people. Applications must
+not persist them as identities.
+
+**Reference implementation:** `OnnxMossTranscribeDiarize`.
+
 ## TTSInterface — Text-to-speech
 
 ```cpp
@@ -147,7 +167,39 @@ public:
 };
 ```
 
-Pipeline feeds TTS output via `feed_reference()` and runs `cancel_echo()` on mic input before VAD. Thread-safety: `feed_reference()` and `cancel_echo()` may be called concurrently. No reference implementation is shipped — bring your own (SpeexDSP, WebRTC AEC, platform-native).
+Pipeline feeds TTS output via `feed_reference()` and runs `cancel_echo()` on
+mic input before VAD. Thread-safety: `feed_reference()` and `cancel_echo()` may
+be called concurrently.
+
+**Reference implementation:** `OnnxLocalVQEEchoCanceller`.
+
+### FrameEchoCancellerInterface — Timestamp-aligned passive AEC
+
+```cpp
+class FrameEchoCancellerInterface {
+public:
+    virtual int input_sample_rate() const = 0;
+    virtual size_t frame_size() const = 0;
+    virtual void process_frame(
+        const float* microphone,
+        const float* reference,
+        float* output) = 0;
+    virtual bool prime_delay(
+        const float* microphone,
+        const float* reference,
+        size_t sample_count) = 0;
+    virtual int current_delay_samples() const { return 0; }
+    virtual float delay_confidence() const { return 0.0f; }
+    virtual void reset() = 0;
+};
+```
+
+This interface is for passive recorders that capture microphone and playback
+on independent timestamped streams. The caller supplies exact corresponding
+frames; `TimestampedEchoCancellationStream` provides bounded alignment,
+priming, and fail-closed queueing around it.
+
+**Reference implementation:** `OnnxLocalVQEEchoCanceller`.
 
 ## LLMInterface — Language model
 
@@ -203,7 +255,13 @@ public:
 };
 ```
 
-**Reference implementation:** `LiteRTWeSpeakerEmbedding` (WeSpeaker ResNet34-LM via LiteRT, 256-dim L2-normalised vector).
+`embed_short_utterance()` is an optional conservative retrieval-only path.
+Callers must not create or update an identity from that result alone.
+
+**Reference implementations:** `LiteRTWeSpeakerEmbedding` (WeSpeaker
+ResNet34-LM via LiteRT, 256-dim L2-normalised vector) and
+`OnnxReDimNetSpeakerEmbedding` (ReDimNet2-B6 via ONNX Runtime, 192-dim
+L2-normalised vector with a strict short retrieval probe).
 
 ### DiarizerInterface — end-to-end diarization
 
