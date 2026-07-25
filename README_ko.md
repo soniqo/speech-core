@@ -51,10 +51,12 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/whisper) | 다국어 음성 인식 | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/nemotron) | 스트리밍 음성 인식 | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ko/guides/nemotron) | 프롬프트 조건부 스트리밍 STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | 다국어 전사 + 화자 활동 | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ko/guides/dictate) | 스트리밍 STT + 발화 종료 | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/omnilingual) | 다국어 음성 인식 | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/diarize) | 화자 분리 세그멘테이션 | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/embed-speaker) | 화자 임베딩 | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | 화자 임베딩 | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + 음성 복제 | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/voxcpm2) | 48 kHz TTS + 음성 복제 | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/cosyvoice) | 24 kHz 조건부 TTS | 단계적 | — |
@@ -64,6 +66,7 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/kokoro) | 음성 합성 | ✓ | ✓ |
 | [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | 스트리밍 TTS(고정 Alba 음성) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/denoise) | 음성 향상 | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | 음향 에코 제거 | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/restore) | 노이즈 제거 + 잔향 제거(16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/respond) | 전이중 음성 대 음성(CUDA) | 구조 구현 | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ko/guides/function-calls) | 온디바이스 구조화 도구 호출 | — | LiteRT-LM |
