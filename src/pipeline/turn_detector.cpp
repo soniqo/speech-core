@@ -300,4 +300,10 @@ void TurnDetector::reset() {
     guard_remaining_samples_ = 0;
 }
 
+void TurnDetector::reset_for_new_stream() {
+    reset();
+    pre_speech_ring_.clear();
+    vad_.reset();
+}
+
 }  // namespace speech_core

@@ -114,6 +114,10 @@ void test_start_stop() {
     assert(sc_pipeline_is_running(p) == true);
     assert(sc_pipeline_state(p) == SC_STATE_IDLE);
 
+    sc_pipeline_cancel_current_turn(p);
+    assert(sc_pipeline_is_running(p) == true);
+    assert(sc_pipeline_state(p) == SC_STATE_IDLE);
+
     sc_pipeline_stop(p);
     assert(sc_pipeline_is_running(p) == false);
 
@@ -435,6 +439,7 @@ void test_null_safety() {
     // All functions should handle NULL pipeline gracefully
     sc_pipeline_start(nullptr);
     sc_pipeline_stop(nullptr);
+    sc_pipeline_cancel_current_turn(nullptr);
     sc_pipeline_push_audio(nullptr, nullptr, 0);
     sc_pipeline_push_text(nullptr, nullptr);
     sc_pipeline_clear_tools(nullptr);

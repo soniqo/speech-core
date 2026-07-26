@@ -32,12 +32,14 @@ VoicePipeline::~VoicePipeline() {
 }
 
 void VoicePipeline::start() {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        running_.store(true);
-        state_.store(State::Idle);
-        if (echo_canceller_) echo_canceller_->reset();
-    }
+    if (running_.load()) return;
+
+    // A completed stop() leaves both thread objects non-joinable. Join any
+    // already-finished objects defensively before marking the new session
+    // running; setting running_ first could revive an old worker and deadlock.
+    if (worker_thread_.joinable()) worker_thread_.join();
+    if (cancel_thread_.joinable()) cancel_thread_.join();
+
     // Reset dispatcher flags BEFORE spawning so a previous stop() cycle
     // doesn't leave shutdown=true (which would make the new dispatcher
     // exit immediately, silently dropping every Interruption).
@@ -46,41 +48,66 @@ void VoicePipeline::start() {
         cancel_shutdown_ = false;
         cancel_pending_ = false;
     }
-    // Defensive: a prior stop() always joins the dispatcher, so the
-    // thread object should be non-joinable here. Joining belt-and-
-    // suspenders rather than std::terminate'ing if some path skipped
-    // stop().
-    if (cancel_thread_.joinable()) cancel_thread_.join();
-    if (worker_thread_.joinable()) worker_thread_.join();
+
+    // start() is an independent input-stream boundary even if a caller reached
+    // it after an incomplete shutdown path. Match on_turn_event's lock order:
+    // pipeline mutex first, worker mutex second.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> wlock(worker_mutex_);
+        turn_generation_.fetch_add(1, std::memory_order_acq_rel);
+        eager_invalidated_generation_.store(0, std::memory_order_release);
+        pending_utterances_.clear();
+        worker_reset_requested_ = false;
+        worker_busy_.store(false);
+        turn_detector_.reset_for_new_stream();
+        speech_queue_.cancel_all();
+        running_.store(true);
+        state_.store(State::Idle);
+        if (echo_canceller_) echo_canceller_->reset();
+    }
+
     worker_thread_ = std::thread(&VoicePipeline::worker_loop, this);
     cancel_thread_ = std::thread(&VoicePipeline::cancel_loop, this);
 }
 
 void VoicePipeline::stop() {
+    // Close the input boundary and invalidate all work before asking backends
+    // to cancel. on_turn_event uses the same mutex_ -> worker_mutex_ order.
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        tts_.cancel();
-        if (llm_) llm_->cancel();
+        std::lock_guard<std::mutex> wlock(worker_mutex_);
+        turn_generation_.fetch_add(1, std::memory_order_acq_rel);
+        eager_invalidated_generation_.store(0, std::memory_order_release);
+        running_.store(false);
+        pending_utterances_.clear();
+        worker_reset_requested_ = false;
+        turn_detector_.reset_for_new_stream();
         speech_queue_.cancel_all();
         state_.store(State::Idle);
     }
-    // Mark the worker for shutdown under worker_mutex_, NOT just atomically.
-    // The worker's cv predicate reads running_ while holding worker_mutex_,
-    // and entering cv.wait releases the mutex atomically with sleeping.
-    // If we stored running_ outside the mutex and notified, the worker could
-    // be between "predicate returned true" and "actually sleeping": the
-    // notify would have no waiter to wake, the worker would then sleep
-    // forever, and join() would hang. Holding worker_mutex_ here serializes
-    // the store with the worker's predicate evaluation, closing the window.
-    {
-        std::lock_guard<std::mutex> wlock(worker_mutex_);
-        running_.store(false);
-    }
+
     worker_cv_.notify_all();
     worker_idle_cv_.notify_all();
+
+    // Cancellation hooks are thread-safe by interface contract. They run with
+    // no pipeline locks held so a backend can finish its worker callback.
+    stt_.cancel();
+    tts_.cancel();
+    if (llm_) llm_->cancel();
+
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
+
+    {
+        std::lock_guard<std::mutex> wlock(worker_mutex_);
+        pending_utterances_.clear();
+        worker_reset_requested_ = false;
+        worker_busy_.store(false);
+    }
+    worker_idle_cv_.notify_all();
+
     // Tear down the cancel dispatcher AFTER the worker so the worker's
     // force_final speak() path (which calls tts_.cancel() on the worker
     // thread) cannot race with the dispatcher's own cancel call. Same
@@ -95,6 +122,29 @@ void VoicePipeline::stop() {
     if (cancel_thread_.joinable()) {
         cancel_thread_.join();
     }
+}
+
+void VoicePipeline::cancel_current_turn() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> wlock(worker_mutex_);
+        turn_generation_.fetch_add(1, std::memory_order_acq_rel);
+        eager_invalidated_generation_.store(0, std::memory_order_release);
+        pending_utterances_.clear();
+        worker_reset_requested_ = running_.load();
+        turn_detector_.reset_for_new_stream();
+        speech_queue_.cancel_all();
+        state_.store(State::Idle);
+        if (echo_canceller_) echo_canceller_->reset();
+    }
+
+    worker_cv_.notify_all();
+
+    // Batch cancellation is best-effort; generation checks remain the source
+    // of correctness for implementations whose cancel() is a no-op.
+    stt_.cancel();
+    if (llm_) llm_->cancel();
+    tts_.cancel();
 }
 
 void VoicePipeline::resume_listening() {
@@ -117,6 +167,9 @@ void VoicePipeline::resume_listening() {
 void VoicePipeline::push_audio(const float* samples, size_t count) {
     if (!running_.load()) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    // Close the check/lock race with stop(): a producer may have observed
+    // running=true immediately before stop() acquired this mutex.
+    if (!running_.load()) return;
 
     const float* audio = samples;
 
@@ -148,6 +201,7 @@ void VoicePipeline::worker_loop() {
 
     bool streaming_active = false;
     size_t stream_offset = 0;  // samples already sent to push_chunk
+    uint64_t streaming_generation = 0;
 
     // Cancel any active streaming STT on exit from any path — the inner
     // !running_ check at the top of the loop only fires when the worker
@@ -165,9 +219,18 @@ void VoicePipeline::worker_loop() {
         }
     } stream_guard{stt_, streaming_active};
 
+    auto finish_utterance = [this] {
+        std::lock_guard<std::mutex> lock(worker_mutex_);
+        if (pending_utterances_.empty()) {
+            worker_busy_.store(false);
+            worker_idle_cv_.notify_all();
+        }
+    };
+
     while (running_.load()) {
         PendingUtterance utterance;
         bool have_utterance = false;
+        bool reset_worker_state = false;
         {
             std::unique_lock<std::mutex> lock(worker_mutex_);
             bool use_timed_wait = config_.emit_partial_transcriptions
@@ -179,22 +242,34 @@ void VoicePipeline::worker_loop() {
                 auto timeout = std::chrono::milliseconds(
                     static_cast<int>(config_.partial_transcription_interval * 1000));
                 worker_cv_.wait_for(lock, timeout, [this] {
-                    return !pending_utterances_.empty() || !running_.load();
+                    return !pending_utterances_.empty()
+                        || worker_reset_requested_
+                        || !running_.load();
                 });
             } else {
                 worker_cv_.wait(lock, [this] {
-                    return !pending_utterances_.empty() || !running_.load();
+                    return !pending_utterances_.empty()
+                        || worker_reset_requested_
+                        || !running_.load();
                 });
             }
             if (!running_.load()) {
                 if (streaming_active) {
                     stt_.cancel_stream();
                     streaming_active = false;
+                    streaming_generation = 0;
+                    stream_offset = 0;
                 }
                 return;
             }
 
-            if (!pending_utterances_.empty()) {
+            // cancel_current_turn() cannot directly touch the worker-owned
+            // streaming session: cancel_stream() implementations are not
+            // required to be thread-safe. Handle and acknowledge the reset
+            // here before considering an utterance from the new generation.
+            if (worker_reset_requested_) {
+                reset_worker_state = true;
+            } else if (!pending_utterances_.empty()) {
                 worker_busy_.store(true);
                 utterance = std::move(pending_utterances_.front());
                 pending_utterances_.erase(pending_utterances_.begin());
@@ -202,12 +277,38 @@ void VoicePipeline::worker_loop() {
             }
         }
 
+        if (reset_worker_state) {
+            if (streaming_active) {
+                try { stt_.cancel_stream(); } catch (...) {}
+                streaming_active = false;
+                streaming_generation = 0;
+                stream_offset = 0;
+            }
+            {
+                std::lock_guard<std::mutex> lock(worker_mutex_);
+                worker_reset_requested_ = false;
+                if (pending_utterances_.empty() && !worker_busy_.load()) {
+                    worker_idle_cv_.notify_all();
+                }
+            }
+            continue;
+        }
+
         // Streaming STT: feed new audio chunks during speech
         if (!have_utterance && streaming_active) {
+            if (!is_current_turn(streaming_generation)) {
+                try { stt_.cancel_stream(); } catch (...) {}
+                streaming_active = false;
+                streaming_generation = 0;
+                stream_offset = 0;
+                continue;
+            }
+
             std::vector<float> snapshot;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (turn_detector_.in_speech()) {
+                if (is_current_turn(streaming_generation)
+                    && turn_detector_.in_speech()) {
                     snapshot = turn_detector_.utterance_snapshot();
                 }
             }
@@ -217,7 +318,8 @@ void VoicePipeline::worker_loop() {
                         snapshot.data() + stream_offset,
                         snapshot.size() - stream_offset);
                     stream_offset = snapshot.size();
-                    if (!partial.text.empty()) {
+                    if (!partial.text.empty()
+                        && is_current_turn(streaming_generation)) {
                         PipelineEvent event;
                         event.type = EventType::PartialTranscription;
                         event.text = partial.text;
@@ -234,19 +336,33 @@ void VoicePipeline::worker_loop() {
             && config_.emit_partial_transcriptions
             && stt_.supports_streaming()) {
             bool speech_active;
+            uint64_t generation;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 speech_active = turn_detector_.in_speech();
+                generation = turn_generation_.load(std::memory_order_acquire);
             }
-            if (speech_active) {
+            if (speech_active && is_current_turn(generation)) {
                 stt_.begin_stream(stt_.input_sample_rate());
                 streaming_active = true;
+                streaming_generation = generation;
                 stream_offset = 0;
+                if (!is_current_turn(generation)) {
+                    try { stt_.cancel_stream(); } catch (...) {}
+                    streaming_active = false;
+                    streaming_generation = 0;
+                    stream_offset = 0;
+                }
             }
             continue;
         }
 
         if (!have_utterance) continue;
+
+        if (!is_current_turn(utterance.generation)) {
+            finish_utterance();
+            continue;
+        }
 
         // Emit SpeechEnded before starting STT
         {
@@ -255,11 +371,23 @@ void VoicePipeline::worker_loop() {
             ended.start_time = utterance.time;
             on_event_(ended);
         }
+        if (!is_current_turn(utterance.generation)) {
+            finish_utterance();
+            continue;
+        }
 
         // Run STT (no pipeline mutex held — push_audio continues to flow)
         try {
             auto stt_start = std::chrono::steady_clock::now();
             TranscriptionResult result;
+
+            if (streaming_active
+                && streaming_generation != utterance.generation) {
+                try { stt_.cancel_stream(); } catch (...) {}
+                streaming_active = false;
+                streaming_generation = 0;
+                stream_offset = 0;
+            }
 
             if (streaming_active) {
                 // Feed any remaining audio, then finalize stream
@@ -270,6 +398,7 @@ void VoicePipeline::worker_loop() {
                 }
                 result = stt_.end_stream();
                 streaming_active = false;
+                streaming_generation = 0;
                 stream_offset = 0;
             } else {
                 result = stt_.transcribe(
@@ -280,10 +409,18 @@ void VoicePipeline::worker_loop() {
             float stt_ms = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - stt_start).count();
 
+            if (!is_current_turn(utterance.generation)) {
+                finish_utterance();
+                continue;
+            }
+
             // Check if this eager utterance was invalidated (user resumed speaking).
             // agent_speaking_ is NOT set during STT, so new speech during
             // transcription queues as a new utterance instead of interrupting.
-            bool invalidated = eager_invalidated_.exchange(false);
+            uint64_t expected_generation = utterance.generation;
+            bool invalidated =
+                eager_invalidated_generation_.compare_exchange_strong(
+                    expected_generation, 0, std::memory_order_acq_rel);
 
             if (invalidated) {
                 // Eager utterance discarded — user resumed speaking.
@@ -301,7 +438,8 @@ void VoicePipeline::worker_loop() {
                                   result.confidence < config_.min_transcription_confidence;
 
             if (!invalidated && !result.text.empty() && !low_confidence) {
-                process_utterance(result.text, result.language, stt_ms);
+                process_utterance(result.text, result.language, stt_ms,
+                                  utterance.generation);
             } else if (invalidated) {
                 // Eager utterance discarded — turn detector is tracking
                 // active speech, state is already Listening.
@@ -311,39 +449,49 @@ void VoicePipeline::worker_loop() {
                 // can detect new speech immediately.
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    turn_detector_.set_agent_speaking(false);
-                    turn_detector_.reset();
+                    if (is_current_turn(utterance.generation)) {
+                        turn_detector_.set_agent_speaking(false);
+                        turn_detector_.reset();
+                        state_.store(State::Idle);
+                    }
                 }
-                state_.store(State::Idle);
             }
         } catch (const std::exception& ex) {
-            emit_error(std::string("STT failed: ") + ex.what());
-            state_.store(State::Idle);
-        }
-
-        // Signal idle
-        {
-            std::lock_guard<std::mutex> lock(worker_mutex_);
-            if (pending_utterances_.empty()) {
-                worker_busy_.store(false);
-                worker_idle_cv_.notify_all();
+            if (streaming_active) {
+                try { stt_.cancel_stream(); } catch (...) {}
+                streaming_active = false;
+                streaming_generation = 0;
+                stream_offset = 0;
+            }
+            if (is_current_turn(utterance.generation)) {
+                emit_error(std::string("STT failed: ") + ex.what(),
+                           utterance.generation);
+                state_.store(State::Idle);
             }
         }
+
+        finish_utterance();
     }
 }
 
 void VoicePipeline::wait_idle() {
     std::unique_lock<std::mutex> lock(worker_mutex_);
     worker_idle_cv_.wait(lock, [this] {
-        return (pending_utterances_.empty() && !worker_busy_.load()) || !running_.load();
+        return (pending_utterances_.empty()
+                && !worker_busy_.load()
+                && !worker_reset_requested_)
+            || !running_.load();
     });
 }
 
 void VoicePipeline::push_text(const std::string& text) {
     if (!running_.load()) return;
+    const uint64_t generation =
+        turn_generation_.load(std::memory_order_acquire);
+    if (!running_.load()) return;
     // push_text bypasses STT — called by user, not audio thread.
     // Safe to process inline (caller expects blocking).
-    process_utterance(text);
+    process_utterance(text, "", 0.0f, generation);
 }
 
 void VoicePipeline::on_turn_event(const TurnEvent& event) {
@@ -353,7 +501,9 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
         // If user resumed speaking after an eager STT utterance was dispatched,
         // signal the worker to discard its result (it's a partial utterance).
         if (event.eager_resumed) {
-            eager_invalidated_.store(true);
+            eager_invalidated_generation_.store(
+                turn_generation_.load(std::memory_order_acquire),
+                std::memory_order_release);
             turn_detector_.set_agent_speaking(false);
         }
         state_.store(State::Listening);
@@ -374,7 +524,12 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
         // with STT/TTS which can take seconds.
         {
             std::lock_guard<std::mutex> wlock(worker_mutex_);
-            pending_utterances_.push_back({event.audio, event.time, event.eager});
+            pending_utterances_.push_back({
+                event.audio,
+                event.time,
+                event.eager,
+                turn_generation_.load(std::memory_order_acquire)
+            });
         }
         worker_cv_.notify_one();
         break;
@@ -431,7 +586,10 @@ void VoicePipeline::on_turn_event(const TurnEvent& event) {
 
 void VoicePipeline::process_utterance(const std::string& transcript,
                                       const std::string& language,
-                                      float stt_duration_ms) {
+                                      float stt_duration_ms,
+                                      uint64_t generation) {
+    if (!is_current_turn(generation)) return;
+
     context_.add_user_message(transcript);
 
     std::string response_text;
@@ -443,59 +601,76 @@ void VoicePipeline::process_utterance(const std::string& transcript,
         break;
 
     case AgentConfig::Mode::TranscribeOnly:
-        state_.store(State::Idle);
+        if (is_current_turn(generation)) {
+            state_.store(State::Idle);
+        }
         return;
 
     case AgentConfig::Mode::Pipeline:
         if (!llm_) {
             response_text = transcript;
         } else {
+            if (!is_current_turn(generation)) return;
             state_.store(State::Thinking);
             // Now the agent is actively responding — mark as speaking so
             // new speech triggers interruption (cancels LLM).
             {
                 std::lock_guard<std::mutex> lock(mutex_);
+                if (!is_current_turn(generation)) return;
                 turn_detector_.set_agent_speaking(true);
             }
 
             try {
                 auto llm_start = std::chrono::steady_clock::now();
-                response_text = call_llm_with_tools();
+                response_text = call_llm_with_tools(generation);
                 llm_ms = std::chrono::duration<float, std::milli>(
                     std::chrono::steady_clock::now() - llm_start).count();
             } catch (const std::exception& ex) {
-                {
+                if (is_current_turn(generation)) {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    turn_detector_.set_agent_speaking(false);
+                    if (is_current_turn(generation)) {
+                        turn_detector_.set_agent_speaking(false);
+                    }
                 }
-                emit_error(std::string("LLM failed: ") + ex.what());
-                state_.store(State::Idle);
+                emit_error(std::string("LLM failed: ") + ex.what(), generation);
+                if (is_current_turn(generation)) {
+                    state_.store(State::Idle);
+                }
                 return;
             }
 
             // If interrupted during LLM generation (state changed from
             // Thinking to Listening), discard the partial response.
             // agent_speaking_ was already reset by the interruption handler.
-            if (state_.load() != State::Thinking) {
+            if (!is_current_turn(generation)
+                || state_.load() != State::Thinking) {
                 return;
             }
         }
         break;
     }
 
+    if (!is_current_turn(generation)) return;
+
     if (!response_text.empty()) {
         context_.add_assistant_message(response_text);
-        speak(response_text, language, stt_duration_ms, llm_ms);
+        speak(response_text, language, stt_duration_ms, llm_ms, generation);
     } else {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            turn_detector_.set_agent_speaking(false);
+            if (is_current_turn(generation)) {
+                turn_detector_.set_agent_speaking(false);
+            }
         }
-        state_.store(State::Idle);
+        if (is_current_turn(generation)) {
+            state_.store(State::Idle);
+        }
     }
 }
 
-std::string VoicePipeline::call_llm_with_tools() {
+std::string VoicePipeline::call_llm_with_tools(uint64_t generation) {
+    if (!is_current_turn(generation)) return std::string();
+
     // Pass tool definitions to LLM if tools are registered
     if (tool_registry_.size() > 0) {
         llm_->set_tools(tool_registry_.tools());
@@ -507,24 +682,31 @@ std::string VoicePipeline::call_llm_with_tools() {
             accumulated += token;
         });
 
+    if (!is_current_turn(generation)) return std::string();
+
     // Handle tool calls from LLM
     if (!response.tool_calls.empty()) {
         for (const auto& tc : response.tool_calls) {
+            if (!is_current_turn(generation)) return std::string();
+
             // Emit tool call started
             PipelineEvent tool_started;
             tool_started.type = EventType::ToolCallStarted;
             tool_started.text = tc.name;
             on_event_(tool_started);
+            if (!is_current_turn(generation)) return std::string();
 
             // Find and execute the tool
             const auto* tool = tool_registry_.find(tc.name);
             if (tool) {
                 auto result = tool_executor_.execute(*tool);
+                if (!is_current_turn(generation)) return std::string();
 
                 PipelineEvent tool_completed;
                 tool_completed.type = EventType::ToolCallCompleted;
                 tool_completed.text = result.output;
                 on_event_(tool_completed);
+                if (!is_current_turn(generation)) return std::string();
 
                 // Inject tool result into conversation
                 context_.add_tool_message(tc.name,
@@ -539,7 +721,8 @@ std::string VoicePipeline::call_llm_with_tools() {
         // completion and its response would race with the now-cancelled
         // turn. process_utterance does check state_ post-return but only
         // AFTER the second chat() has already consumed an LLM call.
-        if (state_.load() != State::Thinking) {
+        if (!is_current_turn(generation)
+            || state_.load() != State::Thinking) {
             return std::string();
         }
 
@@ -551,24 +734,32 @@ std::string VoicePipeline::call_llm_with_tools() {
             });
     }
 
+    if (!is_current_turn(generation)) return std::string();
     return response.text.empty() ? accumulated : response.text;
 }
 
 void VoicePipeline::speak(const std::string& text, const std::string& language,
-                          float stt_duration_ms, float llm_duration_ms) {
-    state_.store(State::Speaking);
+                          float stt_duration_ms, float llm_duration_ms,
+                          uint64_t generation) {
+    if (!is_current_turn(generation)) return;
+
+    uint64_t speech_id;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!is_current_turn(generation)) return;
+        state_.store(State::Speaking);
         turn_detector_.set_agent_speaking(true);
+        speech_id = speech_queue_.enqueue(text);
+        speech_queue_.next();  // mark as playing
     }
 
-    uint64_t speech_id = speech_queue_.enqueue(text);
-    speech_queue_.next();  // mark as playing
+    if (!is_current_turn(generation)) return;
 
     PipelineEvent response_created;
     response_created.type = EventType::ResponseCreated;
     response_created.llm_duration_ms = llm_duration_ms;
     on_event_(response_created);
+    if (!is_current_turn(generation)) return;
 
     // Use detected language from STT if available, otherwise fall back to config
     const auto& tts_language = !language.empty() ? language : config_.language;
@@ -583,14 +774,17 @@ void VoicePipeline::speak(const std::string& text, const std::string& language,
 
         tts_.synthesize(text, tts_language,
             [this, speech_id, &total_samples, max_samples,
-             tts_start, stt_duration_ms, llm_duration_ms](
+             tts_start, stt_duration_ms, llm_duration_ms, generation](
                 const float* samples, size_t length, bool is_final) {
                 // Drop chunks if we've left Speaking (interruption, stop()).
                 // Some TTS impls don't honor cancel() promptly between chunks;
                 // without this guard, ResponseAudioDelta events keep firing
                 // after ResponseInterrupted, and AEC reference is fed audio
                 // the speaker never actually played.
-                if (state_.load() != State::Speaking) return;
+                if (!is_current_turn(generation)
+                    || state_.load() != State::Speaking) {
+                    return;
+                }
 
                 // Enforce max response duration to prevent TTS hallucination
                 size_t emit_length = length;
@@ -604,14 +798,21 @@ void VoicePipeline::speak(const std::string& text, const std::string& language,
                 if (emit_length > 0) {
                     // Feed TTS audio as far-end reference for echo cancellation
                     if (echo_canceller_) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (!is_current_turn(generation)
+                            || state_.load() != State::Speaking) {
+                            return;
+                        }
                         echo_canceller_->feed_reference(samples, emit_length);
                     }
+                    if (!is_current_turn(generation)) return;
 
                     auto pcm = PCMCodec::float_to_pcm16(samples, emit_length);
                     PipelineEvent audio_event;
                     audio_event.type = EventType::ResponseAudioDelta;
                     audio_event.audio_data = std::move(pcm);
                     on_event_(audio_event);
+                    if (!is_current_turn(generation)) return;
                 }
 
                 if (is_final || force_final) {
@@ -628,27 +829,40 @@ void VoicePipeline::speak(const std::string& text, const std::string& language,
                     on_event_(done);
 
                     // Stay in Speaking — platform owns playback timing
-                    if (force_final && !is_final) {
+                    if (force_final && !is_final
+                        && is_current_turn(generation)) {
                         tts_.cancel();  // Stop TTS if we hit the cap
                     }
                 }
             });
     } catch (const std::exception& ex) {
         speech_queue_.mark_done(speech_id);
-        {
+        if (is_current_turn(generation)) {
             std::lock_guard<std::mutex> lock(mutex_);
-            turn_detector_.set_agent_speaking(false);
+            if (is_current_turn(generation)) {
+                turn_detector_.set_agent_speaking(false);
+            }
         }
-        emit_error(std::string("TTS failed: ") + ex.what());
-        state_.store(State::Idle);
+        emit_error(std::string("TTS failed: ") + ex.what(), generation);
+        if (is_current_turn(generation)) {
+            state_.store(State::Idle);
+        }
     }
 }
 
-void VoicePipeline::emit_error(const std::string& message) {
+void VoicePipeline::emit_error(const std::string& message,
+                               uint64_t generation) {
+    if (!is_current_turn(generation)) return;
+
     PipelineEvent error;
     error.type = EventType::Error;
     error.text = message;
     on_event_(error);
+}
+
+bool VoicePipeline::is_current_turn(uint64_t generation) const {
+    return generation != 0
+        && turn_generation_.load(std::memory_order_acquire) == generation;
 }
 
 void VoicePipeline::cancel_loop() {
