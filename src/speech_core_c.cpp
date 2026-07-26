@@ -346,6 +346,10 @@ void sc_pipeline_stop(sc_pipeline_t pipeline) {
     if (pipeline) pipeline->pipeline->stop();
 }
 
+void sc_pipeline_cancel_current_turn(sc_pipeline_t pipeline) {
+    if (pipeline) pipeline->pipeline->cancel_current_turn();
+}
+
 void sc_pipeline_push_audio(sc_pipeline_t pipeline,
                             const float* samples, size_t count)
 {

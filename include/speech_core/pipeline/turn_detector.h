@@ -73,6 +73,12 @@ public:
     /// Reset all state (clears any active post-playback guard).
     void reset();
 
+    /// Reset for an independent audio-input session.
+    ///
+    /// Unlike reset(), this also discards the pre-speech ring and resets the
+    /// VAD model's recurrent state so audio cannot cross session boundaries.
+    void reset_for_new_stream();
+
     /// Whether the user is currently speaking.
     bool in_speech() const { return in_speech_; }
 

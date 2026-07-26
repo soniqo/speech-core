@@ -82,6 +82,24 @@ Five states with automatic transitions:
 | **Thinking** | LLM is generating a response | Speaking or Idle |
 | **Speaking** | TTS audio is being emitted / waiting for playback to finish | Idle (on resume_listening) or Listening (on interruption) |
 
+## Input Session Boundaries
+
+`stop()` and the next `start()` form a hard input-session boundary. Buffered
+turn-detector audio, the pre-speech ring, queued utterances, streaming STT
+state, and late results from the previous session are discarded.
+
+For long-lived pipelines, call `cancel_current_turn()` instead. It provides the
+same turn isolation without tearing down worker threads or reloading models:
+
+```cpp
+pipeline.cancel_current_turn();
+// The pipeline is still running and ready for audio from a new mic session.
+```
+
+Cancellation does not clear conversation context. It resets VAD and AEC input
+state, cancels STT/LLM/TTS on a best-effort basis, and uses a turn generation
+to prevent backends that ignore cancellation from emitting stale results.
+
 ## Turn Detection
 
 `TurnDetector` wraps a `VADInterface` + `StreamingVAD` hysteresis:
@@ -154,7 +172,8 @@ The pipeline emits events via the `EventCallback`:
 - `push_audio()` is mutex-protected — safe to call from any thread
 - STT/LLM/TTS run on a dedicated worker thread — `push_audio()` never blocks on inference
 - Events are emitted on the calling thread (push_audio events) or the worker thread (STT/TTS events) — platform dispatches to main thread as needed
-- `start()`/`stop()`/`resume_listening()` are mutex-protected
+- Lifecycle calls synchronize with audio and worker state; callers must not
+  invoke `start()` and `stop()` concurrently with each other
 - `resume_listening()` is non-blocking — post-playback guard is applied as a sample counter in the turn detector
 - State reads (`state()`, `is_running()`) are atomic — lock-free
 

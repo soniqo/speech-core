@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -79,10 +80,19 @@ public:
     State state() const { return state_.load(); }
 
     /// Start the pipeline (enables audio processing).
+    /// A start after stop begins with clean input/turn-detection state.
     void start();
 
-    /// Stop the pipeline (cancels any in-progress work).
+    /// Stop the pipeline, discarding buffered/queued input and cancelling
+    /// in-progress work.
     void stop();
+
+    /// Discard the active turn without tearing down worker threads or models.
+    ///
+    /// Clears buffered and queued input, invalidates in-progress STT/LLM/TTS
+    /// results, and resets turn detection for a new audio stream. Does not
+    /// clear ConversationContext.
+    void cancel_current_turn();
 
     /// Signal that response playback has finished.
     /// Transitions from Speaking back to Idle.
@@ -138,6 +148,7 @@ private:
         std::vector<float> audio;
         float time;
         bool eager = false;  // true if from eager STT (agent_speaking_ not set)
+        uint64_t generation = 0;
     };
     std::thread worker_thread_;
     std::mutex worker_mutex_;
@@ -145,7 +156,10 @@ private:
     std::condition_variable worker_idle_cv_;  // signaled when worker finishes processing
     std::vector<PendingUtterance> pending_utterances_;
     std::atomic<bool> worker_busy_{false};
-    std::atomic<bool> eager_invalidated_{false};  // set when SpeechResumed discards an eager utterance
+    bool worker_reset_requested_ = false;  // protected by worker_mutex_
+    std::atomic<uint64_t> turn_generation_{1};
+    // Generation whose eager utterance should be discarded after SpeechResumed.
+    std::atomic<uint64_t> eager_invalidated_generation_{0};
 
     // Cancel dispatcher — keeps tts_.cancel() / llm_->cancel() off the
     // audio thread so push_audio is not stalled by slow third-party
@@ -163,12 +177,16 @@ private:
     void worker_loop();
     void cancel_loop();
     void on_turn_event(const TurnEvent& event);
-    void process_utterance(const std::string& transcript, const std::string& language = "",
-                           float stt_duration_ms = 0.0f);
-    void speak(const std::string& text, const std::string& language = "",
-               float stt_duration_ms = 0.0f, float llm_duration_ms = 0.0f);
-    void emit_error(const std::string& message);
-    std::string call_llm_with_tools();
+    void process_utterance(const std::string& transcript,
+                           const std::string& language,
+                           float stt_duration_ms,
+                           uint64_t generation);
+    void speak(const std::string& text, const std::string& language,
+               float stt_duration_ms, float llm_duration_ms,
+               uint64_t generation);
+    void emit_error(const std::string& message, uint64_t generation);
+    std::string call_llm_with_tools(uint64_t generation);
+    bool is_current_turn(uint64_t generation) const;
 };
 
 }  // namespace speech_core
