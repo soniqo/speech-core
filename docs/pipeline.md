@@ -57,6 +57,16 @@ configuration closes a paragraph after 550 ms of silence, retains 200 ms of
 pre/post-roll, first publishes continuous speech at ten seconds, and then
 revises a rolling window capped at twenty seconds.
 
+When MOSS returns paragraph text with no speaker activity, the track decodes
+again with extra source-local audio. Whether that retry still says what the
+paragraph said is application policy, so the track asks the caller:
+`Config::activity_recovery_compatible` judges a retry over the same audio, and
+`Config::following_recovery_compatible` a retry whose speaker-marked text runs
+on past the paragraph. Both receive flattened text; the structural
+preconditions stay in the engine. Leave either unset and that retry is
+rejected — the original paragraph publishes unchanged. There is no default
+rule.
+
 `MeetingTrackEvent::Preview` is non-durable text. A
 `MeetingTrackEvent::Revision` supplies an exact source-local replacement
 interval and authoritative blocks. MOSS activity labels remain scoped to that

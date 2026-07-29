@@ -1,7 +1,13 @@
 #include "speech_core/pipeline/meeting_transcription_track.h"
 
+// CI configures Release and RelWithDebInfo, both of which define NDEBUG, so
+// every assertion below would otherwise compile away and the file would pass
+// without checking anything.
+#undef NDEBUG
+
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -208,6 +214,46 @@ public:
 private:
     int sample_rate_;
 };
+
+std::vector<std::string> lowercase_words(const std::string& text) {
+    std::vector<std::string> result;
+    std::string token;
+    for (const char value : text) {
+        if (std::isspace(static_cast<unsigned char>(value))) {
+            if (!token.empty()) {
+                result.push_back(token);
+                token.clear();
+            }
+            continue;
+        }
+        token.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(value))));
+    }
+    if (!token.empty()) result.push_back(token);
+    return result;
+}
+
+// Stands in for the application policy the engine no longer owns. A retry over
+// the same audio has to repeat the paragraph, so this rule is symmetric.
+bool retry_repeats_paragraph(
+    const std::string& original, const std::string& recovered) {
+    const auto original_words = lowercase_words(original);
+    return !original_words.empty()
+        && original_words == lowercase_words(recovered);
+}
+
+// Stands in for the application policy for a retry whose speaker-marked text
+// runs on past the paragraph: the paragraph's words have to open it.
+bool activity_opens_with_paragraph(
+    const std::string& original, const std::string& activity) {
+    const auto original_words = lowercase_words(original);
+    const auto activity_words = lowercase_words(activity);
+    return !original_words.empty()
+        && activity_words.size() >= original_words.size()
+        && std::equal(
+            original_words.begin(), original_words.end(),
+            activity_words.begin());
+}
 
 speech_core::DiarizedTranscriptionResult moss_result(
     std::string text,
@@ -517,6 +563,7 @@ void test_preceding_speech_recovers_activity_without_inheritance() {
     speech_core::MeetingTranscriptionTrack::Config config;
     config.sample_rate = sample_rate;
     config.silence_close_seconds = 0.5f;
+    config.activity_recovery_compatible = retry_repeats_paragraph;
     speech_core::MeetingTranscriptionTrack track(
         preview, moss, vad, config,
         [&](const speech_core::MeetingTrackEvent& event) {
@@ -544,6 +591,65 @@ void test_preceding_speech_recovers_activity_without_inheritance() {
         }));
 }
 
+// The engine still re-decodes with preceding context, but with no caller rule
+// it has nothing to judge the retry by, so the paragraph publishes as it was.
+void test_activity_recovery_without_policy_keeps_original() {
+    constexpr int sample_rate = 1000;
+    constexpr std::size_t chunk = 100;
+    FakeVad vad(sample_rate, chunk);
+    FakePreview preview(sample_rate, "yes");
+    ScriptedMoss moss(
+        sample_rate,
+        {
+            moss_result(
+                "first paragraph",
+                {{0.0f, 1.0f, "S01", "first paragraph"}}),
+            moss_result("yes"),
+            moss_result(
+                "yes",
+                {{1.5f, 2.5f, "S02", "yes"}}),
+        });
+    std::mutex event_mutex;
+    std::vector<speech_core::MeetingTrackEvent> events;
+    speech_core::MeetingTranscriptionTrack::Config config;
+    config.sample_rate = sample_rate;
+    config.silence_close_seconds = 0.5f;
+    speech_core::MeetingTranscriptionTrack track(
+        preview, moss, vad, config,
+        [&](const speech_core::MeetingTrackEvent& event) {
+            std::lock_guard<std::mutex> lock(event_mutex);
+            events.push_back(event);
+        });
+
+    push_chunks(track, sample_rate, 10, 5, chunk);
+    track.wait_idle();
+    push_chunks(
+        track, sample_rate, 10, 5, chunk,
+        2'500'000'000);
+    track.wait_idle();
+
+    const auto captured = events_with_lock(event_mutex, events);
+    assert(moss.call_count() == 3);
+    assert(std::any_of(
+        captured.begin(), captured.end(),
+        [](const auto& event) {
+            return event.type
+                    == speech_core::MeetingTrackEventType::Revision
+                && event.blocks.size() == 1
+                && event.blocks[0].text == "yes"
+                && event.blocks[0].activity_label.empty();
+        }));
+    assert(std::none_of(
+        captured.begin(), captured.end(),
+        [](const auto& event) {
+            return std::any_of(
+                event.blocks.begin(), event.blocks.end(),
+                [](const auto& block) {
+                    return block.activity_label == "S02";
+                });
+        }));
+}
+
 void test_following_speech_backfills_only_compatible_fragment() {
     constexpr int sample_rate = 1000;
     constexpr std::size_t chunk = 100;
@@ -568,6 +674,8 @@ void test_following_speech_backfills_only_compatible_fragment() {
     speech_core::MeetingTranscriptionTrack::Config config;
     config.sample_rate = sample_rate;
     config.silence_close_seconds = 0.5f;
+    config.following_recovery_compatible =
+        activity_opens_with_paragraph;
     speech_core::MeetingTranscriptionTrack track(
         preview, moss, vad, config,
         [&](const speech_core::MeetingTrackEvent& event) {
@@ -623,6 +731,8 @@ void test_following_speech_does_not_guess_from_mismatched_text() {
     speech_core::MeetingTranscriptionTrack::Config config;
     config.sample_rate = sample_rate;
     config.silence_close_seconds = 0.5f;
+    config.following_recovery_compatible =
+        activity_opens_with_paragraph;
     speech_core::MeetingTranscriptionTrack track(
         preview, moss, vad, config,
         [&](const speech_core::MeetingTrackEvent& event) {
@@ -649,6 +759,62 @@ void test_following_speech_does_not_guess_from_mismatched_text() {
         }));
 }
 
+// Same retry, no caller rule: the fragment keeps the unlabelled form it was
+// first published with and is never republished with a borrowed label.
+void test_following_recovery_without_policy_keeps_original() {
+    constexpr int sample_rate = 1000;
+    constexpr std::size_t chunk = 100;
+    FakeVad vad(sample_rate, chunk);
+    FakePreview preview(sample_rate, "yes");
+    ScriptedMoss moss(
+        sample_rate,
+        {
+            moss_result("yes"),
+            moss_result(
+                "current words",
+                {{0.2f, 1.2f, "S02", "current words"}}),
+            moss_result(
+                "yes current words",
+                {
+                    {0.0f, 1.0f, "S01", "yes"},
+                    {1.5f, 2.5f, "S02", "current words"},
+                }),
+        });
+    std::mutex event_mutex;
+    std::vector<speech_core::MeetingTrackEvent> events;
+    speech_core::MeetingTranscriptionTrack::Config config;
+    config.sample_rate = sample_rate;
+    config.silence_close_seconds = 0.5f;
+    speech_core::MeetingTranscriptionTrack track(
+        preview, moss, vad, config,
+        [&](const speech_core::MeetingTrackEvent& event) {
+            std::lock_guard<std::mutex> lock(event_mutex);
+            events.push_back(event);
+        });
+
+    push_chunks(track, sample_rate, 10, 5, chunk);
+    track.wait_idle();
+    push_chunks(
+        track, sample_rate, 10, 5, chunk,
+        2'500'000'000);
+    track.wait_idle();
+
+    const auto captured = events_with_lock(event_mutex, events);
+    assert(moss.call_count() == 3);
+    std::size_t matching_revisions = 0;
+    for (const auto& event : captured) {
+        if (event.type
+                != speech_core::MeetingTrackEventType::Revision
+            || event.blocks.size() != 1
+            || event.blocks[0].text != "yes") {
+            continue;
+        }
+        ++matching_revisions;
+        assert(event.blocks[0].activity_label.empty());
+    }
+    assert(matching_revisions == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -660,8 +826,10 @@ int main() {
     test_continuous_windows_are_bounded();
     test_continuous_windows_consume_identity_audio_once();
     test_preceding_speech_recovers_activity_without_inheritance();
+    test_activity_recovery_without_policy_keeps_original();
     test_following_speech_backfills_only_compatible_fragment();
     test_following_speech_does_not_guess_from_mismatched_text();
+    test_following_recovery_without_policy_keeps_original();
     std::cout << "Meeting transcription track tests passed\n";
     return 0;
 }
