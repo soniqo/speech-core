@@ -245,37 +245,6 @@ bool short_microphone_agrees(
     return contains_contiguous(preview_tokens, result_tokens);
 }
 
-double text_similarity(
-    const std::vector<std::string>& left,
-    const std::vector<std::string>& right) {
-    if (left.empty() || right.empty()) return 0.0;
-    std::vector<std::size_t> previous(right.size() + 1, 0);
-    for (const auto& left_word : left) {
-        std::vector<std::size_t> current(
-            right.size() + 1, 0);
-        for (std::size_t index = 0;
-             index < right.size(); ++index) {
-            current[index + 1] =
-                left_word == right[index]
-                ? previous[index] + 1
-                : std::max(
-                    previous[index + 1], current[index]);
-        }
-        previous = std::move(current);
-    }
-    return static_cast<double>(previous.back())
-        / static_cast<double>(
-            std::max(left.size(), right.size()));
-}
-
-bool activity_recovery_compatible(
-    const std::string& original,
-    const std::string& recovered) {
-    return text_similarity(
-        normalized_tokens(original),
-        normalized_tokens(recovered)) >= 0.60;
-}
-
 double elapsed_ms(const Clock::time_point& started) {
     return std::chrono::duration<double, std::milli>(
         Clock::now() - started).count();
@@ -931,8 +900,12 @@ private:
                 if (!current_text.empty()) current_text.push_back(' ');
                 current_text += segment.text;
             }
+            // Whether the retry still says what the paragraph said is the
+            // caller's rule. With no rule installed the retry is rejected and
+            // the original paragraph publishes unchanged.
             if (!current_segments.empty()
-                && activity_recovery_compatible(
+                && config.activity_recovery_compatible
+                && config.activity_recovery_compatible(
                     current_text, result.text)) {
                 const double shift = static_cast<double>(
                     request.audio_start_sample
@@ -1070,12 +1043,18 @@ private:
             });
     }
 
-    static bool following_recovery_compatible(
+    // Shape is the engine's business: the paragraph must still be missing
+    // activity, the retry must have some, and the marked text must be at
+    // least as long as the paragraph it is meant to cover. Whether the two
+    // agree is the caller's, and with no rule installed the retry is rejected
+    // so the original paragraph publishes unchanged.
+    bool following_recovery_compatible(
         const std::vector<MeetingTranscriptBlock>& original,
-        const std::vector<MeetingTranscriptBlock>& recovered) {
+        const std::vector<MeetingTranscriptBlock>& recovered) const {
         if (original.empty()
             || blocks_contain_activity(original)
-            || !blocks_contain_activity(recovered)) {
+            || !blocks_contain_activity(recovered)
+            || !config.following_recovery_compatible) {
             return false;
         }
         std::string original_text;
@@ -1102,13 +1081,8 @@ private:
                 < original_words.size()) {
             return false;
         }
-        const std::vector<std::string> prefix(
-            activity_words.begin(),
-            activity_words.begin()
-                + static_cast<std::ptrdiff_t>(
-                    original_words.size()));
-        return text_similarity(
-            original_words, prefix) >= 0.80;
+        return config.following_recovery_compatible(
+            original_text, activity_text);
     }
 
     std::optional<MeetingTrackEvent>

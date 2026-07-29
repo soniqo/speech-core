@@ -67,6 +67,31 @@ public:
         /// Microphone keeps MOSS text/timing but discards activity labels and
         /// gates sub-400 ms results on independent preview agreement.
         bool microphone = false;
+
+        /// Whether a retry over the SAME audio may supply this paragraph's
+        /// speaker activity. Both decodes heard the same speech, so the
+        /// caller's rule should be symmetric.
+        ///
+        /// Deciding whether a re-decode still says what the paragraph said is
+        /// application policy, not engine mechanics: it is a judgement about
+        /// the product's transcripts and it carries a measured threshold the
+        /// engine cannot own. When this is unset the retry is REJECTED and the
+        /// original paragraph is published unchanged. There is deliberately no
+        /// default rule — an engine that has not been told how to judge a
+        /// re-decode should not judge it. Do not restore one.
+        std::function<bool(const std::string& original,
+                           const std::string& recovered)>
+            activity_recovery_compatible;
+
+        /// Whether a retry's speaker-marked text may supply a pending
+        /// paragraph's activity when the marked segment runs on past it.
+        ///
+        /// Same ownership and the same default: unset REJECTS the retry and
+        /// the original paragraph is published unchanged. Do not restore a
+        /// default rule here either.
+        std::function<bool(const std::string& original,
+                           const std::string& activity)>
+            following_recovery_compatible;
     };
 
     using EventCallback = std::function<void(const MeetingTrackEvent&)>;
