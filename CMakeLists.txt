@@ -161,6 +161,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/localvqe/onnx_localvqe_echo_canceller.cpp
         src/models/personaplex/onnx_personaplex.cpp
         src/models/whisper/onnx_whisper_stt.cpp
+        src/models/canary/onnx_canary_stt.cpp
         src/models/pyannote/onnx_pyannote_segmentation.cpp
         src/models/redimnet/onnx_redimnet_speaker_embedding.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp

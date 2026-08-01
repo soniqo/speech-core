@@ -9,6 +9,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` | full |
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
 | `OnnxWhisperStt` | `STTInterface` | `speech_core/models/onnx_whisper_stt.h` | full |
+| `OnnxCanaryStt` | `STTInterface` | `speech_core/models/onnx_canary_stt.h` | full (offline, en/de/es/fr) |
 | `KokoroTts` | `TTSInterface` | `speech_core/models/kokoro_tts.h` | full |
 | `OnnxPocketTts` | `TTSInterface` | `speech_core/models/onnx_pocket_tts.h` | full (80 ms frame streaming, fixed Alba voice) |
 | `DeepFilterEnhancer` | `EnhancerInterface` | `speech_core/models/deepfilter.h` | full |
@@ -293,6 +294,34 @@ scripts/download_whisper_onnx.sh medium fp16
   [soniqo/Whisper-Medium-ONNX](https://huggingface.co/soniqo/Whisper-Medium-ONNX),
   [soniqo/Whisper-Large-v3-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-ONNX),
   [soniqo/Whisper-Large-v3-Turbo-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX).
+
+## OnnxCanaryStt
+
+```cpp
+#include <speech_core/models/onnx_canary_stt.h>
+
+speech_core::OnnxCanaryStt stt(
+    "/models/canary-180m-flash/canary-encoder-int8.onnx",
+    "/models/canary-180m-flash/canary-decoder-int8.onnx",
+    "/models/canary-180m-flash/vocab.json");
+
+auto result = stt.transcribe(audio, length, 16000);
+```
+
+- NVIDIA Canary 180M Flash (NeMo Conformer-AED): FastConformer encoder plus an autoregressive Transformer decoder. English, German, Spanish and French, with punctuation and capitalisation.
+- Offline per utterance. The encoder consumes the whole segment before the first token appears, so there is no streaming mode and no partial-result hook — which suits the VAD-segmented pipeline, where STT already receives a complete utterance.
+- The front end is the same NeMo contract `ParakeetStt` uses; both encoders are trained by the same `AudioToMelSpectrogramPreprocessor`. Using the unparameterised `mel_spectrogram` defaults instead costs +0.3 WER en, +0.6 de and +2.0 fr on FLEURS.
+- The decode contract — prompt token ids, decoder cache dimensions, end-of-text id — is read from the decoder graph's ONNX metadata at construction, so the wrapper never resolves a control token by string. That matters here: the vocabulary has no bare-space token (word boundaries are U+2581) and the aggregate tokenizer repeats ordinary pieces once per sub-tokenizer, so a string lookup can silently return the wrong id or none. A missing prompt token produces fluent text that stops after two words or repeats a fragment, which reads like a cache bug rather than a bad prompt.
+- `set_language("de")` switches the source language between utterances; `set_target_language()` differing from the source requests translation. Both return false if the bundle has no token for the code.
+- `confidence` is `exp(mean log p)` over the emitted tokens — the bundle keeps the model's log-softmax head and declares it in metadata.
+- FLEURS, INT8, ONNX Runtime on CPU: 9.2% WER en, 7.2% de, 10.4% fr at RTF 0.02–0.03, holding ~920 MB peak for the 273 MB INT8 pair.
+
+```bash
+scripts/download_canary_onnx.sh int8
+scripts/download_canary_onnx.sh fp32
+```
+
+- Model files: [soniqo/Canary-180M-Flash-ONNX](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) — `canary-encoder-int8.onnx` + `canary-decoder-int8.onnx` (273 MB) or the FP32 pair (778 MB), plus `vocab.json` and `config.json`.
 
 ## LiteRTSileroVad
 

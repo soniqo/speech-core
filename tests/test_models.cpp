@@ -21,6 +21,7 @@
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/models/onnx_cosyvoice3_tts.h"
 #include "speech_core/models/onnx_whisper_stt.h"
+#include "speech_core/models/onnx_canary_stt.h"
 #include "speech_core/models/onnx_sidon_restorer.h"
 #include "speech_core/models/onnx_voxcpm2_tts.h"
 #include "speech_core/models/onnx_personaplex.h"
@@ -380,6 +381,59 @@ void test_onnx_whisper_stt(const std::string& dir) {
 
     std::printf("ok (silence text=\"%.40s\" lang=%s)\n",
                 result.text.c_str(), result.language.c_str());
+}
+
+// ---------------------------------------------------------------------------
+
+void test_onnx_canary_stt(const std::string& dir) {
+    const char* override_dir = std::getenv("SPEECH_CANARY_ONNX_DIR");
+    std::string root = override_dir ? override_dir : dir + "/canary-180m-flash";
+
+    struct Candidate { const char* suffix; };
+    const Candidate candidates[] = {{"-int8"}, {""}};
+
+    std::string enc;
+    std::string dec;
+    const std::string vocab = root + "/vocab.json";
+    for (const auto& c : candidates) {
+        std::string e = root + "/canary-encoder" + c.suffix + ".onnx";
+        std::string d = root + "/canary-decoder" + c.suffix + ".onnx";
+        if (file_exists(e) && file_exists(d) && file_exists(vocab)) {
+            enc = std::move(e);
+            dec = std::move(d);
+            break;
+        }
+    }
+    if (enc.empty()) {
+        std::printf("  [skip] canary ONNX bundle not in %s\n", root.c_str());
+        return;
+    }
+
+    std::printf("  test_onnx_canary_stt ... ");
+    speech_core::OnnxCanaryStt::Config cfg;
+    cfg.max_decode_tokens = 8;
+    speech_core::OnnxCanaryStt stt(enc, dec, vocab, cfg, /*hw_accel=*/false);
+    REQUIRE(stt.input_sample_rate() == 16000);
+
+    // The decode contract comes from graph metadata, so a bundle that lost it
+    // would have thrown in the constructor above. These check the parts the
+    // wrapper drives itself.
+    REQUIRE(stt.set_language("de"));
+    REQUIRE(stt.set_target_language("en"));
+    REQUIRE(!stt.set_language("zz"));
+    REQUIRE(stt.set_language("en"));
+
+    std::vector<float> silence(16000, 0.0f);
+    auto result = stt.transcribe(silence.data(), silence.size(), 16000);
+    REQUIRE(result.confidence >= 0.0f && result.confidence <= 1.0f);
+
+    // A non-16 kHz caller must be resampled rather than dropped.
+    std::vector<float> resampled(48000, 0.0f);
+    auto converted = stt.transcribe(resampled.data(), resampled.size(), 48000);
+    REQUIRE(converted.confidence >= 0.0f && converted.confidence <= 1.0f);
+
+    std::printf("ok (silence text=\"%.40s\" conf=%.3f)\n",
+                result.text.c_str(), result.confidence);
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1302,7 @@ int main() {
     RUN(test_silero_vad_real_speech);
     RUN(test_parakeet_stt);
     RUN(test_onnx_whisper_stt);
+    RUN(test_onnx_canary_stt);
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
     RUN(test_kokoro_short_turn_profile);
