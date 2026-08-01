@@ -41,7 +41,12 @@ download() {
     return
   fi
   echo "download ${REPO}/${name}"
-  if ! curl -L --fail --retry 3 "${AUTH_ARGS[@]}" -o "${out}.part" "$url"; then
+  # Expanding an empty array is an "unbound variable" error under set -u in
+  # bash 3.2, which is what /bin/bash still is on macOS — so without HF_TOKEN
+  # set, this script used to die on its first download. The +"${...}" form
+  # expands to nothing instead.
+  if ! curl -L --fail --retry 3 ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
+       -o "${out}.part" "$url"; then
     rm -f "${out}.part"
     if [ "$required" = "1" ]; then
       exit 1
