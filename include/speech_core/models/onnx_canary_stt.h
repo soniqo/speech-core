@@ -4,6 +4,7 @@
 
 #include <onnxruntime_c_api.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -19,15 +20,25 @@ namespace speech_core {
 /// encoder consumes the whole segment, then tokens are decoded one at a time.
 /// There is no streaming mode and no partial-result hook.
 ///
-/// The front end is the same NeMo contract Parakeet uses — pre-emphasis,
-/// 128-bin log-mel at 512/160/400, then per-feature normalisation — because
-/// both are FastConformer encoders trained by the same preprocessor.
+/// The front end is the NeMo contract Parakeet also uses — pre-emphasis,
+/// 128-bin log-mel at 512/160/400, centred constant-padded STFT with a
+/// symmetric Hann window, Slaney bank, log(x + 2^-24), then per-feature
+/// normalisation over the sample variance — because both are FastConformer
+/// encoders trained by the same AudioToMelSpectrogramPreprocessor.
 ///
-/// Expects the ONNX export published for onnx-asr (istupakov/canary-*-onnx):
-///   encoder: audio_signal[1,128,T] int64 length[1]
-///            -> encoder_embeddings, encoder_mask
+/// Expects the bundle published at soniqo/Canary-180M-Flash-ONNX:
+///   encoder: audio_signal[1,128,T] float, length[1] int64
+///            -> encoder_embeddings[1,T',H], encoder_mask[1,T']
 ///   decoder: input_ids, encoder_embeddings, encoder_mask, decoder_mems
-///            -> logits, decoder_hidden_states
+///            -> logits (log-probabilities, newest position only),
+///               decoder_hidden_states
+///
+/// The decode contract — prompt token ids, decoder cache dimensions, the
+/// end-of-text id — comes from the decoder graph's ONNX metadata rather than
+/// from token-string lookups or input-shape probing. Both of those are
+/// silent-failure paths: a prompt token that resolves to -1 makes the decoder
+/// emit fluent text that stops after two words or repeats a fragment, which
+/// reads like a cache bug.
 class OnnxCanaryStt : public STTInterface {
 public:
     struct Config {
@@ -42,8 +53,6 @@ public:
         std::string language = "en";
         /// Target language. Differing from [language] requests translation.
         std::string target_language = "en";
-        /// Emit punctuation and capitalisation.
-        bool punctuation = true;
 
         /// Decoding stops here even if the model never emits end-of-text,
         /// which a damaged export or pathological audio can cause.
@@ -68,19 +77,25 @@ public:
 
     int input_sample_rate() const override { return cfg_.sample_rate; }
 
-    /// Change the source language prompt token between utterances. Returns
-    /// false if the token is not in the vocabulary.
+    /// Stop the decode loop at the next token. Thread-safe.
+    void cancel() override;
+
+    /// Change the source language between utterances. Returns false if the
+    /// bundle has no prompt token for it.
     bool set_language(const std::string& language);
+
+    /// Change the target language; differing from the source requests
+    /// translation. Returns false if the bundle has no prompt token for it.
+    bool set_target_language(const std::string& language);
 
 private:
     void load_vocab(const std::string& path);
+    void load_decode_contract();
+
     std::vector<float> compute_features(const float* audio, size_t length) const;
 
-    /// The ten control tokens Canary expects before any transcript.
+    /// The bundle's decode prompt with the configured language pair patched in.
     std::vector<int64_t> build_prompt() const;
-
-    /// Token id for a control token such as "<|en|>", or -1 if absent.
-    int64_t token_id(const std::string& token) const;
 
     /// SentencePiece pieces to text: "▁" marks a word boundary.
     std::string detokenize(const std::vector<int64_t>& ids) const;
@@ -90,14 +105,20 @@ private:
     OrtSession* decoder_ = nullptr;
     const OrtApi* api_ = nullptr;
 
-    std::vector<std::string> id_to_token_;
-    std::unordered_map<std::string, int64_t> token_to_id_;
-    int64_t eos_id_ = -1;
+    std::unordered_map<int64_t, std::string> vocab_;
+    /// Language code to prompt token id, e.g. "de" -> 76.
+    std::unordered_map<std::string, int64_t> language_tokens_;
 
-    /// Layer count and hidden width of decoder_mems, read from the export so
-    /// the initial empty cache matches whatever model was loaded.
+    /// Decode contract, read from the decoder graph's metadata.
+    std::vector<int64_t> prompt_template_;
+    size_t prompt_source_index_ = 0;
+    size_t prompt_target_index_ = 0;
+    int64_t eos_id_ = -1;
     int64_t mem_layers_ = 0;
     int64_t mem_width_ = 0;
+    bool logits_are_log_probs_ = false;
+
+    std::atomic<bool> cancelled_{false};
 };
 
 }  // namespace speech_core
