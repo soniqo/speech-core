@@ -4,8 +4,10 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -13,6 +15,14 @@
 #include <vector>
 
 using namespace speech_core;
+
+#define REGRESSION_REQUIRE(condition) do {                                  \
+    if (!(condition)) {                                                      \
+        std::fprintf(stderr, "Regression check failed: %s (%s:%d)\n",       \
+                     #condition, __FILE__, __LINE__);                        \
+        std::abort();                                                        \
+    }                                                                        \
+} while (false)
 
 // ---------------------------------------------------------------------------
 // Mock implementations
@@ -37,6 +47,69 @@ public:
     bool should_throw = false;
 };
 
+class BlockingSTT : public STTInterface {
+public:
+    TranscriptionResult transcribe(
+        const float* /*audio*/, size_t /*length*/, int /*sample_rate*/) override
+    {
+        const int call = ++call_count;
+        if (call == 1) {
+            std::unique_lock<std::mutex> lock(mutex);
+            first_call_started = true;
+            cv.notify_all();
+            cv.wait(lock, [this] { return release_first_call; });
+        }
+        return {"utterance " + std::to_string(call), "", 1.0f, 0.0f, 1.0f};
+    }
+
+    int input_sample_rate() const override { return 16000; }
+
+    void cancel() override { ++cancel_count; }
+
+    void wait_for_first_call() {
+        std::unique_lock<std::mutex> lock(mutex);
+        const bool started = cv.wait_for(
+            lock, std::chrono::seconds(2),
+            [this] { return first_call_started; });
+        REGRESSION_REQUIRE(started);
+    }
+
+    void release_first() {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_first_call = true;
+        cv.notify_all();
+    }
+
+    std::atomic<int> call_count{0};
+    std::atomic<int> cancel_count{0};
+
+private:
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool first_call_started = false;
+    bool release_first_call = false;
+};
+
+class InspectingSTT : public STTInterface {
+public:
+    TranscriptionResult transcribe(
+        const float* audio, size_t length, int /*sample_rate*/) override
+    {
+        ++call_count;
+        for (size_t i = 0; i < length; ++i) {
+            saw_old_audio = saw_old_audio || audio[i] == 0.25f;
+            saw_new_audio = saw_new_audio || audio[i] == 0.75f;
+        }
+        return {"new session", "", 1.0f, 0.0f, 1.0f};
+    }
+
+    int input_sample_rate() const override { return 16000; }
+
+    int call_count = 0;
+    bool saw_old_audio = false;
+    bool saw_new_audio = false;
+};
+
 class MockTTS : public TTSInterface {
 public:
     std::string last_text;
@@ -54,10 +127,10 @@ public:
     }
 
     int output_sample_rate() const override { return 24000; }
-    void cancel() override { cancelled = true; }
+    void cancel() override { cancelled.store(true); }
 
     bool should_throw = false;
-    bool cancelled = false;
+    std::atomic<bool> cancelled{false};
 };
 
 class MockLLM : public LLMInterface {
@@ -81,10 +154,10 @@ public:
         return r;
     }
 
-    void cancel() override { cancelled = true; }
+    void cancel() override { cancelled.store(true); }
 
     bool should_throw = false;
-    bool cancelled = false;
+    std::atomic<bool> cancelled{false};
 };
 
 class MockVAD : public VADInterface {
@@ -92,13 +165,17 @@ public:
     // Queue of probabilities to return
     std::vector<float> probs;
     size_t prob_index = 0;
+    std::atomic<int> reset_count{0};
 
     float process_chunk(const float* /*samples*/, size_t /*length*/) override {
         if (prob_index < probs.size()) return probs[prob_index++];
         return 0.0f;
     }
 
-    void reset() override { prob_index = 0; }
+    void reset() override {
+        ++reset_count;
+        prob_index = 0;
+    }
     int input_sample_rate() const override { return 16000; }
     size_t chunk_size() const override { return 512; }
 };
@@ -1294,6 +1371,265 @@ void test_stop_during_processing() {
     assert(ms < 1000);
 
     printf("  PASS: stop_during_processing\n");
+}
+
+// Regression #120: stop()/start() must create a hard audio-session boundary.
+// The first session stops during speech, before VAD emits SpeechEnded. The next
+// session must not transcribe samples retained from the first detector buffer.
+void test_stop_start_discards_open_utterance() {
+    InspectingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+    config.vad.pre_speech_buffer_duration = 0.0f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f};
+    pipeline.start();
+    std::vector<float> old_audio(vad.probs.size() * 512, 0.25f);
+    pipeline.push_audio(old_audio.data(), old_audio.size());
+    pipeline.stop();
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    pipeline.start();
+    std::vector<float> new_audio(vad.probs.size() * 512, 0.75f);
+    pipeline.push_audio(new_audio.data(), new_audio.size());
+    pipeline.wait_idle();
+
+    REGRESSION_REQUIRE(stt.call_count == 1);
+    REGRESSION_REQUIRE(stt.saw_new_audio);
+    REGRESSION_REQUIRE(!stt.saw_old_audio);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 1);
+
+    pipeline.stop();
+    printf("  PASS: stop_start_discards_open_utterance\n");
+}
+
+// Regression #120: an utterance still in pending_utterances_ at shutdown must
+// not be picked up by the worker created by the next start().
+void test_stop_start_discards_queued_utterance() {
+    BlockingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    auto first = make_audio(vad.probs.size());
+    pipeline.push_audio(first.data(), first.size());
+    stt.wait_for_first_call();
+
+    // Queue a second complete utterance while the worker owns the first.
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    auto second = make_audio(vad.probs.size());
+    pipeline.push_audio(second.data(), second.size());
+
+    std::thread stopper([&pipeline] { pipeline.stop(); });
+    while (pipeline.is_running()) std::this_thread::yield();
+    stt.release_first();
+    stopper.join();
+
+    const size_t before_restart =
+        log.count(EventType::TranscriptionCompleted);
+
+    // No audio is submitted in this session. A new transcript can only have
+    // come from the previous session's pending queue.
+    pipeline.start();
+    pipeline.wait_idle();
+    REGRESSION_REQUIRE(
+        log.count(EventType::TranscriptionCompleted) == before_restart);
+
+    pipeline.stop();
+    printf("  PASS: stop_start_discards_queued_utterance\n");
+}
+
+// Regression #120: stop() promises to cancel in-progress work. A batch STT
+// result that returns while stop() is joining the worker must not be emitted.
+void test_stop_invalidates_inflight_batch_stt() {
+    BlockingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    pipeline.start();
+    auto audio = make_audio(vad.probs.size());
+    pipeline.push_audio(audio.data(), audio.size());
+    stt.wait_for_first_call();
+
+    std::thread stopper([&pipeline] { pipeline.stop(); });
+    while (pipeline.is_running()) std::this_thread::yield();
+    stt.release_first();
+    stopper.join();
+
+    REGRESSION_REQUIRE(stt.cancel_count.load() == 1);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 0);
+    printf("  PASS: stop_invalidates_inflight_batch_stt\n");
+}
+
+// Regression #120: a caller must be able to discard an open utterance and
+// begin a clean input session without stopping or recreating model workers.
+void test_cancel_current_turn_discards_open_utterance() {
+    InspectingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+    config.vad.pre_speech_buffer_duration = 0.0f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f};
+    pipeline.start();
+    std::vector<float> old_audio(vad.probs.size() * 512, 0.25f);
+    pipeline.push_audio(old_audio.data(), old_audio.size());
+
+    pipeline.cancel_current_turn();
+    REGRESSION_REQUIRE(pipeline.is_running());
+    REGRESSION_REQUIRE(pipeline.state() == VoicePipeline::State::Idle);
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    std::vector<float> new_audio(vad.probs.size() * 512, 0.75f);
+    pipeline.push_audio(new_audio.data(), new_audio.size());
+    pipeline.wait_idle();
+
+    REGRESSION_REQUIRE(stt.call_count == 1);
+    REGRESSION_REQUIRE(stt.saw_new_audio);
+    REGRESSION_REQUIRE(!stt.saw_old_audio);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 1);
+
+    pipeline.stop();
+    printf("  PASS: cancel_current_turn_discards_open_utterance\n");
+}
+
+// A normal TurnDetector reset intentionally retains pre-speech audio and VAD
+// model state. An independent input session must clear/reset both.
+void test_cancel_current_turn_hard_resets_input_state() {
+    InspectingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+    config.vad.pre_speech_buffer_duration = 0.1f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+    const int resets_after_start = vad.reset_count.load();
+
+    // Silence from the discarded session lives only in pre_speech_ring_.
+    vad.probs = {0.0f, 0.0f, 0.0f};
+    std::vector<float> old_silence(vad.probs.size() * 512, 0.25f);
+    pipeline.push_audio(old_silence.data(), old_silence.size());
+
+    pipeline.cancel_current_turn();
+    REGRESSION_REQUIRE(vad.reset_count.load() == resets_after_start + 1);
+
+    // New speech prepends its own leading silence, never the previous ring.
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    std::vector<float> new_audio(vad.probs.size() * 512, 0.75f);
+    pipeline.push_audio(new_audio.data(), new_audio.size());
+    pipeline.wait_idle();
+
+    REGRESSION_REQUIRE(stt.call_count == 1);
+    REGRESSION_REQUIRE(stt.saw_new_audio);
+    REGRESSION_REQUIRE(!stt.saw_old_audio);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 1);
+
+    pipeline.stop();
+    printf("  PASS: cancel_current_turn_hard_resets_input_state\n");
+}
+
+// Regression #120: cancellation invalidates the currently running batch STT,
+// drains queued utterances, and leaves the same worker ready for a new turn.
+void test_cancel_current_turn_discards_inflight_and_queued() {
+    BlockingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    auto first = make_audio(vad.probs.size());
+    pipeline.push_audio(first.data(), first.size());
+    stt.wait_for_first_call();
+
+    // This utterance is queued behind the blocked first transcription.
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    auto second = make_audio(vad.probs.size());
+    pipeline.push_audio(second.data(), second.size());
+
+    pipeline.cancel_current_turn();
+    REGRESSION_REQUIRE(pipeline.is_running());
+    REGRESSION_REQUIRE(stt.cancel_count.load() == 1);
+
+    stt.release_first();
+    pipeline.wait_idle();
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 0);
+
+    // A fresh utterance uses the same live worker. The old queued utterance
+    // must not consume call 2 or emit before it.
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    auto third = make_audio(vad.probs.size());
+    pipeline.push_audio(third.data(), third.size());
+    pipeline.wait_idle();
+
+    REGRESSION_REQUIRE(stt.call_count.load() == 2);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 1);
+    REGRESSION_REQUIRE(
+        log.text_for(EventType::TranscriptionCompleted) == "utterance 2");
+
+    pipeline.stop();
+    printf("  PASS: cancel_current_turn_discards_inflight_and_queued\n");
 }
 
 // Test: brief interruption triggers InterruptionRecovered (playback can resume)
@@ -3018,6 +3354,129 @@ void test_partial_transcription_cancel_on_stop() {
     printf("  PASS: partial_transcription_cancel_on_stop\n");
 }
 
+void test_partial_transcription_cancel_current_turn() {
+    // Resetting an input session must cancel worker-owned streaming state and
+    // allow a second stream to begin without restarting the pipeline.
+    class StreamingSTT : public STTInterface {
+    public:
+        TranscriptionResult transcribe(
+            const float*, size_t, int) override
+        {
+            ++batch_count;
+            return {"batch", "", 0.9f, 0.0f, 1.0f};
+        }
+
+        int input_sample_rate() const override { return 16000; }
+        bool supports_streaming() const override { return true; }
+
+        void begin_stream(int) override {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++begin_count;
+            stream_active = true;
+            cv.notify_all();
+        }
+
+        PartialResult push_chunk(const float*, size_t) override {
+            return {"partial", "", 0.8f};
+        }
+
+        TranscriptionResult end_stream() override {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++end_count;
+            stream_active = false;
+            cv.notify_all();
+            return {"new stream final", "", 0.9f, 0.0f, 1.0f};
+        }
+
+        void cancel_stream() override {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++cancel_stream_count;
+            stream_active = false;
+            cv.notify_all();
+        }
+
+        void wait_for_begins(int expected) {
+            std::unique_lock<std::mutex> lock(mutex);
+            const bool reached = cv.wait_for(
+                lock, std::chrono::seconds(2),
+                [this, expected] { return begin_count.load() >= expected; });
+            REGRESSION_REQUIRE(reached);
+        }
+
+        void wait_for_cancels(int expected) {
+            std::unique_lock<std::mutex> lock(mutex);
+            const bool reached = cv.wait_for(
+                lock, std::chrono::seconds(2),
+                [this, expected] {
+                    return cancel_stream_count.load() >= expected;
+                });
+            REGRESSION_REQUIRE(reached);
+        }
+
+        std::atomic<int> batch_count{0};
+        std::atomic<int> begin_count{0};
+        std::atomic<int> end_count{0};
+        std::atomic<int> cancel_stream_count{0};
+        std::atomic<bool> stream_active{false};
+
+    private:
+        std::mutex mutex;
+        std::condition_variable cv;
+    };
+
+    StreamingSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    auto config = test_config();
+    config.mode = AgentConfig::Mode::TranscribeOnly;
+    config.vad.min_speech_duration = 0.0f;
+    config.vad.min_silence_duration = 0.0f;
+    config.emit_partial_transcriptions = true;
+    config.partial_transcription_interval = 0.01f;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+    auto old_speech = make_audio(vad.probs.size());
+    pipeline.push_audio(old_speech.data(), old_speech.size());
+    stt.wait_for_begins(1);
+
+    pipeline.cancel_current_turn();
+    stt.wait_for_cancels(1);
+    REGRESSION_REQUIRE(pipeline.is_running());
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 0);
+
+    // Begin and finish an independent stream on the same worker.
+    vad.probs = {0.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+    vad.prob_index = 0;
+    auto new_speech = make_audio(vad.probs.size());
+    pipeline.push_audio(new_speech.data(), new_speech.size());
+    stt.wait_for_begins(2);
+
+    vad.probs = {0.1f, 0.1f, 0.1f, 0.1f};
+    vad.prob_index = 0;
+    auto silence = make_audio(vad.probs.size());
+    pipeline.push_audio(silence.data(), silence.size());
+    pipeline.wait_idle();
+
+    REGRESSION_REQUIRE(stt.begin_count.load() == 2);
+    REGRESSION_REQUIRE(stt.cancel_stream_count.load() == 1);
+    REGRESSION_REQUIRE(stt.end_count.load() == 1);
+    REGRESSION_REQUIRE(!stt.stream_active.load());
+    REGRESSION_REQUIRE(stt.batch_count.load() == 0);
+    REGRESSION_REQUIRE(log.count(EventType::TranscriptionCompleted) == 1);
+    REGRESSION_REQUIRE(
+        log.text_for(EventType::TranscriptionCompleted) == "new stream final");
+
+    pipeline.stop();
+    printf("  PASS: partial_transcription_cancel_current_turn\n");
+}
+
 void test_partial_transcription_empty_skipped() {
     // push_chunk returns empty text → no PartialTranscription event emitted
     class SilentStreamSTT : public STTInterface {
@@ -3427,6 +3886,12 @@ int main() {
     test_interruption_during_stt_skips_tts();
     test_post_playback_guard();
     test_stop_during_processing();
+    test_stop_start_discards_open_utterance();
+    test_stop_start_discards_queued_utterance();
+    test_stop_invalidates_inflight_batch_stt();
+    test_cancel_current_turn_discards_open_utterance();
+    test_cancel_current_turn_hard_resets_input_state();
+    test_cancel_current_turn_discards_inflight_and_queued();
     test_interruption_recovery();
     test_push_text_during_tts();
     test_rapid_start_stop();
@@ -3460,6 +3925,7 @@ int main() {
     test_partial_transcription_batch_fallback();
     test_partial_transcription_disabled();
     test_partial_transcription_cancel_on_stop();
+    test_partial_transcription_cancel_current_turn();
     test_partial_transcription_empty_skipped();
     test_speech_during_stt_queues_not_interrupts();
     test_llm_cancel_on_interruption();

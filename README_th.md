@@ -10,14 +10,14 @@
 
 ทำงานภายในเครื่องบน CPU ไม่ใช้คลาวด์หรือ Python ระหว่าง inference และเสียงไม่ออกจากอุปกรณ์
 
-**[📚 เอกสารฉบับเต็ม →](https://soniqo.audio/th/speech-core)** · **[🐧 Linux](https://soniqo.audio/th/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/th/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 เอกสารฉบับเต็ม →](https://soniqo.audio/th/speech-core)** · **[🐧 Linux](https://soniqo.audio/th/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/th/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 เสียง HTTP](docs/http-server.md)**
 
 **[🤗 โมเดล](https://huggingface.co/soniqo)** · **[🍎 โปรเจกต์สำหรับ Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## เดโม
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="โคลนเสียงด้วย VoxCPM2 — เดโม Speech Studio บน YouTube"></a></p>
-<p align="center"><em>โคลนเสียงด้วย VoxCPM2 — เดโม Speech Studio บน YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — ชมเดโมบน YouTube"></a></p>
+<p align="center"><em>เอเจนต์เสียงออฟไลน์เต็มรูปแบบใน 1.2 GB บน Android — control-demo ของ speech-android</em></p>
 
 ## เหตุผลที่ใช้ speech-core
 
@@ -30,14 +30,13 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 - **API พกพาได้:** C++ native และ C API สำหรับ Kotlin/JNI, Swift/FFI, embedded Linux และ host อื่น
 - **ทดสอบหลายเป้าหมาย:** Linux, Windows, macOS, build arm64 สำหรับ Android, sanitizer และ nightly ที่ใช้โมเดลจริง
 
-## ไฮไลต์ v0.0.10
+## ไฮไลต์ v0.0.11
 
-- **Parakeet-EOU 120M:** ASR streaming หลายภาษาที่ใช้หน่วยความจำน้อย มี end-of-utterance token, beam search แบบเลือกใช้, contextual biasing และเพดานป้องกัน bias มากเกินไป
-- **Whisper ONNX แบบ native:** ตั้งแต่ small ถึง large-v3/turbo รองรับตรวจภาษา หรือ fixed-language prompt, profiling และการปรับ CPU
-- **TTS กว้างขึ้น:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic และ Indic-Mio ร่วมกับ Kokoro พร้อม buffered post-processing และ cloning ที่ใช้ transcript
-- **บทสนทนาเร็วขึ้น:** ปรับ Kokoro สำหรับรอบสั้น แบ่งข้อความยาวเป็นประโยค และเก็บ pre-speech buffer ต่อเนื่อง
-- **เครื่องมือ LLM บนอุปกรณ์:** FunctionGemma ผ่าน LiteRT-LM, Ollama adapter และ tool-call loop ใน pipeline
-- **Linux CLI ระดับ release:** แพ็กเกจ amd64/arm64, ตัวช่วยดาวน์โหลดโมเดล, คำสั่งตามสถาปัตยกรรม และ smoke test ใน container สะอาด
+- **TTS local ที่เข้ากันได้กับ OpenAI:** `speech-server` ให้ `POST /v1/audio/speech` พร้อม alias โมเดล OpenAI, เสียง native และทั่วไป, การควบคุมภาษา/ความเร็ว, WAV/PCM และ Bearer authentication แบบเลือกใช้
+- **แพ็กเกจ Windows:** ZIP x64 แบบ self-contained มี server, เครื่องมือ ONNX CLI, `speech.dll`, ONNX Runtime และตัวดาวน์โหลดโมเดล PowerShell โดย CI จะแตกไฟล์และ smoke test แพ็กเกจ
+- **DeepFilterNet3 parity:** STFT scaling แบบ libdf, ERB/complex normalization, deep filtering, overlap-add และชดเชย delay 480 samples คืนพฤติกรรม DSP อ้างอิง
+- **Pocket TTS แบบ streaming:** backend ONNX ส่ง frame คงที่ 80 ms ใช้ decoder cache แบบจำกัด และมี round-trip validation ด้วยโมเดลแบบเลือกใช้
+- **Silero v5 context ที่ถูกต้อง:** ทุก ONNX inference ได้รับ left context 64 samples ตามที่ graph ต้องการ
 
 ## โมเดลที่รองรับ
 
@@ -48,10 +47,12 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/whisper) | เสียงเป็นข้อความหลายภาษา | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/nemotron) | STT streaming | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/th/guides/nemotron) | STT streaming แบบมี prompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | การถอดเสียงหลายภาษา + กิจกรรมผู้พูด | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/th/guides/dictate) | STT streaming + จบคำพูด | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/omnilingual) | STT หลายภาษา | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/diarize) | segmentation สำหรับ diarization | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/embed-speaker) | speaker embedding | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | การฝังตัวผู้พูด | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS 16 kHz + โคลนเสียง | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/voxcpm2) | TTS 48 kHz + โคลนเสียง | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/cosyvoice) | TTS แบบมี conditioning 24 kHz | เป็นขั้น | — |
@@ -59,7 +60,9 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/supertonic) | สังเคราะห์เสียง | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/indic-mio) | โคลนเสียงภาษาฮินดี/อินเดีย + อารมณ์ | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/kokoro) | สังเคราะห์เสียง | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS streaming (เสียง Alba คงที่) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/denoise) | ปรับปรุงเสียงพูด | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | การตัดเสียงสะท้อนทางเสียง | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/restore) | ลดเสียงรบกวน + ลดเสียงก้อง (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/respond) | speech-to-speech แบบ full-duplex (CUDA) | โครงสร้าง | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/th/guides/function-calls) | structured tool call บนอุปกรณ์ | — | LiteRT-LM |
@@ -124,7 +127,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Release มี `.deb` และ `.tar.gz` สำหรับ amd64 และ arm64 พร้อม runtime library แต่ไม่รวมโมเดล
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 หรือ arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +135,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 แพ็กเกจ amd64 มีคำสั่งโคลนเสียง VoxCPM2 ด้วย LiteRT ด้วย โดย bundle x86 มีขนาดประมาณ 13 GB:

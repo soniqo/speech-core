@@ -10,14 +10,14 @@ Lokale Sprachinfrastruktur in **C++17** für **Linux, Windows und Android**: Spr
 
 Läuft lokal auf der CPU. Keine Cloud, kein Python bei der Inferenz und keine Audiodaten verlassen das Gerät.
 
-**[📚 Vollständige Dokumentation →](https://soniqo.audio/de/speech-core)** · **[🐧 Linux](https://soniqo.audio/de/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/de/getting-started/windows)** · **[⌨️ Linux-CLI](docs/cli.md)**
+**[📚 Vollständige Dokumentation →](https://soniqo.audio/de/speech-core)** · **[🐧 Linux](https://soniqo.audio/de/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/de/getting-started/windows)** · **[⌨️ Desktop-CLI](docs/cli.md)** · **[🔊 HTTP-Audio](docs/http-server.md)**
 
 **[🤗 Modelle](https://huggingface.co/soniqo)** · **[🍎 Apple-Schwesterprojekt](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Demo
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Stimmklonen mit VoxCPM2 — Speech-Studio-Demo auf YouTube"></a></p>
-<p align="center"><em>Stimmklonen mit VoxCPM2 — Speech-Studio-Demo auf YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Ein komplett offline laufender Sprachagent in 1,2 GB auf Android — Demo auf YouTube ansehen"></a></p>
+<p align="center"><em>Ein vollständig offline laufender Sprachagent in 1,2 GB auf Android — die speech-android control-demo</em></p>
 
 ## Warum speech-core
 
@@ -30,14 +30,13 @@ speech-core trennt eine kleine, modellunabhängige Orchestrierungsschicht von op
 - **Portable API:** natives C++ und C-APIs für Kotlin/JNI, Swift/FFI, Embedded Linux und weitere Hosts.
 - **Breit getestet:** Linux, Windows, macOS, Android-orientierte arm64-Builds, Sanitizer und modellgestützte Nightly-Lanes.
 
-## Highlights in v0.0.10
+## Highlights in v0.0.11
 
-- **Parakeet-EOU 120M:** speichersparsames mehrsprachiges Streaming-ASR mit End-of-Utterance-Tokens, optionalem Beam Search, Kontext-Biasing und Bias-Obergrenze.
-- **Natives Whisper ONNX:** small bis large-v3/turbo, Spracherkennung oder feste Sprachprompts, Profiling und CPU-Tuning.
-- **Mehr TTS:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic und Indic-Mio neben Kokoro; gepufferte Nachbearbeitung und transkriptgeführtes Klonen.
-- **Schnellere Gespräche:** Kokoro-Optimierungen für kurze Turns, Satzaufteilung für lange Texte und kontinuierlicher Pre-Speech-Puffer.
-- **Lokale LLM-Tools:** FunctionGemma über LiteRT-LM, Ollama-Adapter und Tool-Schleife der Pipeline.
-- **Release-taugliche Linux-CLI:** amd64/arm64-Pakete, Modell-Downloader, architekturabhängige Befehle und Container-Smoke-Tests.
+- **OpenAI-kompatibles lokales TTS:** `speech-server` stellt `POST /v1/audio/speech` mit OpenAI-Modellaliasen, nativen und generischen Stimmen, Sprach- und Temporegelung, WAV/PCM sowie optionaler Bearer-Authentifizierung bereit.
+- **Windows-Paket:** ein eigenständiges x64-ZIP enthält Server, ONNX-CLI-Tools, `speech.dll`, ONNX Runtime und einen PowerShell-Modell-Downloader; CI entpackt und testet das Paket.
+- **DeepFilterNet3-Parität:** libdf-kompatible STFT-Skalierung, ERB-/Komplex-Normalisierung, Deep Filtering, Overlap-Add und 480-Sample-Verzögerungskompensation stellen das Referenz-DSP wieder her.
+- **Streaming Pocket TTS:** das ONNX-Backend liefert feste 80-ms-Frames, einen begrenzten Decoder-Cache und eine optionale modellgestützte Roundtrip-Prüfung.
+- **Korrekter Silero-v5-Kontext:** jede ONNX-Inferenz erhält nun den erforderlichen linken Kontext von 64 Samples.
 
 ## Unterstützte Modelle
 
@@ -48,10 +47,12 @@ speech-core trennt eine kleine, modellunabhängige Orchestrierungsschicht von op
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/whisper) | Mehrsprachiges Speech-to-Text | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/nemotron) | Streaming-STT | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/de/guides/nemotron) | Prompt-gesteuertes Streaming-STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Mehrsprachige Transkription + Sprecheraktivität | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/de/guides/dictate) | Streaming-STT + Äußerungsende | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/omnilingual) | Mehrsprachiges STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/diarize) | Diarisierungssegmentierung | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/embed-speaker) | Sprecher-Embedding | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Sprecher-Embedding | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16-kHz-TTS + Stimmklonen | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/voxcpm2) | 48-kHz-TTS + Stimmklonen | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/cosyvoice) | Konditioniertes 24-kHz-TTS | gestuft | — |
@@ -59,7 +60,9 @@ speech-core trennt eine kleine, modellunabhängige Orchestrierungsschicht von op
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/supertonic) | Text-to-Speech | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/indic-mio) | Hindi/indisches Stimmklonen + Emotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/kokoro) | Text-to-Speech | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Streaming-TTS (feste Alba-Stimme) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/denoise) | Sprachverbesserung | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Akustische Echounterdrückung | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/restore) | Entrauschen + Enthallen (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/respond) | Full-Duplex Speech-to-Speech (CUDA) | strukturell | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/de/guides/function-calls) | Strukturierte lokale Tool-Aufrufe | — | LiteRT-LM |
@@ -128,7 +131,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Releases enthalten `.deb`- und `.tar.gz`-Pakete für amd64 und arm64. Laufzeitbibliotheken sind enthalten, Modelle nicht.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 oder arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -137,6 +140,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 Das amd64-Paket enthält außerdem VoxCPM2-Stimmklonen mit LiteRT. Das x86-Bundle ist etwa 13 GB groß und wird explizit geladen:

@@ -64,7 +64,12 @@ public:
     int output_sample_rate() const override { return 24000; }
     void cancel() override;
 
+    /// Select an explicit voice for subsequent synthesis calls. Once set,
+    /// language changes no longer replace it with a language-default voice.
     void set_voice(const std::string& name);
+    /// Set the model duration scalar used by the next synthesis. Values match
+    /// the OpenAI speech API range: 0.25 (slowest) through 4.0 (fastest).
+    void set_speed(float speed);
 
 private:
     enum class ChunkResult { Emitted, RetrySmaller, Cancelled };
@@ -87,6 +92,8 @@ private:
     std::vector<float> voice_embedding_;
     std::string voices_dir_;
     std::string current_lang_;
+    bool voice_overridden_ = false;
+    float speed_ = 0.85f;
     Config config_;
     std::atomic<bool> cancelled_{false};
 };

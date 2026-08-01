@@ -12,7 +12,7 @@
 
 تعمل محلياً على المعالج. لا سحابة ولا Python أثناء الاستدلال، ولا يغادر الصوت الجهاز.
 
-**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة Linux](docs/cli.md)**
+**[📚 الوثائق الكاملة ←](https://soniqo.audio/ar/speech-core)** · **[🐧 Linux](https://soniqo.audio/ar/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ar/getting-started/windows)** · **[⌨️ واجهة سطح المكتب](docs/cli.md)** · **[🔊 صوت HTTP](docs/http-server.md)**
 
 **[🤗 النماذج](https://huggingface.co/soniqo)** · **[🍎 مشروع Apple الشقيق](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
@@ -20,8 +20,8 @@
 
 </div>
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio على YouTube"></a></p>
-<p align="center"><em>استنساخ الصوت باستخدام VoxCPM2 — عرض Speech Studio على YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="وكيل صوتي كامل يعمل دون اتصال في 1.2 GB على Android — شاهد العرض على YouTube"></a></p>
+<p align="center"><em>وكيل صوتي كامل يعمل دون اتصال في 1.2 GB على Android — عرض control-demo من speech-android</em></p>
 
 <div dir="rtl">
 
@@ -36,14 +36,13 @@
 - **واجهة قابلة للنقل:** C++ أصلية وواجهات C مناسبة لـ Kotlin/JNI وSwift/FFI وLinux المضمن.
 - **اختبارات متعددة الأهداف:** Linux وWindows وmacOS وبناء arm64 الموجّه إلى Android وsanitizers واختبارات ليلية بالنماذج.
 
-## أبرز ما في v0.0.10
+## أبرز ما في v0.0.11
 
-- **Parakeet-EOU 120M:** ASR متدفق متعدد اللغات قليل الذاكرة، مع رموز نهاية القول وbeam search اختياري وترجيح سياقي وحد أعلى لمنع الإفراط في الترجيح.
-- **Whisper ONNX أصلي:** من small إلى large-v3/turbo، مع اكتشاف اللغة أو prompt ثابت، وprofiling وضبط CPU.
-- **TTS أوسع:** VoxCPM/VoxCPM2 وCosyVoice3 وChatterbox وSupertonic وIndic-Mio إلى جانب Kokoro، مع معالجة لاحقة مخزنة واستنساخ موجّه بالنص المرجعي.
-- **محادثات أسرع:** تحسين Kokoro للأدوار القصيرة، وتقسيم النص الطويل إلى جمل، واستمرار مخزن ما قبل الكلام حول التشغيل.
-- **أدوات LLM على الجهاز:** FunctionGemma عبر LiteRT-LM، ومحوّل Ollama، وحلقة الأدوات داخل خط الأنابيب.
-- **CLI لـLinux بجودة إصدار:** حزم amd64/arm64، ومساعدات تنزيل النماذج، وتوافر الأوامر حسب المعمارية، واختبارات في حاويات نظيفة.
+- **TTS محلي متوافق مع OpenAI:** يوفّر `speech-server` المسار `POST /v1/audio/speech` مع أسماء نماذج OpenAI البديلة، وأصوات أصلية وعامة، والتحكم باللغة والسرعة، وخروج WAV/PCM، ومصادقة Bearer اختيارية.
+- **حزمة Windows:** ملف ZIP مستقل لمعمارية x64 يضم الخادم وأدوات ONNX CLI و`speech.dll` وONNX Runtime ومنزّل نماذج PowerShell؛ وتفك CI الحزمة وتختبرها.
+- **تطابق DeepFilterNet3:** استعادة سلوك DSP المرجعي عبر STFT متوافق مع libdf، وتطبيع ERB/المركّب، والترشيح العميق، وoverlap-add، وتعويض تأخير 480 عينة.
+- **Pocket TTS متدفق:** تُخرج خلفية ONNX إطارات ثابتة بطول 80 مللي ثانية مع ذاكرة decoder محدودة واختبار round-trip اختياري بالنموذج.
+- **سياق Silero v5 الصحيح:** تتلقى كل عملية ONNX الآن 64 عينة من السياق الأيسر الذي تتطلبه الشبكة.
 
 ## النماذج المدعومة
 
@@ -54,10 +53,12 @@
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/whisper) | تعرف متعدد اللغات | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/nemotron) | تعرف متدفق | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ar/guides/nemotron) | STT متدفق مشروط بـprompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | نسخ متعدد اللغات + نشاط المتحدثين | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ar/guides/dictate) | STT متدفق + نهاية القول | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/omnilingual) | تعرف متعدد اللغات | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/diarize) | تقسيم لفصل المتحدثين | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/embed-speaker) | تضمين المتحدث | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | تضمين المتحدث | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS ‏16 kHz + استنساخ | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/voxcpm2) | TTS ‏48 kHz + استنساخ | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/cosyvoice) | TTS مشروط 24 kHz | مرحلي | — |
@@ -65,7 +66,9 @@
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/supertonic) | تحويل النص إلى كلام | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/indic-mio) | استنساخ هندي/لغات الهند + عاطفة | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/kokoro) | تحويل النص إلى كلام | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS متدفق (صوت Alba ثابت) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/denoise) | تحسين الكلام | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | إلغاء الصدى الصوتي | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/restore) | إزالة الضوضاء والصدى (16 ← 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ar/guides/respond) | كلام إلى كلام مزدوج الاتجاه (CUDA) | هيكلي | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ar/guides/function-calls) | استدعاءات أدوات منظمة على الجهاز | — | LiteRT-LM |
@@ -144,7 +147,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 </div>
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 or arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -152,6 +155,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 <div dir="rtl">

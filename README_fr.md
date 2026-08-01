@@ -10,14 +10,14 @@ Infrastructure vocale embarquée en **C++17** pour **Linux, Windows et Android**
 
 Tout s'exécute localement sur CPU. Aucun cloud, aucun Python à l'inférence et aucun son ne quitte l'appareil.
 
-**[📚 Documentation complète →](https://soniqo.audio/fr/speech-core)** · **[🐧 Linux](https://soniqo.audio/fr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/fr/getting-started/windows)** · **[⌨️ CLI Linux](docs/cli.md)**
+**[📚 Documentation complète →](https://soniqo.audio/fr/speech-core)** · **[🐧 Linux](https://soniqo.audio/fr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/fr/getting-started/windows)** · **[⌨️ CLI desktop](docs/cli.md)** · **[🔊 Audio HTTP](docs/http-server.md)**
 
 **[🤗 Modèles](https://huggingface.co/soniqo)** · **[🍎 Projet Apple associé](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Démonstration
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Clonage de voix avec VoxCPM2 — démonstration de Speech Studio sur YouTube"></a></p>
-<p align="center"><em>Clonage de voix avec VoxCPM2 — démonstration de Speech Studio sur YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Un agent vocal entièrement hors ligne dans 1,2 Go sur Android — voir la démo sur YouTube"></a></p>
+<p align="center"><em>Un agent vocal entièrement hors ligne dans 1,2 Go sur Android — la control-demo de speech-android</em></p>
 
 ## Pourquoi speech-core
 
@@ -30,14 +30,13 @@ speech-core sépare une petite couche d'orchestration indépendante des modèles
 - **API portable :** C++ natif et API C pour Kotlin/JNI, Swift/FFI, Linux embarqué et autres hôtes.
 - **Tests multi-cibles :** Linux, Windows, macOS, builds arm64 orientés Android, sanitizers et nightly avec modèles.
 
-## Nouveautés de la v0.0.10
+## Nouveautés de la v0.0.11
 
-- **Parakeet-EOU 120M :** ASR streaming multilingue à faible mémoire, tokens de fin d'énoncé, beam search optionnel, biais contextuel et plafond anti-surpondération.
-- **Whisper ONNX natif :** de small à large-v3/turbo, détection ou prompt de langue fixe, profilage et réglages CPU.
-- **TTS étendu :** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic et Indic-Mio avec Kokoro ; post-traitement bufferisé et clonage guidé par transcription.
-- **Conversations plus rapides :** Kokoro optimisé pour les tours courts, découpage des textes longs et tampon pré-parole continu.
-- **Outils LLM embarqués :** FunctionGemma via LiteRT-LM, adaptateur Ollama et boucle d'outils du pipeline.
-- **CLI Linux prête pour la production :** paquets amd64/arm64, téléchargements de modèles, disponibilité par architecture et tests en conteneurs propres.
+- **TTS local compatible OpenAI :** `speech-server` expose `POST /v1/audio/speech` avec alias de modèles OpenAI, voix natives et génériques, langue et vitesse, sortie WAV/PCM et authentification Bearer facultative.
+- **Paquet Windows :** un ZIP x64 autonome contient le serveur, les outils CLI ONNX, `speech.dll`, ONNX Runtime et un téléchargeur PowerShell ; CI extrait et teste le paquet.
+- **Parité DeepFilterNet3 :** mise à l'échelle STFT compatible libdf, normalisation ERB/complexe, filtrage profond, overlap-add et compensation de 480 échantillons restaurent le DSP de référence.
+- **Pocket TTS en streaming :** le backend ONNX émet des trames fixes de 80 ms, utilise un cache borné et propose une validation aller-retour facultative avec le modèle.
+- **Contexte Silero v5 correct :** chaque inférence ONNX reçoit désormais les 64 échantillons de contexte gauche requis.
 
 ## Modèles pris en charge
 
@@ -48,10 +47,12 @@ speech-core sépare une petite couche d'orchestration indépendante des modèles
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/whisper) | Parole vers texte multilingue | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/nemotron) | STT en streaming | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/fr/guides/nemotron) | STT streaming conditionné par prompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Transcription multilingue + activité des locuteurs | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/fr/guides/dictate) | STT streaming + fin d'énoncé | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/omnilingual) | STT multilingue | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/diarize) | Segmentation de diarisation | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/embed-speaker) | Embedding de locuteur | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Embedding de locuteur | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS 16 kHz + clonage | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/voxcpm2) | TTS 48 kHz + clonage | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/cosyvoice) | TTS conditionné 24 kHz | en préparation | — |
@@ -59,7 +60,9 @@ speech-core sépare une petite couche d'orchestration indépendante des modèles
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/supertonic) | Synthèse vocale | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/indic-mio) | Clonage hindi/langues indiennes + émotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/kokoro) | Synthèse vocale | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | TTS en streaming (voix Alba fixe) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/denoise) | Amélioration de la parole | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Annulation d'écho acoustique | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/restore) | Débruitage + déréverbération (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/respond) | Parole-à-parole full-duplex (CUDA) | structurel | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/fr/guides/function-calls) | Appels d'outils structurés embarqués | — | LiteRT-LM |
@@ -128,7 +131,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Les releases fournissent des paquets `.deb` et `.tar.gz` pour amd64 et arm64. Les bibliothèques runtime sont incluses, pas les modèles.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 ou arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -137,6 +140,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 Le paquet amd64 inclut aussi le clonage VoxCPM2 avec LiteRT. Son bundle x86 fait environ 13 Go et se télécharge explicitement :

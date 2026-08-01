@@ -24,6 +24,15 @@ namespace speech_core::audio {
 ///       training front-end is torch.stft and the layout offset was
 ///       measured flipping word-boundary tokens (mel corr 0.978 vs the
 ///       reference processor before, low bins diverging hardest).
+///   center_pad_zeros — with center: pad with ZEROS (torch.stft
+///       pad_mode="constant") instead of reflect. The Parakeet/NeMo
+///       training front-end pads constant; reflect stays the default
+///       for the paths validated against it.
+///   symmetric_torch_window — with torch_stft_layout: build the Hann
+///       window with the SYMMETRIC denominator (N-1, i.e.
+///       torch.hann_window(periodic=False)) instead of periodic. The
+///       Parakeet feature extractor uses periodic=False; Steno's uses
+///       the periodic default.
 std::vector<float> mel_spectrogram(
     const float* audio, size_t length,
     int sample_rate, int n_fft, int hop_length,
@@ -31,6 +40,8 @@ std::vector<float> mel_spectrogram(
     bool slaney_norm = false,
     float log_floor = 1e-10f,
     bool center = false,
-    bool torch_stft_layout = false);
+    bool torch_stft_layout = false,
+    bool center_pad_zeros = false,
+    bool symmetric_torch_window = false);
 
 }  // namespace speech_core::audio

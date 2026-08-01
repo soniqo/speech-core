@@ -43,10 +43,22 @@ target_include_directories(speech
 
 target_link_libraries(speech PUBLIC speech_core_models)
 
-target_compile_options(speech PRIVATE
-    -Wall -Wextra
-    $<$<CONFIG:Release>:-O2>
-)
+if(SPEECH_CORE_PACKAGE)
+    target_compile_definitions(speech PRIVATE
+        SPEECH_PACKAGE_VERSION="${SPEECH_CORE_PACKAGE_VERSION}")
+endif()
+
+if(MSVC)
+    target_compile_options(speech PRIVATE /W4)
+    target_compile_definitions(speech PRIVATE
+        _USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    set_target_properties(speech PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+else()
+    target_compile_options(speech PRIVATE
+        -Wall -Wextra
+        $<$<CONFIG:Release>:-O2>
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Demo CLI — full conversational loop driven by ALSA mic input

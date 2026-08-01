@@ -98,7 +98,14 @@ sc_pipeline_t sc_pipeline_create(...);
 void sc_pipeline_destroy(sc_pipeline_t);
 void sc_pipeline_start(sc_pipeline_t);
 void sc_pipeline_stop(sc_pipeline_t);
+void sc_pipeline_cancel_current_turn(sc_pipeline_t);
 ```
+
+`sc_pipeline_stop()` ends the running session and joins the pipeline workers.
+`sc_pipeline_cancel_current_turn()` keeps the pipeline running but discards
+buffered, queued, and in-progress turn work. Use it when a long-lived consumer
+starts a new mic/dictation session or the user explicitly cancels input.
+Conversation context is not cleared.
 
 ### Audio input
 

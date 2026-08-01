@@ -10,18 +10,18 @@
 
 CPU에서 완전히 로컬로 실행됩니다. 추론 시 클라우드나 Python이 필요 없으며, 오디오가 기기 밖으로 나가지 않습니다.
 
-**[📚 전체 문서 →](https://soniqo.audio/ko/speech-core)** · **[🐧 Linux](https://soniqo.audio/ko/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ko/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 전체 문서 →](https://soniqo.audio/ko/speech-core)** · **[🐧 Linux](https://soniqo.audio/ko/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ko/getting-started/windows)** · **[⌨️ 데스크톱 CLI](docs/cli.md)** · **[🔊 HTTP 오디오](docs/http-server.md)**
 
 **[🤗 모델](https://huggingface.co/soniqo)** · **[🍎 Apple용 자매 프로젝트](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## 데모
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg">
-    <img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="VoxCPM2 음성 복제 — YouTube에서 Speech Studio 데모 보기">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="완전 오프라인 음성 에이전트를 Android의 1.2 GB에 담았습니다 — YouTube에서 데모 보기">
   </a>
 </p>
-<p align="center"><em>VoxCPM2 음성 복제 — YouTube에서 Speech Studio 데모 보기</em></p>
+<p align="center"><em>Android에서 1.2 GB로 실행되는 완전 오프라인 음성 에이전트 — speech-android control-demo</em></p>
 
 ## speech-core를 선택하는 이유
 
@@ -34,14 +34,13 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 - **이식 가능한 표면:** 네이티브 C++ API와 Kotlin/JNI, Swift/FFI, 임베디드 Linux 등에 적합한 C API.
 - **다중 타깃 검증:** Linux, Windows, macOS, Android 지향 arm64 빌드, Sanitizer, 모델 기반 nightly 레인.
 
-## v0.0.10 주요 변경 사항
+## v0.0.11 주요 변경 사항
 
-- **Parakeet-EOU 120M:** 발화 종료 토큰, 선택적 빔 검색, 문맥 구문 바이어싱, 과도한 바이어스 상한을 갖춘 저메모리 다국어 스트리밍 ASR.
-- **네이티브 Whisper ONNX:** small부터 large-v3/turbo까지, 언어 감지 또는 고정 언어 프롬프트, 프로파일링, CPU 튜닝 제어.
-- **확장된 TTS:** Kokoro와 함께 VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic, Indic-Mio 지원. 버퍼 후처리와 전사 유도 복제 포함.
-- **더 빠른 대화:** Kokoro 짧은 턴 최적화, 긴 텍스트 문장 분할, 재생 전후에도 유지되는 프리 스피치 버퍼.
-- **온디바이스 LLM 도구:** LiteRT-LM 기반 FunctionGemma, 기존 Ollama 어댑터, 파이프라인 도구 호출 루프.
-- **릴리스 수준 Linux CLI:** amd64/arm64 패키지, 모델 다운로드 도우미, 아키텍처별 명령 가용성, 깨끗한 컨테이너 스모크 테스트.
+- **OpenAI 호환 로컬 TTS:** `speech-server`가 `POST /v1/audio/speech`를 제공하며 OpenAI 모델 별칭, 네이티브/일반 음성, 언어와 속도 제어, WAV/PCM 출력, 선택적 Bearer 인증을 지원합니다.
+- **Windows 릴리스 패키지:** 서버, ONNX CLI 도구, `speech.dll`, ONNX Runtime, PowerShell 모델 다운로더가 포함된 독립형 x64 ZIP을 제공하며 CI가 압축 해제 후 스모크 테스트합니다.
+- **DeepFilterNet3 동등성:** libdf 호환 STFT 스케일링, ERB/복소 정규화, 딥 필터링, overlap-add, 480샘플 지연 보정으로 참조 DSP 동작을 복원했습니다.
+- **스트리밍 Pocket TTS:** ONNX 백엔드가 고정 80ms 프레임, 제한된 디코더 캐시, 선택적 모델 왕복 검증 도구를 제공합니다.
+- **올바른 Silero v5 컨텍스트:** 모든 ONNX 추론에 그래프가 요구하는 64샘플 왼쪽 컨텍스트를 전달합니다.
 
 ## 지원 모델
 
@@ -52,10 +51,12 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/whisper) | 다국어 음성 인식 | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/nemotron) | 스트리밍 음성 인식 | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ko/guides/nemotron) | 프롬프트 조건부 스트리밍 STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | 다국어 전사 + 화자 활동 | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ko/guides/dictate) | 스트리밍 STT + 발화 종료 | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/omnilingual) | 다국어 음성 인식 | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/diarize) | 화자 분리 세그멘테이션 | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/embed-speaker) | 화자 임베딩 | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | 화자 임베딩 | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + 음성 복제 | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/voxcpm2) | 48 kHz TTS + 음성 복제 | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/cosyvoice) | 24 kHz 조건부 TTS | 단계적 | — |
@@ -63,7 +64,9 @@ speech-core는 작고 모델에 독립적인 오케스트레이션 계층과 선
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/supertonic) | 음성 합성 | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/indic-mio) | 힌디어/인도계 언어 음성 복제 + 감정 | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ko/guides/kokoro) | 음성 합성 | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | 스트리밍 TTS(고정 Alba 음성) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/denoise) | 음성 향상 | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | 음향 에코 제거 | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/restore) | 노이즈 제거 + 잔향 제거(16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ko/guides/respond) | 전이중 음성 대 음성(CUDA) | 구조 구현 | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ko/guides/function-calls) | 온디바이스 구조화 도구 호출 | — | LiteRT-LM |
@@ -138,7 +141,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 릴리스에는 amd64 및 arm64용 `.deb`와 `.tar.gz` 패키지가 포함됩니다. 런타임 라이브러리는 번들되지만 모델은 포함되지 않습니다.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 또는 arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -147,6 +150,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 amd64 패키지에는 LiteRT VoxCPM2 음성 복제 명령도 포함됩니다. x86 번들은 약 13GB이므로 명시적으로 다운로드합니다.

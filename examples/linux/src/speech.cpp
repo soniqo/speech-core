@@ -77,14 +77,14 @@ static void dispatch_event(speech_pipeline_s* h,
 // ---------------------------------------------------------------------------
 
 extern "C" speech_config_t speech_config_default(void) {
-    return {
-        .model_dir = nullptr,
-        .use_int8 = true,
-        .use_qnn = false,
-        .enable_enhancer = false,
-        .transcribe_only = false,
-        .min_silence_duration = 0.4f,
-    };
+    speech_config_t config{};
+    config.model_dir = nullptr;
+    config.use_int8 = true;
+    config.use_qnn = false;
+    config.enable_enhancer = false;
+    config.transcribe_only = false;
+    config.min_silence_duration = 0.4f;
+    return config;
 }
 
 extern "C" speech_pipeline_t speech_create(speech_config_t config,
@@ -180,5 +180,9 @@ extern "C" void speech_destroy(speech_pipeline_t pipeline) {
 }
 
 extern "C" const char* speech_version(void) {
+#ifdef SPEECH_PACKAGE_VERSION
+    return SPEECH_PACKAGE_VERSION;
+#else
     return "0.0.2";
+#endif
 }

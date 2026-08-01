@@ -18,6 +18,9 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | `OnnxVoxCPM2Tts` | `TTSInterface` | `speech_core/models/onnx_voxcpm2_tts.h` | full |
 | `OnnxNemotronStreamingStt` | `STTInterface` | `speech_core/models/onnx_nemotron_streaming_stt.h` | full (streaming) |
 | `NemotronMultilingualStt` | `STTInterface` | `speech_core/models/nemotron_multilingual_stt.h` | full (streaming, prompt-conditioned) |
+| `OnnxMossTranscribeDiarize` | `TranscribeDiarizeInterface` | `speech_core/models/onnx_moss_transcribe_diarize.h` | full (joint paragraph text/activity) |
+| `OnnxReDimNetSpeakerEmbedding` | `EmbeddingInterface` | `speech_core/models/onnx_redimnet_speaker_embedding.h` | full (long identity + short retrieval probe) |
+| `OnnxLocalVQEEchoCanceller` | `FrameEchoCancellerInterface`, `EchoCancellerInterface` | `speech_core/models/onnx_localvqe_echo_canceller.h` | full (hybrid DSP + neural AEC) |
 | `OnnxPersonaPlex` | `FullDuplexSpeechInterface` | `speech_core/models/onnx_personaplex.h` | structural — see [OnnxPersonaPlex](#onnxpersonaplex) |
 
 ### LiteRT backend (`SPEECH_CORE_WITH_LITERT`)
@@ -103,6 +106,48 @@ combined reference + continuation clone mode.
 
 All ORT wrappers share an internal ONNX Runtime singleton (`OnnxEngine` in `speech_core/models/onnx_engine.h`) that owns the `OrtEnv` and `OrtMemoryInfo`. Most LiteRT wrappers share `LiteRTEngine` (`speech_core/models/litert_engine.h`). Kokoro uses the stable TFLite Interpreter ABI exported by `libLiteRt` so its constructor can set the XNNPACK thread count directly. The current reference wrappers are CPU-only; NNAPI / GPU / Hexagon delegates are not wired here.
 
+## Passive meeting transcription models
+
+The portable passive-recording stack mirrors speech-swift's fixed meeting
+pipeline:
+
+- `NemotronMultilingualStt` emits revisable, text-only previews.
+- `OnnxMossTranscribeDiarize` replaces them with authoritative paragraph text
+  and paragraph-local speaker activity.
+- `OnnxReDimNetSpeakerEmbedding` maps clean, non-overlapped activity audio to
+  recording-local or saved voice identities.
+- `OnnxLocalVQEEchoCanceller` removes an independently captured playback
+  reference from microphone audio before microphone VAD or ASR.
+
+Each model remains independently usable. `MeetingTranscriptionTrack`,
+`RecordingSpeakerIdentity`, and `TimestampedEchoCancellationStream` in
+`speech_core/pipeline/` provide the shared orchestration used by applications.
+Construct one meeting track per capture source; do not mix system and
+microphone PCM or share source-local VAD/streaming state.
+
+```cpp
+#include <speech_core/models/onnx_localvqe_echo_canceller.h>
+#include <speech_core/models/onnx_moss_transcribe_diarize.h>
+#include <speech_core/models/onnx_redimnet_speaker_embedding.h>
+
+speech_core::OnnxMossTranscribeDiarize moss("/models/moss");
+speech_core::OnnxReDimNetSpeakerEmbedding identity(
+    "/models/redimnet/ReDimNet2B6.onnx");
+speech_core::OnnxLocalVQEEchoCanceller aec("/models/localvqe");
+```
+
+MOSS's `S01`… values are result-local activity labels, never durable people.
+ReDimNet embeddings are identity hints, not authentication. The ordinary
+identity path requires at least two seconds of clean audio; the strict
+0.6-to-2-second path may only retrieve an already-established identity.
+
+LocalVQE's ONNX graph is only the recurrent residual-mask network. Its C++
+wrapper also runs the released delay estimator, adaptive filter/controller,
+STFT codec, and overlap-add state. Passive recorders should timestamp-align
+the still-separate microphone and playback streams through
+`TimestampedEchoCancellationStream`; alignment or inference failures must be
+handled explicitly rather than substituting raw microphone PCM.
+
 ## Building with ONNX support
 
 ```bash
@@ -118,6 +163,7 @@ cmake --build build
 |---|---|
 | macOS | `lib/libonnxruntime.dylib` |
 | Linux | `lib/libonnxruntime.so` |
+| Windows | `lib/onnxruntime.dll` + `lib/onnxruntime.lib` |
 | Android | `lib/${ANDROID_ABI}/libonnxruntime.so` |
 
 Hardware-accelerated execution providers are picked automatically: NNAPI on Android, QNN on non-Android (if available), CPU fallback otherwise.
@@ -1001,6 +1047,8 @@ speech_core::KokoroTts tts(
     "/models/kokoro_voices",   // directory of .bin voice embeddings
     "/models/kokoro_data");    // directory of vocab + dictionaries
 
+tts.set_voice("af_heart");
+tts.set_speed(1.0f);            // accepted range: 0.25...4.0
 tts.synthesize("Hello world", "en",
     [](const float* samples, size_t len, bool is_final) {
         // append to playback buffer
@@ -1035,6 +1083,7 @@ fewer split/retries are more important than the shorter graph's latency.
 - 24 kHz Float32 output
 - One callback per safe internal text chunk; `is_final=true` marks the final one
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
+  until `set_voice()` selects an explicit persistent voice
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
 - Unsafe length, non-finite PCM, or numerical instability triggers bounded split/retry; output is never clamped or silently dropped
 - Output post-processing: trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
@@ -1073,8 +1122,7 @@ Voice embeddings are 256-float `.bin` files in `voices_dir`. Default voice is `a
 #include <speech_core/models/deepfilter.h>
 
 speech_core::DeepFilterEnhancer enh(
-    "/models/deepfilter.onnx",
-    "/models/deepfilter_aux.bin");
+    "/models/deepfilter.onnx");
 
 std::vector<float> clean(audio.size());
 enh.enhance(audio.data(), audio.size(), 48000, clean.data());
@@ -1082,9 +1130,18 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 
 - DeepFilterNet3 — ~2.1M params, real-time speech enhancement
 - 48 kHz input (caller must resample if needed)
-- STFT (960/480) → ERB filterbank → neural mask + deep filter coefficients → inverse STFT
-- Auxiliary binary file holds precomputed ERB filterbanks and Vorbis window: `erb_fb [481*32] | erb_inv_fb [32*481] | window [960]` (float32)
-- Model files: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) — `deepfilter.onnx` (~8 MB FP16), `deepfilter-auxiliary.bin`
+- Native 960-point STFT (480-sample hop) with libdf analysis scaling, ERB and
+  complex-feature normalization, neural mask + deep-filter coefficients, and
+  streaming overlap-add with 480-sample delay compensation
+- The canonical Vorbis window, disjoint ERB widths, and normalization states
+  are generated in-process. The optional legacy `auxiliary_path` argument
+  accepts `deepfilter-auxiliary.bin` and validates it for compatibility, but
+  does not trust artifact matrices for inference.
+- The ONNX graph contract is `feat_erb [1,1,T,32]`,
+  `feat_spec [1,2,T,96]` → `erb_mask [1,1,T,32]`,
+  `df_coefs [1,5,T,96,2]`; incompatible output shapes fail explicitly.
+- Distribution repository: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX). The runtime needs `deepfilter.onnx`
+  (~8.2 MiB, FP32); `deepfilter-auxiliary.bin` is legacy/optional.
 
 ## OnnxSidonRestorer
 

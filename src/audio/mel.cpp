@@ -66,6 +66,38 @@ static std::vector<float> mel_filterbank(
 
     // Triangular filters [num_mel_bins * num_bins]
     std::vector<float> fb(num_mel_bins * num_bins, 0.0f);
+    if (slaney_norm) {
+        // Construct in double precision in Hz space, exactly as
+        // librosa.filters.mel does (float64 ramps, cast at the end). The
+        // float32 bin-space construction below shifts triangle edges by
+        // ~1e-3 bins, which the log amplifies to 0.1..0.3 in near-floor
+        // top bins — measured against the Parakeet reference extractor.
+        // Init-time only; the HTK path keeps the legacy arithmetic so the
+        // LiteRT-validated outputs stay byte-stable.
+        std::vector<double> hz_d(num_mel_bins + 2);
+        for (int i = 0; i < num_mel_bins + 2; i++) {
+            hz_d[i] = static_cast<double>(hz_points[i]);
+        }
+        const double bin_hz = static_cast<double>(sample_rate)
+                              / static_cast<double>(n_fft);
+        for (int m = 0; m < num_mel_bins; m++) {
+            const double left = hz_d[m];
+            const double center = hz_d[m + 1];
+            const double right = hz_d[m + 2];
+            const double enorm = (right > left) ? 2.0 / (right - left) : 0.0;
+            for (int f = 0; f < num_bins; f++) {
+                const double f_hz = f * bin_hz;
+                double w = 0.0;
+                if (f_hz >= left && f_hz <= center && center > left) {
+                    w = (f_hz - left) / (center - left);
+                } else if (f_hz > center && f_hz <= right && right > center) {
+                    w = (right - f_hz) / (right - center);
+                }
+                fb[m * num_bins + f] = static_cast<float>(w * enorm);
+            }
+        }
+        return fb;
+    }
     for (int m = 0; m < num_mel_bins; m++) {
         float left = bin_freqs[m];
         float center = bin_freqs[m + 1];
@@ -79,18 +111,6 @@ static std::vector<float> mel_filterbank(
                 fb[m * num_bins + f] = (right - ff) / (right - center);
             }
         }
-
-        // Slaney normalization: divide each filter by its bandwidth in Hz
-        // so the filter has unit area. Matches torchaudio norm="slaney".
-        if (slaney_norm) {
-            float bandwidth = hz_points[m + 2] - hz_points[m];
-            if (bandwidth > 0.0f) {
-                float enorm = 2.0f / bandwidth;
-                for (int f = 0; f < num_bins; f++) {
-                    fb[m * num_bins + f] *= enorm;
-                }
-            }
-        }
     }
     return fb;
 }
@@ -100,10 +120,13 @@ std::vector<float> mel_spectrogram(
     int sample_rate, int n_fft, int hop_length,
     int win_length, int num_mel_bins,
     bool slaney_norm, float log_floor, bool center,
-    bool torch_stft_layout)
+    bool torch_stft_layout, bool center_pad_zeros,
+    bool symmetric_torch_window)
 {
-    // Optional center padding: pad signal by n_fft/2 on each side using
-    // reflect mode (matches torchaudio / NeMo center=True).
+    // Optional center padding: pad signal by n_fft/2 on each side. Reflect
+    // mode matches torchaudio center=True defaults; center_pad_zeros
+    // matches torch.stft(pad_mode="constant") — the Parakeet/NeMo
+    // training front-end.
     std::vector<float> padded;
     const float* sig = audio;
     size_t sig_len = length;
@@ -111,19 +134,20 @@ std::vector<float> mel_spectrogram(
     if (center) {
         int pad = n_fft / 2;
         sig_len = length + 2 * static_cast<size_t>(pad);
-        padded.resize(sig_len);
+        padded.assign(sig_len, 0.0f);
 
-        // Left reflect padding: padded[pad-1-i] = audio[i+1] for i in [0, pad-1)
-        for (int i = 0; i < pad; ++i) {
-            int src = std::min(i + 1, static_cast<int>(length) - 1);
-            padded[pad - 1 - i] = audio[src];
-        }
-        // Copy original signal
         std::copy(audio, audio + length, padded.begin() + pad);
-        // Right reflect padding
-        for (int i = 0; i < pad; ++i) {
-            int src = std::max(static_cast<int>(length) - 2 - i, 0);
-            padded[pad + static_cast<int>(length) + i] = audio[src];
+        if (!center_pad_zeros) {
+            // Left reflect padding: padded[pad-1-i] = audio[i+1]
+            for (int i = 0; i < pad; ++i) {
+                int src = std::min(i + 1, static_cast<int>(length) - 1);
+                padded[pad - 1 - i] = audio[src];
+            }
+            // Right reflect padding
+            for (int i = 0; i < pad; ++i) {
+                int src = std::max(static_cast<int>(length) - 2 - i, 0);
+                padded[pad + static_cast<int>(length) + i] = audio[src];
+            }
         }
         sig = padded.data();
     }
@@ -141,10 +165,13 @@ std::vector<float> mel_spectrogram(
     auto fb = mel_filterbank(num_mel_bins, n_fft, sample_rate, slaney_norm);
 
     // Hann window. torch.hann_window default is PERIODIC (denominator N);
-    // the legacy symmetric form (N-1) stays for the LiteRT-validated paths.
+    // the legacy symmetric form (N-1) stays for the LiteRT-validated paths,
+    // and symmetric_torch_window selects it under the torch layout too
+    // (torch.hann_window(periodic=False) — the Parakeet extractor).
     std::vector<float> window(win_length);
+    const bool periodic = torch_stft_layout && !symmetric_torch_window;
     const float denom = static_cast<float>(
-        torch_stft_layout ? win_length : win_length - 1);
+        periodic ? win_length : win_length - 1);
     for (int i = 0; i < win_length; i++) {
         window[i] = 0.5f * (1.0f - std::cos(2.0f * kPi
                     * static_cast<float>(i) / denom));

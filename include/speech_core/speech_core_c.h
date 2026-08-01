@@ -231,11 +231,17 @@ sc_pipeline_t sc_pipeline_create(
 /// Destroy a pipeline and free all resources.
 void sc_pipeline_destroy(sc_pipeline_t pipeline);
 
-/// Start processing audio.
+/// Start processing audio with clean input/turn-detection state.
 void sc_pipeline_start(sc_pipeline_t pipeline);
 
-/// Stop processing and cancel in-progress work.
+/// Stop processing, discard buffered/queued input, and cancel in-progress work.
 void sc_pipeline_stop(sc_pipeline_t pipeline);
+
+/// Discard the active turn without stopping the pipeline.
+///
+/// Clears buffered and queued input, invalidates in-progress STT/LLM/TTS
+/// results, and resets turn detection for an independent audio stream.
+void sc_pipeline_cancel_current_turn(sc_pipeline_t pipeline);
 
 /// Feed microphone audio samples (Float32 PCM at VAD sample rate).
 void sc_pipeline_push_audio(sc_pipeline_t pipeline,

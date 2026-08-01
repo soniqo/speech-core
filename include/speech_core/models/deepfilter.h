@@ -24,9 +24,12 @@ public:
         int sample_rate = 48000;
     };
 
-    DeepFilterEnhancer(const std::string& model_path,
-                       const std::string& auxiliary_path,
-                       bool hw_accel = true);
+    /// Canonical DSP tables are generated in-process. An optional legacy
+    /// auxiliary file is checked for parity, but its matrices are never
+    /// trusted for inference.
+    explicit DeepFilterEnhancer(const std::string& model_path,
+                                const std::string& auxiliary_path = {},
+                                bool hw_accel = true);
     ~DeepFilterEnhancer() override;
 
     /// Enhance audio by removing noise.
@@ -41,24 +44,16 @@ public:
 
 private:
     void load_auxiliary(const std::string& path);
-    void compute_erb_features(const float* spectrum_real,
-                              const float* spectrum_imag,
-                              int num_frames,
-                              std::vector<float>& feat_erb,
-                              std::vector<float>& feat_spec);
-    void apply_erb_mask(float* spectrum_real, float* spectrum_imag,
-                        const float* mask, int num_frames);
-    void apply_deep_filter(float* spectrum_real, float* spectrum_imag,
-                           const float* coefs, int num_frames);
 
-    const OrtApi* api_;
+    const OrtApi* api_ = nullptr;
     OrtSession* session_ = nullptr;
     Config cfg_;
 
-    // ERB filterbanks
-    std::vector<float> erb_fb_;       // [freq_bins, erb_bands]
-    std::vector<float> erb_inv_fb_;   // [erb_bands, freq_bins]
-    std::vector<float> window_;       // Vorbis window [fft_size]
+    // Canonical libdf frontend data. The historical auxiliary path remains in
+    // the constructor for bundle compatibility, but these values are derived
+    // in-process so a transposed/normalized artifact cannot corrupt audio.
+    std::vector<int> erb_widths_;
+    std::vector<float> window_;
 };
 
 }  // namespace speech_core

@@ -10,14 +10,14 @@
 
 CPU üzerinde yerel çalışır. Çıkarımda bulut veya Python yoktur; ses cihazdan ayrılmaz.
 
-**[📚 Tam belgeler →](https://soniqo.audio/tr/speech-core)** · **[🐧 Linux](https://soniqo.audio/tr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/tr/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 Tam belgeler →](https://soniqo.audio/tr/speech-core)** · **[🐧 Linux](https://soniqo.audio/tr/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/tr/getting-started/windows)** · **[⌨️ Masaüstü CLI](docs/cli.md)** · **[🔊 HTTP ses](docs/http-server.md)**
 
 **[🤗 Modeller](https://huggingface.co/soniqo)** · **[🍎 Apple kardeş projesi](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Demo
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="VoxCPM2 ile ses klonlama — YouTube'da Speech Studio demosu"></a></p>
-<p align="center"><em>VoxCPM2 ile ses klonlama — YouTube'da Speech Studio demosu</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Android'de 1.2 GB'a sığan tamamen çevrimdışı sesli ajan — demoyu YouTube'da izleyin"></a></p>
+<p align="center"><em>Android'de 1.2 GB içinde tamamen çevrimdışı sesli ajan — speech-android control-demo</em></p>
 
 ## Neden speech-core
 
@@ -30,14 +30,13 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 - **Taşınabilir API:** yerel C++ ve Kotlin/JNI, Swift/FFI, gömülü Linux için C API'leri.
 - **Çok hedefli test:** Linux, Windows, macOS, Android odaklı arm64 build'leri, sanitizer'lar ve modelli nightly testleri.
 
-## v0.0.10 yenilikleri
+## v0.0.11 yenilikleri
 
-- **Parakeet-EOU 120M:** az bellekli çok dilli akışlı ASR; söz sonu token'ları, isteğe bağlı beam search, bağlamsal biasing ve aşırı bias sınırı.
-- **Yerel Whisper ONNX:** small'dan large-v3/turbo'ya, dil algılama veya sabit dil prompt'u, profil ve CPU ayarları.
-- **Daha geniş TTS:** Kokoro yanında VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic ve Indic-Mio; tamponlu son işleme ve transkript yönlendirmeli klonlama.
-- **Daha hızlı konuşmalar:** kısa turlar için Kokoro optimizasyonu, uzun metinde cümle parçalama ve sürekli konuşma öncesi tampon.
-- **Cihaz içi LLM araçları:** LiteRT-LM ile FunctionGemma, Ollama adaptörü ve pipeline araç döngüsü.
-- **Yayın kalitesinde Linux CLI:** amd64/arm64 paketleri, model indiriciler, mimariye göre komutlar ve temiz konteyner smoke testleri.
+- **OpenAI uyumlu yerel TTS:** `speech-server`, OpenAI model takma adları, yerel/genel sesler, dil ve hız kontrolü, WAV/PCM çıkışı ve isteğe bağlı Bearer kimlik doğrulamasıyla `POST /v1/audio/speech` sunar.
+- **Windows paketi:** sunucu, ONNX CLI araçları, `speech.dll`, ONNX Runtime ve PowerShell model indiricisini içeren bağımsız x64 ZIP; CI paketi açıp smoke test uygular.
+- **DeepFilterNet3 eşliği:** libdf uyumlu STFT ölçekleme, ERB/kompleks normalizasyon, deep filtering, overlap-add ve 480 örnek gecikme telafisi referans DSP davranışını geri getirir.
+- **Akışlı Pocket TTS:** ONNX backend sabit 80 ms kareler, sınırlı decoder cache ve isteğe bağlı model destekli round-trip doğrulama sunar.
+- **Doğru Silero v5 bağlamı:** her ONNX inference artık graph'ın istediği 64 örneklik sol bağlamı alır.
 
 ## Desteklenen modeller
 
@@ -48,10 +47,12 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/whisper) | Çok dilli konuşmadan metne | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/nemotron) | Akışlı STT | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/tr/guides/nemotron) | Prompt koşullu akışlı STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Çok dilli transkripsiyon + konuşmacı etkinliği | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/tr/guides/dictate) | Akışlı STT + söz sonu | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/omnilingual) | Çok dilli STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/diarize) | Diarization segmentasyonu | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/embed-speaker) | Konuşmacı embedding'i | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Konuşmacı embedding'i | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + ses klonlama | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/voxcpm2) | 48 kHz TTS + ses klonlama | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/cosyvoice) | Koşullu 24 kHz TTS | aşamalı | — |
@@ -59,7 +60,9 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/supertonic) | Metinden konuşma | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/indic-mio) | Hint dilleri ses klonlama + duygu | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/kokoro) | Metinden konuşma | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Akışlı TTS (sabit Alba sesi) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/denoise) | Konuşma iyileştirme | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Akustik yankı giderme | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/restore) | Gürültü ve yankı giderme (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/respond) | Full-duplex konuşmadan konuşmaya (CUDA) | yapısal | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/tr/guides/function-calls) | Cihaz içi yapılandırılmış araç çağrıları | — | LiteRT-LM |
@@ -124,7 +127,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Yayınlar amd64 ve arm64 için `.deb` ve `.tar.gz` içerir. Runtime kütüphaneleri dahildir, modeller değildir.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 veya arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +135,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 amd64 paketi LiteRT VoxCPM2 ses klonlama komutunu da içerir. x86 bundle yaklaşık 13 GB'dir:

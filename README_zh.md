@@ -10,18 +10,18 @@
 
 完全在本地 CPU 上运行。推理不依赖云端或 Python，音频不会离开设备。
 
-**[📚 完整文档 →](https://soniqo.audio/zh/speech-core)** · **[🐧 Linux](https://soniqo.audio/zh/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/zh/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 完整文档 →](https://soniqo.audio/zh/speech-core)** · **[🐧 Linux](https://soniqo.audio/zh/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/zh/getting-started/windows)** · **[⌨️ 桌面 CLI](docs/cli.md)** · **[🔊 HTTP 音频](docs/http-server.md)**
 
 **[🤗 模型](https://huggingface.co/soniqo)** · **[🍎 Apple 端项目](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## 演示
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg">
-    <img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="使用 VoxCPM2 进行声音克隆 — 在 YouTube 观看 Speech Studio 演示">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="我们把完整的离线语音代理装进 Android 的 1.2 GB — 在 YouTube 观看演示">
   </a>
 </p>
-<p align="center"><em>使用 VoxCPM2 进行声音克隆 — 在 YouTube 观看 Speech Studio 演示</em></p>
+<p align="center"><em>在 Android 上以 1.2 GB 运行的完整离线语音代理 — speech-android control-demo</em></p>
 
 ## 为什么选择 speech-core
 
@@ -34,14 +34,13 @@ speech-core 将小巧、与模型无关的编排层和可选推理后端分离�
 - **可移植接口：** 原生 C++ API 以及适合 Kotlin/JNI、Swift/FFI、嵌入式 Linux 等宿主的 C API。
 - **跨目标测试：** Linux、Windows、macOS、面向 Android 的 arm64 构建、Sanitizer 与模型夜间测试。
 
-## v0.0.10 亮点
+## v0.0.11 亮点
 
-- **Parakeet-EOU 120M：** 低内存多语言流式 ASR，支持话语结束 token、可选束搜索、上下文短语偏置与过度偏置上限。
-- **原生 Whisper ONNX：** 覆盖 small 到 large-v3/turbo，支持语言检测或固定语言提示、性能分析与 CPU 调优。
-- **更丰富的 TTS：** 除 Kokoro 外新增 VoxCPM/VoxCPM2、CosyVoice3、Chatterbox、Supertonic 与 Indic-Mio；支持缓冲式后处理和转录引导克隆。
-- **更快的对话：** Kokoro 短话轮优化、长文本按句切分，以及播放前后连续保留预语音缓冲。
-- **端侧 LLM 工具：** 通过 LiteRT-LM 运行 FunctionGemma，并保留 Ollama 适配器与管线工具调用循环。
-- **可发布的 Linux CLI：** amd64/arm64 软件包、模型下载助手、按架构判断命令可用性与干净容器冒烟测试。
+- **兼容 OpenAI 的本地 TTS：** `speech-server` 提供 `POST /v1/audio/speech`，支持 OpenAI 模型别名、原生与通用音色、语言和语速控制、WAV/PCM 输出以及可选 Bearer 认证。
+- **Windows 发布包：** 自包含 x64 ZIP 内含服务器、ONNX CLI 工具、`speech.dll`、ONNX Runtime 和原生 PowerShell 模型下载器；CI 会构建、解压并冒烟测试该软件包。
+- **DeepFilterNet3 对齐：** 与 libdf 一致的原生 STFT 缩放、ERB/复数归一化、深度滤波、重叠相加及 480 样本延迟补偿恢复参考 DSP 行为。
+- **流式 Pocket TTS：** ONNX 后端输出固定 80 毫秒帧，使用有界解码器缓存，并提供可选的模型回环验证工具。
+- **正确的 Silero v5 上下文：** 每次 ONNX 推理现在都会传入图所需的 64 样本左上下文。
 
 ## 支持的模型
 
@@ -52,10 +51,12 @@ speech-core 将小巧、与模型无关的编排层和可选推理后端分离�
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/whisper) | 多语言语音转文字 | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/nemotron) | 流式语音转文字 | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/zh/guides/nemotron) | 提示词控制的流式 STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | 多语言转写 + 说话人活动 | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/zh/guides/dictate) | 流式 STT + 话语结束检测 | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/omnilingual) | 多语言语音转文字 | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/diarize) | 说话人分离切分 | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/embed-speaker) | 说话人嵌入 | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | 说话人嵌入 | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + 声音克隆 | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/voxcpm2) | 48 kHz TTS + 声音克隆 | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/cosyvoice) | 24 kHz 条件式 TTS | 预备 | — |
@@ -63,7 +64,9 @@ speech-core 将小巧、与模型无关的编排层和可选推理后端分离�
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/supertonic) | 文字转语音 | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/indic-mio) | 印地语/印度语言声音克隆 + 情感 | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/kokoro) | 文字转语音 | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | 流式 TTS（固定 Alba 音色） | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/denoise) | 语音增强 | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | 声学回声消除 | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/restore) | 降噪 + 去混响（16 → 48 kHz） | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/respond) | 全双工语音到语音（CUDA） | 结构已实现 | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/zh/guides/function-calls) | 端侧结构化工具调用 | — | LiteRT-LM |
@@ -138,7 +141,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 每个 release 都提供 amd64 和 arm64 的 `.deb` 与 `.tar.gz` 软件包。软件包包含运行时库，但不包含模型。
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 或 arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -147,6 +150,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 amd64 软件包还包含 LiteRT VoxCPM2 声音克隆命令。x86 模型包约 13 GB，需要显式下载：

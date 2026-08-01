@@ -10,18 +10,18 @@ On-device speech infrastructure in **C++17** for **Linux, Windows, and Android**
 
 Runs locally on CPU. No cloud, no Python at inference, and no audio leaves the machine.
 
-**[📚 Full documentation →](https://soniqo.audio/speech-core)** · **[🐧 Linux](https://soniqo.audio/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 Full documentation →](https://soniqo.audio/speech-core)** · **[🐧 Linux](https://soniqo.audio/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/getting-started/windows)** · **[⌨️ Desktop CLI](docs/cli.md)** · **[🔊 HTTP audio](docs/http-server.md)**
 
 **[🤗 Models](https://huggingface.co/soniqo)** · **[🍎 Apple sibling](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Demo
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=EuIU8tOWyzg">
-    <img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Voice cloning with VoxCPM2 — watch the speech-studio demo on YouTube">
+  <a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0">
+    <img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="We fit a full offline voice agent into 1.2 GB on Android — watch the demo on YouTube">
   </a>
 </p>
-<p align="center"><em>Voice cloning with VoxCPM2 — watch the speech-studio demo on YouTube</em></p>
+<p align="center"><em>A full offline voice agent in 1.2 GB on Android — the speech-android control-demo</em></p>
 
 ## Why speech-core
 
@@ -34,14 +34,13 @@ speech-core separates a small, model-agnostic orchestration layer from optional 
 - **Portable surface:** native C++ API plus C APIs suitable for Kotlin/JNI, Swift/FFI, embedded Linux, and other hosts.
 - **Tested across targets:** Linux, Windows, macOS, Android-oriented arm64 builds, sanitizers, and model-backed nightly lanes.
 
-## v0.0.10 highlights
+## v0.0.11 highlights
 
-- **Parakeet-EOU 120M:** low-memory multilingual streaming ASR with end-of-utterance tokens, opt-in beam search, contextual phrase biasing, and an over-bias cap.
-- **Native Whisper ONNX:** small through large-v3/turbo, language detection or fixed-language prompts, profiling, and CPU tuning controls.
-- **Broader TTS:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic, and Indic-Mio runtimes alongside Kokoro; buffered post-processing and transcript-guided cloning.
-- **Faster conversations:** Kokoro short-turn optimizations, sentence chunking for long text, and continuous pre-speech buffering around playback.
-- **On-device LLM tools:** FunctionGemma through LiteRT-LM plus the existing Ollama adapter and pipeline tool-call loop.
-- **Release-grade Linux CLI:** amd64 and arm64 packages, model download helpers, architecture-aware command availability, and clean-container smoke tests.
+- **OpenAI-compatible local TTS:** `speech-server` exposes `POST /v1/audio/speech` with OpenAI model aliases, native and generic voices, language and speed controls, WAV/PCM output, and optional bearer authentication.
+- **Windows release package:** a self-contained x64 ZIP ships the server, ONNX CLI tools, `speech.dll`, ONNX Runtime, and a native PowerShell model downloader; CI builds and smoke-tests the extracted archive.
+- **DeepFilterNet3 parity:** native libdf-compatible STFT scaling, ERB/complex normalization, deep filtering, overlap-add, and 480-sample delay compensation restore reference DSP behavior.
+- **Streaming Pocket TTS:** the ONNX backend emits fixed 80 ms frames with a bounded decoder cache and an opt-in model-backed round-trip harness.
+- **Correct Silero v5 context:** every ONNX inference now receives the graph's required 64-sample left context.
 
 ## Supported models
 
@@ -52,10 +51,12 @@ speech-core separates a small, model-agnostic orchestration layer from optional 
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/guides/whisper) | Multilingual speech-to-text | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/nemotron) | Streaming speech-to-text | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/guides/nemotron) | Prompt-conditioned streaming STT | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Multilingual transcription + speaker activity | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/guides/dictate) | Streaming STT + end-of-utterance | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/omnilingual) | Multilingual speech-to-text | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/diarize) | Diarization segmentation | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/embed-speaker) | Speaker embedding | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Speaker embedding | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | 16 kHz TTS + voice cloning | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/guides/voxcpm2) | 48 kHz TTS + voice cloning | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/guides/cosyvoice) | 24 kHz conditioned TTS | staged | — |
@@ -63,7 +64,9 @@ speech-core separates a small, model-agnostic orchestration layer from optional 
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/supertonic) | Text-to-speech | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/indic-mio) | Hindi/Indic voice cloning + emotion | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/guides/kokoro) | Text-to-speech | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Streaming TTS (fixed Alba voice) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/guides/denoise) | Speech enhancement | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Acoustic echo cancellation | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/guides/restore) | Denoise + dereverb (16 → 48 kHz) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/guides/respond) | Full-duplex speech-to-speech (CUDA) | structural | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/guides/function-calls) | On-device structured tool calls | — | LiteRT-LM |
@@ -138,7 +141,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Releases ship `.deb` and `.tar.gz` packages for amd64 and arm64. The package bundles runtime libraries but not models.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 or arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -147,6 +150,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 The amd64 package also includes the LiteRT VoxCPM2 voice-cloning command. Its x86 bundle is about 13 GB and is downloaded explicitly:

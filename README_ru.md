@@ -10,14 +10,14 @@
 
 Работает локально на CPU. Без облака и Python во время инференса; аудио не покидает устройство.
 
-**[📚 Полная документация →](https://soniqo.audio/ru/speech-core)** · **[🐧 Linux](https://soniqo.audio/ru/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ru/getting-started/windows)** · **[⌨️ Linux CLI](docs/cli.md)**
+**[📚 Полная документация →](https://soniqo.audio/ru/speech-core)** · **[🐧 Linux](https://soniqo.audio/ru/getting-started/linux)** · **[🪟 Windows](https://soniqo.audio/ru/getting-started/windows)** · **[⌨️ Настольный CLI](docs/cli.md)** · **[🔊 HTTP-аудио](docs/http-server.md)**
 
 **[🤗 Модели](https://huggingface.co/soniqo)** · **[🍎 Проект для Apple](https://github.com/soniqo/speech-swift)** · **[💬 Discord](https://discord.gg/TnCryqEMgu)**
 
 ## Демонстрация
 
-<p align="center"><a href="https://www.youtube.com/watch?v=EuIU8tOWyzg"><img src="https://img.youtube.com/vi/EuIU8tOWyzg/maxresdefault.jpg" width="640" alt="Клонирование голоса с VoxCPM2 — демонстрация Speech Studio на YouTube"></a></p>
-<p align="center"><em>Клонирование голоса с VoxCPM2 — демонстрация Speech Studio на YouTube</em></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=7L7_Uvvxtv0"><img src="https://img.youtube.com/vi/7L7_Uvvxtv0/maxresdefault.jpg" width="640" alt="Полностью офлайновый голосовой агент в 1,2 ГБ на Android — смотреть демо на YouTube"></a></p>
+<p align="center"><em>Полностью офлайновый голосовой агент в 1,2 ГБ на Android — control-demo из speech-android</em></p>
 
 ## Зачем нужен speech-core
 
@@ -30,14 +30,13 @@ speech-core отделяет компактный, независимый от �
 - **Переносимый API:** C++ и C API для Kotlin/JNI, Swift/FFI, встраиваемого Linux и других хостов.
 - **Многоцелевые тесты:** Linux, Windows, macOS, arm64-сборки для Android, sanitizers и nightly с моделями.
 
-## Основное в v0.0.10
+## Основное в v0.0.11
 
-- **Parakeet-EOU 120M:** компактный многоязычный streaming ASR с токенами конца реплики, опциональным beam search, контекстным biasing и ограничением переусиления.
-- **Нативный Whisper ONNX:** от small до large-v3/turbo, определение или фиксированная подсказка языка, профилирование и настройка CPU.
-- **Больше TTS:** VoxCPM/VoxCPM2, CosyVoice3, Chatterbox, Supertonic и Indic-Mio вместе с Kokoro; буферная постобработка и клонирование с транскриптом.
-- **Более быстрые диалоги:** оптимизация коротких реплик Kokoro, разбиение длинного текста и постоянный pre-speech-буфер.
-- **Локальные LLM-инструменты:** FunctionGemma через LiteRT-LM, адаптер Ollama и цикл tool calls в конвейере.
-- **Готовый Linux CLI:** пакеты amd64/arm64, загрузчики моделей, команды с учётом архитектуры и smoke-тесты в чистых контейнерах.
+- **Локальный TTS с API OpenAI:** `speech-server` предоставляет `POST /v1/audio/speech`, алиасы моделей OpenAI, встроенные и универсальные голоса, язык и скорость, WAV/PCM и опциональную Bearer-аутентификацию.
+- **Пакет Windows:** автономный x64 ZIP включает сервер, ONNX CLI, `speech.dll`, ONNX Runtime и PowerShell-загрузчик моделей; CI распаковывает и проверяет пакет.
+- **Паритет DeepFilterNet3:** совместимые с libdf STFT, ERB/комплексная нормализация, deep filtering, overlap-add и компенсация задержки 480 отсчётов восстанавливают эталонный DSP.
+- **Потоковый Pocket TTS:** ONNX-бэкенд выдаёт фиксированные кадры по 80 мс, использует ограниченный кэш и поддерживает опциональную проверку round-trip с моделью.
+- **Корректный контекст Silero v5:** каждая ONNX-инференция получает требуемые 64 отсчёта левого контекста.
 
 ## Поддерживаемые модели
 
@@ -48,10 +47,12 @@ speech-core отделяет компактный, независимый от �
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/whisper) | Многоязычное распознавание | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковое распознавание | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковый STT с prompt | ✓ | ✓ |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Многоязычная транскрипция + активность говорящих | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ru/guides/dictate) | Потоковый STT + конец реплики | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/omnilingual) | Многоязычный STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/diarize) | Сегментация для диаризации | — | ✓ |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/soniqo/WeSpeaker-ResNet34-LM-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/embed-speaker) | Эмбеддинг говорящего | — | ✓ |
+| [ReDimNet2-B6](https://huggingface.co/soniqo/ReDimNet2-B6-ONNX-FP32) | Эмбеддинг говорящего | ✓ | — |
 | [VoxCPM 0.5B](https://huggingface.co/soniqo/VoxCPM-0.5B-ONNX) | TTS 16 кГц + клонирование | ✓ | — |
 | [VoxCPM2 (2B)](https://huggingface.co/soniqo/VoxCPM2-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/voxcpm2) | TTS 48 кГц + клонирование | ✓ | ✓ |
 | [CosyVoice3 0.5B](https://huggingface.co/soniqo/CosyVoice3-0.5B-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/cosyvoice) | Условный TTS 24 кГц | поэтапно | — |
@@ -59,7 +60,9 @@ speech-core отделяет компактный, независимый от �
 | [Supertonic 3](https://huggingface.co/soniqo/Supertonic-3-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/supertonic) | Синтез речи | — | ✓ |
 | [Indic-Mio](https://huggingface.co/soniqo/Indic-Mio-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/indic-mio) | Клонирование на языках Индии + эмоции | — | ✓ |
 | [Kokoro 82M](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/kokoro) | Синтез речи | ✓ | ✓ |
+| [Pocket TTS 100M](https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8) | Потоковый TTS (фиксированный голос Alba) | ✓ | — |
 | [DeepFilterNet3](https://huggingface.co/soniqo/DeepFilterNet3-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/denoise) | Улучшение речи | ✓ | — |
+| [LocalVQE v1.4 AEC](https://huggingface.co/soniqo/LocalVQE-v1.4-AEC-200K-ONNX-FP32) | Акустическое эхоподавление | ✓ | — |
 | [Sidon](https://huggingface.co/aufklarer/Sidon-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/restore) | Шумоподавление + дереверберация (16 → 48 кГц) | ✓ | — |
 | [PersonaPlex 7B](https://huggingface.co/soniqo/PersonaPlex-7B-ONNX) · [soniqo.audio](https://soniqo.audio/ru/guides/respond) | Полнодуплексная речь-в-речь (CUDA) | структура | — |
 | [FunctionGemma 270M](https://huggingface.co/soniqo/FunctionGemma-270M-LiteRT-LM) · [soniqo.audio](https://soniqo.audio/ru/guides/function-calls) | Локальные структурированные tool calls | — | LiteRT-LM |
@@ -124,7 +127,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert)
 Релизы содержат `.deb` и `.tar.gz` для amd64 и arm64. Runtime-библиотеки включены, модели — нет.
 
 ```bash
-VERSION=0.0.10
+VERSION=0.0.11
 ARCH="$(dpkg --print-architecture)"   # amd64 или arm64
 curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/speech_${VERSION}_${ARCH}.deb"
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
@@ -132,6 +135,7 @@ speech download-models
 speech transcribe recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
+speech serve
 ```
 
 В amd64-пакет также входит клонирование VoxCPM2 через LiteRT. x86-bundle занимает около 13 ГБ:

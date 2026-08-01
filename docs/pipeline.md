@@ -39,6 +39,47 @@ Speech-to-text only — emits `TranscriptionCompleted` events but produces no au
 audio → VAD → STT → text
 ```
 
+## Passive meeting tracks
+
+`MeetingTranscriptionTrack` is separate from the conversational
+`VoicePipeline`. It implements the fixed source-local path used by passive
+meeting recorders:
+
+```text
+timestamped PCM -> Silero VAD -> Nemotron revisable preview
+                              -> MOSS authoritative paragraph text/activity
+```
+
+Construct one instance per capture source. PCM, VAD state, Nemotron stream,
+paragraph state, and timestamps never cross instances. A MOSS runtime may be
+shared when its implementation serializes inference. The default meeting
+configuration closes a paragraph after 550 ms of silence, retains 200 ms of
+pre/post-roll, first publishes continuous speech at ten seconds, and then
+revises a rolling window capped at twenty seconds.
+
+When MOSS returns paragraph text with no speaker activity, the track decodes
+again with extra source-local audio. Whether that retry still says what the
+paragraph said is application policy, so the track asks the caller:
+`Config::activity_recovery_compatible` judges a retry over the same audio, and
+`Config::following_recovery_compatible` a retry whose speaker-marked text runs
+on past the paragraph. Both receive flattened text; the structural
+preconditions stay in the engine. Leave either unset and that retry is
+rejected — the original paragraph publishes unchanged. There is no default
+rule.
+
+`MeetingTrackEvent::Preview` is non-durable text. A
+`MeetingTrackEvent::Revision` supplies an exact source-local replacement
+interval and authoritative blocks. MOSS activity labels remain scoped to that
+one result. `RecordingSpeakerIdentity` applies independent embedding evidence,
+within-result different-speaker constraints, conservative short-fragment
+galleries, and exact-range backfills. Ambiguous evidence remains unlabelled.
+
+For microphone capture, feed raw microphone and the independently captured
+playback reference to `TimestampedEchoCancellationStream`. Only its cleaned
+output should enter the microphone meeting track. Missing timestamps, buffer
+overrun, or AEC inference errors surface as failures; the class never emits
+raw microphone PCM as a fallback.
+
 ## State Machine
 
 Five states with automatic transitions:
@@ -50,6 +91,24 @@ Five states with automatic transitions:
 | **Transcribing** | STT is processing the utterance | Thinking, Speaking (echo mode), or Idle (empty STT) |
 | **Thinking** | LLM is generating a response | Speaking or Idle |
 | **Speaking** | TTS audio is being emitted / waiting for playback to finish | Idle (on resume_listening) or Listening (on interruption) |
+
+## Input Session Boundaries
+
+`stop()` and the next `start()` form a hard input-session boundary. Buffered
+turn-detector audio, the pre-speech ring, queued utterances, streaming STT
+state, and late results from the previous session are discarded.
+
+For long-lived pipelines, call `cancel_current_turn()` instead. It provides the
+same turn isolation without tearing down worker threads or reloading models:
+
+```cpp
+pipeline.cancel_current_turn();
+// The pipeline is still running and ready for audio from a new mic session.
+```
+
+Cancellation does not clear conversation context. It resets VAD and AEC input
+state, cancels STT/LLM/TTS on a best-effort basis, and uses a turn generation
+to prevent backends that ignore cancellation from emitting stale results.
 
 ## Turn Detection
 
@@ -123,7 +182,8 @@ The pipeline emits events via the `EventCallback`:
 - `push_audio()` is mutex-protected — safe to call from any thread
 - STT/LLM/TTS run on a dedicated worker thread — `push_audio()` never blocks on inference
 - Events are emitted on the calling thread (push_audio events) or the worker thread (STT/TTS events) — platform dispatches to main thread as needed
-- `start()`/`stop()`/`resume_listening()` are mutex-protected
+- Lifecycle calls synchronize with audio and worker state; callers must not
+  invoke `start()` and `stop()` concurrently with each other
 - `resume_listening()` is non-blocking — post-playback guard is applied as a sample counter in the turn detector
 - State reads (`state()`, `is_running()`) are atomic — lock-free
 
