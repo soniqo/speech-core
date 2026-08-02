@@ -174,7 +174,13 @@ private:
     bool cancel_pending_ = false;
     bool cancel_shutdown_ = false;
 
+    /// Thread entry. Runs worker_loop_impl and converts anything it throws
+    /// into an Error event — a backend that raises must not abort the host
+    /// process, which for an embedded SDK means taking the whole app with it.
     void worker_loop();
+    void worker_loop_impl();
+    /// Reports a worker that has stopped and marks the pipeline not running.
+    void fail_worker(const std::string& message);
     void cancel_loop();
     void on_turn_event(const TurnEvent& event);
     void process_utterance(const std::string& transcript,

@@ -449,6 +449,46 @@ void test_stt_error_propagation() {
     printf("  PASS: stt_error_propagation\n");
 }
 
+/// Warm-up runs a transcribe before any audio arrives, so it is the first call
+/// to touch a model and the one a truncated download fails on. test_stt_warmup
+/// covers the succeeding case and test_stt_error_propagation covers a throwing
+/// STT during an utterance, where the worker already guards it — the crossing
+/// of the two was what nothing covered. Unguarded, warm-up throws out of the
+/// worker thread's entry point, which is std::terminate: the host application
+/// dies rather than seeing an error it could handle.
+void test_stt_warmup_error_does_not_terminate() {
+    MockSTT stt;
+    MockTTS tts;
+    MockVAD vad;
+
+    stt.should_throw = true;
+
+    auto config = test_config();
+    config.warmup_stt = true;
+    config.mode = AgentConfig::Mode::Echo;
+
+    EventLog log;
+    VoicePipeline pipeline(stt, tts, nullptr, vad, config,
+        [&log](const PipelineEvent& e) { log.on_event(e); });
+
+    pipeline.start();
+
+    // No audio is pushed, so there is no utterance to wait on — the failure
+    // happens on the worker thread as soon as it starts.
+    for (int i = 0; i < 200 && !log.has(EventType::Error); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    assert(stt.call_count == 1);
+    assert(log.has(EventType::Error));
+    assert(log.text_for(EventType::Error).find("STT") != std::string::npos);
+    // A worker that has stopped must not keep claiming to run.
+    assert(!pipeline.is_running());
+
+    pipeline.stop();
+    printf("  PASS: stt_warmup_error_does_not_terminate\n");
+}
+
 void test_llm_error_propagation() {
     MockSTT stt;
     MockTTS tts;
@@ -3867,6 +3907,7 @@ int main() {
     test_transcribe_only_mode();
     test_push_text_bypasses_stt();
     test_stt_error_propagation();
+    test_stt_warmup_error_does_not_terminate();
     test_llm_error_propagation();
     test_tts_error_propagation();
     test_interruption();
