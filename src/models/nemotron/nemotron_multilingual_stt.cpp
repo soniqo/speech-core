@@ -29,13 +29,14 @@ NemotronMultilingualStt::NemotronMultilingualStt(
     : cfg_(config)
 {
     auto& engine = OnnxEngine::get();
-    api_ = engine.api();
-    encoder_ = engine.load(encoder_path, hw_accel);
+    graphs_ = std::make_shared<Graphs>();
+    api_ = graphs_->api = engine.api();
+    encoder_ = graphs_->encoder = engine.load(encoder_path, hw_accel);
     // Decoder + joint are tiny FP32 graphs invoked many times per utterance;
     // like Parakeet's decoder-joint they stay on CPU (GPU/NNAPI dispatch cost
     // dominates their per-call compute).
-    decoder_ = engine.load(decoder_path, false);
-    joint_   = engine.load(joint_path,   false);
+    decoder_ = graphs_->decoder = engine.load(decoder_path, false);
+    joint_   = graphs_->joint   = engine.load(joint_path,   false);
 
     load_vocab(vocab_path);
     load_languages(languages_path);
@@ -47,11 +48,35 @@ NemotronMultilingualStt::NemotronMultilingualStt(
          cfg_.mel_frames, chunk_samples(), lang_slot_);
 }
 
-NemotronMultilingualStt::~NemotronMultilingualStt() {
-    if (joint_)   api_->ReleaseSession(joint_);
-    if (decoder_) api_->ReleaseSession(decoder_);
-    if (encoder_) api_->ReleaseSession(encoder_);
+NemotronMultilingualStt::NemotronMultilingualStt(
+    const NemotronMultilingualStt& other)
+    : graphs_(other.graphs_),
+      api_(other.api_),
+      encoder_(other.encoder_),
+      decoder_(other.decoder_),
+      joint_(other.joint_),
+      cfg_(other.cfg_),
+      vocab_(other.vocab_),
+      lang2slot_(other.lang2slot_),
+      lang_slot_(other.lang_slot_),
+      auto_slot_(other.auto_slot_),
+      enc_in_(other.enc_in_), enc_out_(other.enc_out_),
+      dec_in_(other.dec_in_), dec_out_(other.dec_out_),
+      jnt_in_(other.jnt_in_), jnt_out_(other.jnt_out_)
+{
+    // Everything above is what loading produced and is immutable afterwards.
+    // The caches below belong to a stream, and this is a new one, so they
+    // start empty rather than carrying the other stream's history.
+    reset_stream_state();
 }
+
+NemotronMultilingualStt::Graphs::~Graphs() {
+    if (joint)   api->ReleaseSession(joint);
+    if (decoder) api->ReleaseSession(decoder);
+    if (encoder) api->ReleaseSession(encoder);
+}
+
+NemotronMultilingualStt::~NemotronMultilingualStt() = default;
 
 // ---------------------------------------------------------------------------
 // Vocabulary / languages

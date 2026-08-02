@@ -4,6 +4,7 @@
 
 #include <onnxruntime_c_api.h>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,7 +31,9 @@ namespace speech_core {
 ///
 /// Unlike Parakeet, language is NOT auto-detected — the caller selects a
 /// prompt slot via set_language() (locale -> slot from languages.json). The
-/// default slot is "en-US". One instance == one stream. Not thread-safe.
+/// default slot is "en-US". One instance == one stream, and an instance is not
+/// thread-safe; the copy constructor gives a second stream over the same
+/// weights, and those two may be driven from different threads.
 ///
 /// Mirrors the reference validator export/onnx_inference.py: whole-utterance
 /// mel sliced into fixed 320 ms windows (pre-emphasis 0.97, Slaney mel,
@@ -73,6 +76,22 @@ public:
                             const std::string& languages_path,
                             const Config& config,
                             bool hw_accel = true);
+
+    /// A second stream over another instance's already-loaded graphs.
+    ///
+    /// One instance is still one stream: this copies the vocabulary, language
+    /// table and cached I/O names, and starts with its own empty caches. What
+    /// it does not copy is the weights. A caller transcribing two sources
+    /// concurrently would otherwise hold the encoder twice, which for this
+    /// model is roughly 700 MB of identical initializers resident twice.
+    ///
+    /// ORT sessions are safe to `Run` from several threads, so the two
+    /// instances may be driven concurrently. They share one intra-op thread
+    /// pool per session, so two busy streams contend where two separately
+    /// loaded instances would not.
+    NemotronMultilingualStt(const NemotronMultilingualStt& other);
+    NemotronMultilingualStt& operator=(const NemotronMultilingualStt&) = delete;
+
     ~NemotronMultilingualStt() override;
 
     /// Select the language prompt slot for subsequent transcription.
@@ -112,6 +131,18 @@ private:
     std::string token_to_text(int id) const;
     int chunk_samples() const { return cfg_.mel_frames * cfg_.hop_length; }
 
+    /// The three loaded graphs, owned jointly by every instance streaming
+    /// through them. Sessions outlive whichever instance loaded them, so a
+    /// shared stream may be destroyed in any order.
+    struct Graphs {
+        const OrtApi* api = nullptr;
+        OrtSession* encoder = nullptr;
+        OrtSession* decoder = nullptr;
+        OrtSession* joint = nullptr;
+        ~Graphs();
+    };
+
+    std::shared_ptr<Graphs> graphs_;
     const OrtApi* api_ = nullptr;
     OrtSession* encoder_ = nullptr;
     OrtSession* decoder_ = nullptr;
