@@ -54,7 +54,7 @@
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | تحويل الكلام إلى نص + ترجمة (en/de/es/fr) | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/nemotron) | تعرف متدفق | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ar/guides/nemotron) | STT متدفق مشروط بـprompt | ✓ | ✓ |
-| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | نسخ متعدد اللغات + نشاط المتحدثين | ✓ | — |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC) | نسخ متعدد اللغات + نشاط المتحدثين | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ar/guides/dictate) | STT متدفق + نهاية القول | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/omnilingual) | تعرف متعدد اللغات | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ar/guides/diarize) | تقسيم لفصل المتحدثين | — | ✓ |

@@ -48,7 +48,7 @@ speech-core отделяет компактный, независимый от �
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | Распознавание речи + перевод (en/de/es/fr) | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковое распознавание | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/ru/guides/nemotron) | Потоковый STT с prompt | ✓ | ✓ |
-| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Многоязычная транскрипция + активность говорящих | ✓ | — |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC) | Многоязычная транскрипция + активность говорящих | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/ru/guides/dictate) | Потоковый STT + конец реплики | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/omnilingual) | Многоязычный STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/ru/guides/diarize) | Сегментация для диаризации | — | ✓ |
