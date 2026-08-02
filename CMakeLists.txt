@@ -52,6 +52,7 @@ add_library(speech_core
     src/pipeline/timestamped_echo_cancellation_stream.cpp
     src/vad/streaming_vad.cpp
     src/transcription/moss_transcript_parser.cpp
+    src/models/sortformer/sortformer_speaker_cache.cpp
     src/audio/audio_buffer.cpp
     src/audio/resampler.cpp
     src/audio/pcm_codec.cpp
