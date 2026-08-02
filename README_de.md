@@ -48,7 +48,7 @@ speech-core trennt eine kleine, modellunabhängige Orchestrierungsschicht von op
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | Speech-to-Text + Übersetzung (en/de/es/fr) | ✓ | — |
 | [Nemotron Speech Streaming (0.6B)](https://huggingface.co/soniqo/Nemotron-Speech-Streaming-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/nemotron) | Streaming-STT | ✓ | ✓ |
 | [Nemotron-3.5 multilingual (0.6B)](https://huggingface.co/soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16) · [soniqo.audio](https://soniqo.audio/de/guides/nemotron) | Prompt-gesteuertes Streaming-STT | ✓ | ✓ |
-| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-FP16) | Mehrsprachige Transkription + Sprecheraktivität | ✓ | — |
+| [MOSS Transcribe-Diarize 0.9B](https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC) | Mehrsprachige Transkription + Sprecheraktivität | ✓ | — |
 | [Parakeet-EOU (120M)](https://huggingface.co/soniqo/Parakeet-EOU-120M-ONNX-INT8) · [soniqo.audio](https://soniqo.audio/de/guides/dictate) | Streaming-STT + Äußerungsende | ✓ | — |
 | [Omnilingual ASR CTC (300M)](https://huggingface.co/soniqo/Omnilingual-ASR-CTC-300M-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/omnilingual) | Mehrsprachiges STT | — | ✓ |
 | [Pyannote Segmentation 3.0](https://huggingface.co/soniqo/Pyannote-Segmentation-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/diarize) | Diarisierungssegmentierung | — | ✓ |
