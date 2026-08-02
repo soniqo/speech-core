@@ -192,6 +192,35 @@ void VoicePipeline::push_audio(const float* samples, size_t count) {
 }
 
 void VoicePipeline::worker_loop() {
+    // Every backend call below reaches third-party runtimes that report
+    // failure by throwing — ORT does this for a graph whose inputs do not
+    // match what the wrapper feeds it. Letting that escape a std::thread
+    // entry point calls std::terminate, so an SDK consumer loses its whole
+    // process to a model problem it could otherwise have handled.
+    try {
+        worker_loop_impl();
+    } catch (const std::exception& e) {
+        fail_worker(std::string("speech worker stopped: ") + e.what());
+    } catch (...) {
+        fail_worker("speech worker stopped: unknown error");
+    }
+}
+
+void VoicePipeline::fail_worker(const std::string& message) {
+    // Deliberately not emit_error: that drops anything whose generation is no
+    // longer current, and a worker that has died is worth reporting whichever
+    // turn it belonged to. The worker is gone once this returns, so the state
+    // has to say so — otherwise is_running() keeps claiming a live pipeline.
+    running_.store(false);
+    state_.store(State::Idle);
+
+    PipelineEvent error;
+    error.type = EventType::Error;
+    error.text = message;
+    if (on_event_) on_event_(error);
+}
+
+void VoicePipeline::worker_loop_impl() {
     // Warm up STT model — first inference is slow due to Neural Engine/GPU
     // cold start. Running a dummy transcription brings latency from ~3s to <1s.
     if (config_.warmup_stt) {
