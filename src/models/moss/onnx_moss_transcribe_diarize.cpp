@@ -328,7 +328,25 @@ int64_t cache_sequence_length(
     return info.shape[3];
 }
 
-std::vector<uint8_t> append_cache(
+/// Restride the cache one step longer, into a buffer the caller keeps.
+///
+/// The sequence axis is not the outermost one, so growing it moves every
+/// head's block and the copy itself cannot be avoided without changing the
+/// graph's cache contract. What can be avoided is doing it into a *fresh*
+/// allocation each step: the buffer reaches tens of megabytes, and asking the
+/// OS for it again per token faults in every page again. Measured on a 29
+/// token paragraph, the copies alone are 2.2 GB and the reallocations another
+/// 2.3 GB of first-touch faults. The caller reserves both buffers once and
+/// swaps them, so `resize` here never reallocates and the fault cost is paid
+/// once per paragraph rather than once per token.
+///
+/// The cost is quadratic in generated tokens either way, so this shrinks the
+/// constant and does not change the shape. Removing the quadratic needs the
+/// decoder re-exported to return its whole cache, or a capacity-padded cache
+/// with the attention mask covering the unused tail -- both of which change
+/// numerics and must be measured against a transcript, not assumed.
+void append_cache_into(
+    std::vector<uint8_t>& output,
     const std::vector<uint8_t>& past, int64_t past_length,
     const std::vector<uint8_t>& delta, int64_t delta_length,
     std::size_t scalar_size) {
@@ -343,22 +361,24 @@ std::vector<uint8_t> append_cache(
         static_cast<std::size_t>(next_length) * head_width;
     const std::size_t head_count =
         static_cast<std::size_t>(kDecoderLayers * kDecoderKvHeads);
-    std::vector<uint8_t> output(head_count * next_head_bytes);
-    for (std::size_t head = 0; head < head_count; ++head) {
-        uint8_t* destination = output.data() + head * next_head_bytes;
+    output.resize(head_count * next_head_bytes);
+    // Backwards: head h's destination overlaps heads above it in the same
+    // buffer only for h below the write head, so descending order keeps every
+    // read ahead of the write when output and past are the same allocation.
+    for (std::size_t index = head_count; index-- > 0;) {
+        uint8_t* destination = output.data() + index * next_head_bytes;
         if (past_head_bytes > 0) {
-            std::memcpy(
-                destination, past.data() + head * past_head_bytes,
+            std::memmove(
+                destination, past.data() + index * past_head_bytes,
                 past_head_bytes);
         }
         if (delta_head_bytes > 0) {
             std::memcpy(
                 destination + past_head_bytes,
-                delta.data() + head * delta_head_bytes,
+                delta.data() + index * delta_head_bytes,
                 delta_head_bytes);
         }
     }
-    return output;
 }
 
 int64_t argmax_logits(
@@ -847,6 +867,19 @@ OnnxMossTranscribeDiarize::transcribe_diarized(
         copy_tensor_bytes(api_, new_keys.get(), decoder_type_);
     std::vector<uint8_t> past_values =
         copy_tensor_bytes(api_, new_values.get(), decoder_type_);
+    // Both buffers reach their final size once, here, instead of growing into
+    // a new allocation on every generated token.
+    const std::size_t cache_capacity =
+        static_cast<std::size_t>(kDecoderLayers * kDecoderKvHeads)
+        * static_cast<std::size_t>(
+            first_key_length + config_.max_new_tokens)
+        * static_cast<std::size_t>(kDecoderHeadDim) * scalar_size;
+    std::vector<uint8_t> scratch_keys;
+    std::vector<uint8_t> scratch_values;
+    past_keys.reserve(cache_capacity);
+    past_values.reserve(cache_capacity);
+    scratch_keys.reserve(cache_capacity);
+    scratch_values.reserve(cache_capacity);
     int64_t past_length = first_key_length;
     int64_t next_token =
         argmax_logits(api_, logits.get(), decoder_type_);
@@ -927,10 +960,14 @@ OnnxMossTranscribeDiarize::transcribe_diarized(
             copy_tensor_bytes(api_, step_keys.get(), decoder_type_);
         const std::vector<uint8_t> delta_values =
             copy_tensor_bytes(api_, step_values.get(), decoder_type_);
-        past_keys = append_cache(
-            past_keys, past_length, delta_keys, key_delta, scalar_size);
-        past_values = append_cache(
-            past_values, past_length, delta_values, value_delta, scalar_size);
+        append_cache_into(
+            scratch_keys, past_keys, past_length,
+            delta_keys, key_delta, scalar_size);
+        past_keys.swap(scratch_keys);
+        append_cache_into(
+            scratch_values, past_values, past_length,
+            delta_values, value_delta, scalar_size);
+        past_values.swap(scratch_values);
         past_length += key_delta;
         next_token =
             argmax_logits(api_, step_logits.get(), decoder_type_);
