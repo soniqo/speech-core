@@ -64,6 +64,15 @@ public:
         float microphone_short_agreement_seconds = 0.40f;
         float continuous_update_seconds = 10.0f;
         float maximum_window_seconds = 20.0f;
+        /// How much un-transcribed audio may wait for the final model.
+        ///
+        /// A queued request owns its copy of its window, so the backlog costs
+        /// the audio in it rather than the number of entries; 600 s of 16 kHz
+        /// mono float is about 38 MB. When the bound is reached the arriving
+        /// paragraph is refused with an error and the backlog is kept, because
+        /// a track that fell behind should finish late rather than lose the
+        /// paragraphs it has already read.
+        float maximum_pending_seconds = 600.0f;
         /// Microphone keeps MOSS text/timing but discards activity labels and
         /// gates sub-400 ms results on independent preview agreement.
         bool microphone = false;

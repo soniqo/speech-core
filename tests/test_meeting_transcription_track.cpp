@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -113,6 +114,46 @@ private:
     bool structured_;
     mutable std::mutex mutex_;
     std::vector<std::size_t> lengths_;
+};
+
+/// Answers nothing until released, so a caller can build a real backlog
+/// instead of racing one into existence.
+class BlockingMoss final
+    : public speech_core::TranscribeDiarizeInterface {
+public:
+    BlockingMoss(int sample_rate, std::string text)
+        : sample_rate_(sample_rate), text_(std::move(text)) {}
+
+    speech_core::DiarizedTranscriptionResult
+    transcribe_diarized(
+        const float*, std::size_t, int sample_rate) override {
+        assert(sample_rate == sample_rate_);
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            released_.wait(lock, [this] { return released; });
+        }
+        speech_core::DiarizedTranscriptionResult result;
+        result.text = text_;
+        result.raw_text = "[0.00][S01]" + text_ + "[0.50]";
+        result.segments.push_back({0.0f, 0.5f, "S01", text_});
+        return result;
+    }
+    int input_sample_rate() const override { return sample_rate_; }
+
+    void release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released = true;
+        }
+        released_.notify_all();
+    }
+
+private:
+    int sample_rate_;
+    std::string text_;
+    std::mutex mutex_;
+    std::condition_variable released_;
+    bool released = false;
 };
 
 class SegmentMoss final
@@ -542,6 +583,110 @@ void test_continuous_windows_consume_identity_audio_once() {
     assert(identity_samples == 3100);
 }
 
+void test_full_queue_refuses_arrival_and_keeps_backlog() {
+    constexpr int sample_rate = 1000;
+    constexpr std::size_t chunk = 100;
+    FakeVad vad(sample_rate, chunk);
+    FakePreview preview(sample_rate, "backlog");
+    // Held until the pushing is done, so every paragraph after the first
+    // queues behind it. This is a track that has fallen behind, which is the
+    // only state in which the bound is reachable.
+    BlockingMoss moss(sample_rate, "backlog");
+    std::mutex event_mutex;
+    std::vector<speech_core::MeetingTrackEvent> events;
+
+    speech_core::MeetingTranscriptionTrack::Config config;
+    config.sample_rate = sample_rate;
+    config.silence_close_seconds = 0.5f;
+    config.continuous_update_seconds = 1.0f;
+    config.maximum_window_seconds = 2.0f;
+    // Small enough that a handful of paragraphs reaches it.
+    config.maximum_pending_seconds = 6.0f;
+    speech_core::MeetingTranscriptionTrack track(
+        preview, moss, vad, config,
+        [&](const speech_core::MeetingTrackEvent& event) {
+            std::lock_guard<std::mutex> lock(event_mutex);
+            events.push_back(event);
+        });
+
+    constexpr int paragraphs = 12;
+    for (int index = 0; index < paragraphs; ++index) {
+        push_chunks(
+            track, sample_rate, 12, 8, chunk,
+            1'000'000'000
+                + static_cast<std::int64_t>(index) * 20'000'000'000LL);
+    }
+    moss.release();
+    track.wait_idle();
+
+    const auto captured = events_with_lock(event_mutex, events);
+    std::size_t published = 0;
+    std::size_t refusals = 0;
+    for (const auto& event : captured) {
+        if (event.type == speech_core::MeetingTrackEventType::Error) {
+            ++refusals;
+        }
+        published += event.blocks.size();
+    }
+
+    // The bound has to have been reached, or this test proves nothing about
+    // what happens when it is.
+    if (refusals == 0) {
+        std::cerr << "queue never filled; published " << published << '\n';
+    }
+    assert(refusals > 0);
+    // Every paragraph the queue accepted is still published. The old
+    // behaviour cleared the queue here, so this count collapsed to whatever
+    // happened to be in flight.
+    if (published + refusals < static_cast<std::size_t>(paragraphs)) {
+        std::cerr << "published " << published << " refused " << refusals
+                  << " of " << paragraphs << '\n';
+    }
+    assert(published + refusals >= static_cast<std::size_t>(paragraphs));
+    assert(published > 0);
+}
+
+void test_full_queue_admits_a_final_over_continuous_windows() {
+    constexpr int sample_rate = 1000;
+    constexpr std::size_t chunk = 100;
+    FakeVad vad(sample_rate, chunk);
+    FakePreview preview(sample_rate, "long");
+    BlockingMoss moss(sample_rate, "long");
+    std::mutex event_mutex;
+    std::vector<speech_core::MeetingTrackEvent> events;
+
+    speech_core::MeetingTranscriptionTrack::Config config;
+    config.sample_rate = sample_rate;
+    config.silence_close_seconds = 0.5f;
+    // Uninterrupted speech long enough to queue continuous windows behind the
+    // held model, so the paragraph's own final arrives to a full queue.
+    config.continuous_update_seconds = 0.5f;
+    config.maximum_window_seconds = 2.0f;
+    config.maximum_pending_seconds = 4.0f;
+    speech_core::MeetingTranscriptionTrack track(
+        preview, moss, vad, config,
+        [&](const speech_core::MeetingTrackEvent& event) {
+            std::lock_guard<std::mutex> lock(event_mutex);
+            events.push_back(event);
+        });
+
+    push_chunks(track, sample_rate, 120, 8, chunk);
+    moss.release();
+    track.wait_idle();
+
+    const auto captured = events_with_lock(event_mutex, events);
+    std::size_t finals = 0;
+    for (const auto& event : captured) {
+        if (event.paragraph_final) ++finals;
+    }
+    // The paragraph closed, so its final had to reach the model even though
+    // the queue was full of the windows that preceded it.
+    if (finals == 0) {
+        std::cerr << "no paragraph-final revision survived a full queue\n";
+    }
+    assert(finals > 0);
+}
+
 void test_preceding_speech_recovers_activity_without_inheritance() {
     constexpr int sample_rate = 1000;
     constexpr std::size_t chunk = 100;
@@ -830,6 +975,8 @@ int main() {
     test_following_speech_backfills_only_compatible_fragment();
     test_following_speech_does_not_guess_from_mismatched_text();
     test_following_recovery_without_policy_keeps_original();
+    test_full_queue_refuses_arrival_and_keeps_backlog();
+    test_full_queue_admits_a_final_over_continuous_windows();
     std::cout << "Meeting transcription track tests passed\n";
     return 0;
 }

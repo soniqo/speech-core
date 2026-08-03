@@ -384,7 +384,9 @@ private:
             || config.silence_close_seconds <= 0.0f
             || config.continuous_update_seconds <= 0.0f
             || config.maximum_window_seconds
-                < config.continuous_update_seconds) {
+                < config.continuous_update_seconds
+            || config.maximum_pending_seconds
+                < config.maximum_window_seconds) {
             throw std::invalid_argument(
                 "Meeting track configuration is invalid");
         }
@@ -629,11 +631,53 @@ private:
         // rolling windows carry stable transcript and identity evidence that
         // a final latest-20-second window cannot reconstruct, so finalization
         // must not drop them.
-        constexpr std::size_t kMaximumPendingRequests = 8;
-        if (requests.size() >= kMaximumPendingRequests) {
+        //
+        // Which is why a full queue refuses the arriving request and keeps the
+        // ones already in it. Resetting here instead would discard the whole
+        // backlog, so a track that fell one paragraph behind would lose every
+        // paragraph waiting -- a recording that ends up empty rather than late,
+        // and empty without the words ever having been wrong.
+        //
+        // The bound is audio rather than entries, because that is what a
+        // queued request actually costs. Falling permanently behind is a
+        // different problem and not one a queue can solve -- there the caller
+        // wants a pipeline it can afford, and refusing a paragraph is how it
+        // finds out.
+        const std::uint64_t maximum_pending = seconds_to_samples(
+            config.maximum_pending_seconds, config.sample_rate);
+        std::uint64_t pending_samples =
+            request.audio.size() + request.recovery_audio.size();
+        for (const auto& queued : requests) {
+            pending_samples +=
+                queued.audio.size() + queued.recovery_audio.size();
+        }
+        // The two kinds of request are not worth the same under pressure. A
+        // continuous window is revisable and losing it costs the identity
+        // evidence it carried; losing a paragraph's final costs the paragraph.
+        // So a final makes room by dropping the oldest continuous window
+        // rather than being refused. Whichever paragraph that window belonged
+        // to still has a final of its own -- either already queued behind it
+        // or yet to be closed -- so this trades evidence for text and never
+        // text for text.
+        while (pending_samples > maximum_pending
+               && request.paragraph_final) {
+            const auto oldest = std::find_if(
+                requests.begin(), requests.end(),
+                [](const Request& queued) {
+                    return !queued.paragraph_final;
+                });
+            if (oldest == requests.end()) break;
+            pending_samples -=
+                oldest->audio.size() + oldest->recovery_audio.size();
+            requests.erase(oldest);
+        }
+        if (pending_samples > maximum_pending) {
             emit_error_locked(
-                "Meeting track final inference queue overran");
-            reset_locked(false);
+                request.paragraph_final
+                    ? "Meeting track final inference queue is full; "
+                      "this paragraph was not transcribed"
+                    : "Meeting track final inference queue is full; "
+                      "this continuous window was dropped");
             return;
         }
         requests.push_back(std::move(request));
