@@ -146,12 +146,40 @@ void test_short_predictions_are_refused() {
     check(out.empty(), "predictions shorter than the state are refused");
 }
 
+void test_chunk_shorter_than_its_context_is_refused() {
+    const auto config = small_config();
+    SortformerSpeakerCache cache(config);
+    // Six frames with one left and seven right of context describes nothing:
+    // the chunk owns a negative number of frames. Unsigned arithmetic would
+    // wrap that into an enormous read past both buffers, so it is refused.
+    std::vector<float> embeddings(6 * config.embedding_dim, 0.1f);
+    const std::size_t total = cache.cache_frames() + cache.fifo_frames() + 6;
+    std::vector<float> predictions(total * config.speakers, 0.5f);
+    const auto out = cache.advance(
+        embeddings.data(), 6, predictions.data(), total, 1, 7);
+    check(out.empty(), "a chunk shorter than its context is refused");
+    check(cache.fifo_frames() == 0, "a refused chunk leaves no state behind");
+}
+
+void test_negative_context_is_refused() {
+    const auto config = small_config();
+    SortformerSpeakerCache cache(config);
+    std::vector<float> embeddings(14 * config.embedding_dim, 0.1f);
+    const std::size_t total = cache.cache_frames() + cache.fifo_frames() + 14;
+    std::vector<float> predictions(total * config.speakers, 0.5f);
+    const auto out = cache.advance(
+        embeddings.data(), 14, predictions.data(), total, -1, 7);
+    check(out.empty(), "negative context is refused");
+}
+
 }  // namespace
 
 int main() {
     test_matches_reference_through_eviction();
     test_reset_restarts_arrival_order();
     test_short_predictions_are_refused();
+    test_chunk_shorter_than_its_context_is_refused();
+    test_negative_context_is_refused();
     if (failures == 0) std::printf("sortformer speaker cache: all checks passed\n");
     return failures == 0 ? 0 : 1;
 }
