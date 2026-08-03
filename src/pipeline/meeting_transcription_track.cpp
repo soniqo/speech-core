@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cctype>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -18,6 +19,19 @@ namespace speech_core {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+/// Runs its action when the enclosing scope ends, however it ends.
+class ScopeExit {
+public:
+    explicit ScopeExit(std::function<void()> action)
+        : action_(std::move(action)) {}
+    ~ScopeExit() { action_(); }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+private:
+    std::function<void()> action_;
+};
 
 std::size_t seconds_to_samples(float seconds, int sample_rate) {
     if (!std::isfinite(seconds) || seconds < 0.0f || sample_rate <= 0) {
@@ -805,6 +819,20 @@ private:
                 worker_busy = true;
             }
 
+            // The track counts as idle only once this request has finished
+            // publishing, which is why the flag is cleared here rather than
+            // as soon as inference returns. A caller that waits for idle and
+            // then reads what was published would otherwise race the last
+            // paragraph out of its own transcript -- the events are emitted
+            // outside the lock, so clearing the flag first lets wait_idle
+            // return while they are still on their way. Every exit from this
+            // iteration goes through the guard, including the early ones.
+            const ScopeExit finish_request([this] {
+                std::lock_guard<std::mutex> lock(mutex);
+                worker_busy = false;
+                if (requests.empty()) idle_cv.notify_all();
+            });
+
             MeetingTrackEvent event;
             std::optional<MeetingTrackEvent>
                 following_recovery;
@@ -850,8 +878,6 @@ private:
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 publish = request.generation == generation;
-                worker_busy = false;
-                if (requests.empty()) idle_cv.notify_all();
             }
             if (publish
                 && (event.type != MeetingTrackEventType::Revision
