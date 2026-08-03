@@ -20,9 +20,30 @@ namespace speech_core {
 /// still runs, still emits four plausible probabilities per frame, and simply
 /// stops meaning the same person.
 ///
-/// Ported from NeMo's `SortformerModules.streaming_update_async`. Batch is one:
-/// this serves a single recording, and a batch axis would only obscure the
-/// arithmetic.
+/// Ported from NeMo's `SortformerModules.streaming_update` -- the synchronous
+/// one. The async variant is a different algorithm, not a batched wrapper: it
+/// carries `spkcache_lengths` and reads each batch item's predictions at its
+/// own valid offset. Batch is one here: this serves a single recording, and a
+/// batch axis would only obscure the arithmetic.
+///
+/// One deliberate departure. NeMo grows the cache from empty; the exported
+/// graph cannot, because `spkcache` is declared [1, 188, 512] and every call
+/// must fill it. So the cache starts as `cache_frames` zero frames and every
+/// slot is treated as live, which is the async variant's fixed-buffer
+/// representation driven by the synchronous variant's arithmetic. The padding
+/// leaves on its own: a zero embedding scores as non-speech, `disable_low_scores`
+/// sends it to negative infinity, and the first compression replaces it with
+/// mean silence. That argument holds for predictions a real graph produces and
+/// not for arbitrary ones, so a harness that feeds every frame confident speech
+/// will see the padding survive and should not read that as a defect.
+///
+/// Checked against NeMo 2.7.3 driven on identical input, at both the streaming
+/// variant's periods and the shipped default's: worst relative cache difference
+/// 4.9e-07 and 5.0e-06 respectively, which is float32 accumulation over 96,256
+/// values. Give NeMo the same zero-prefilled cache when repeating this, and call
+/// `.eval()` first -- `_compress_spkcache` takes `permute_spk=self.training`,
+/// and an nn.Module defaults to training mode, so a stock instance permutes
+/// speakers at random and matches nothing.
 class SortformerSpeakerCache {
 public:
     struct Config {
