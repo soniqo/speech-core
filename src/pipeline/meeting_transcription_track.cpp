@@ -384,7 +384,9 @@ private:
             || config.silence_close_seconds <= 0.0f
             || config.continuous_update_seconds <= 0.0f
             || config.maximum_window_seconds
-                < config.continuous_update_seconds) {
+                < config.continuous_update_seconds
+            || config.maximum_pending_seconds
+                < config.maximum_window_seconds) {
             throw std::invalid_argument(
                 "Meeting track configuration is invalid");
         }
@@ -629,11 +631,30 @@ private:
         // rolling windows carry stable transcript and identity evidence that
         // a final latest-20-second window cannot reconstruct, so finalization
         // must not drop them.
-        constexpr std::size_t kMaximumPendingRequests = 8;
-        if (requests.size() >= kMaximumPendingRequests) {
+        //
+        // Which is why a full queue refuses the arriving request and keeps the
+        // ones already in it. Resetting here instead would discard the whole
+        // backlog, so a track that fell one paragraph behind would lose every
+        // paragraph waiting -- a recording that ends up empty rather than late,
+        // and empty without the words ever having been wrong.
+        //
+        // The bound is audio rather than entries, because that is what a
+        // queued request actually costs. Falling permanently behind is a
+        // different problem and not one a queue can solve -- there the caller
+        // wants a pipeline it can afford, and refusing a paragraph is how it
+        // finds out.
+        const std::uint64_t maximum_pending = seconds_to_samples(
+            config.maximum_pending_seconds, config.sample_rate);
+        std::uint64_t pending_samples =
+            request.audio.size() + request.recovery_audio.size();
+        for (const auto& queued : requests) {
+            pending_samples +=
+                queued.audio.size() + queued.recovery_audio.size();
+        }
+        if (pending_samples > maximum_pending) {
             emit_error_locked(
-                "Meeting track final inference queue overran");
-            reset_locked(false);
+                "Meeting track final inference queue is full; "
+                "this paragraph was not transcribed");
             return;
         }
         requests.push_back(std::move(request));
