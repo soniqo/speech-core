@@ -970,13 +970,13 @@ int main() {
     test_numeric_moss_wire_marker_is_never_published();
     test_continuous_windows_are_bounded();
     test_continuous_windows_consume_identity_audio_once();
-    test_full_queue_refuses_arrival_and_keeps_backlog();
-    test_full_queue_admits_a_final_over_continuous_windows();
     test_preceding_speech_recovers_activity_without_inheritance();
     test_activity_recovery_without_policy_keeps_original();
     test_following_speech_backfills_only_compatible_fragment();
     test_following_speech_does_not_guess_from_mismatched_text();
     test_following_recovery_without_policy_keeps_original();
+    test_full_queue_refuses_arrival_and_keeps_backlog();
+    test_full_queue_admits_a_final_over_continuous_windows();
     std::cout << "Meeting transcription track tests passed\n";
     return 0;
 }
