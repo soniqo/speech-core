@@ -87,6 +87,32 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 
 DeepFilterNet3 does not yet have a LiteRT export; see `speech-models` for conversion status.
 
+`SortformerSpeakerCache` (`speech_core/models/sortformer_speaker_cache.h`) is
+the host-side state a streaming Sortformer diarizer needs. The exported graph
+takes the speaker cache and FIFO as *inputs* and returns embeddings as an
+*output*; it never updates them. Deciding what enters the cache, what waits and
+what is evicted happens here, and that bookkeeping is what makes a speaker
+index mean the same person for a whole recording — skip it and the model
+numbers speakers per call, which is no better than a window-local segmenter.
+
+Eviction is not FIFO despite the name: frames are scored by how confidently one
+speaker and no other is active, boosted twice so every speaker keeps a minimum
+share and none dominates, then the highest scoring are kept in chronological
+order with unused slots filled by a running mean-silence embedding.
+
+It takes plain embeddings and predictions rather than a model, so it builds and
+tests without ONNX Runtime. Its cache geometry belongs to the *exported
+variant*: pairing one variant's graph with another's update period evicts the
+wrong frames while looking healthy.
+
+There is no Sortformer session wrapper yet. Completing one needs the ONNX
+session plus a NeMo-compatible 128-bin mel front-end — the same STFT,
+filterbank, hop and pre-emphasis Nemotron uses, but `normalize=per_feature`
+where Nemotron uses `NA`. When it lands it should gain a C++ gate beside
+`speech_diarization_parity`, for the same reason that one exists: a Python
+parity gate proves the exported graph matches PyTorch, and a C++ gate proves
+the wrapper does — a different claim, and the one that ships.
+
 `OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
 `OnnxVoxCPM2Tts` runs the VoxCPM2 2B ONNX deployment bundle and outputs 48 kHz
