@@ -72,6 +72,12 @@ $stenografFiles = @(
     "MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC/vocab.json",
     "ReDimNet2-B6-ONNX-FP32/ReDimNet2B6.onnx",
     "ReDimNet2-B6-ONNX-FP32/config.json",
+    # Only the light transcription pipeline loads this, and which pipeline runs
+    # is not known until a session has tried the CUDA provider. It is listed
+    # here because the application asks for the manifest a second time when it
+    # turns out to need it, and already-present files are skipped.
+    "Sortformer-Diarization-4spk-ONNX/sortformer-default.onnx",
+    "Sortformer-Diarization-4spk-ONNX/config.json",
     "LocalVQE-v1.4-AEC-200K-ONNX-FP32/LocalVQEAECResidualMask.onnx",
     "LocalVQE-v1.4-AEC-200K-ONNX-FP32/LocalVQEAECFrontend.json",
     "LocalVQE-v1.4-AEC-200K-ONNX-FP32/config.json"
