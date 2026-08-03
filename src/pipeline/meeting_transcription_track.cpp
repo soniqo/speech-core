@@ -651,10 +651,33 @@ private:
             pending_samples +=
                 queued.audio.size() + queued.recovery_audio.size();
         }
+        // The two kinds of request are not worth the same under pressure. A
+        // continuous window is revisable and losing it costs the identity
+        // evidence it carried; losing a paragraph's final costs the paragraph.
+        // So a final makes room by dropping the oldest continuous window
+        // rather than being refused. Whichever paragraph that window belonged
+        // to still has a final of its own -- either already queued behind it
+        // or yet to be closed -- so this trades evidence for text and never
+        // text for text.
+        while (pending_samples > maximum_pending
+               && request.paragraph_final) {
+            const auto oldest = std::find_if(
+                requests.begin(), requests.end(),
+                [](const Request& queued) {
+                    return !queued.paragraph_final;
+                });
+            if (oldest == requests.end()) break;
+            pending_samples -=
+                oldest->audio.size() + oldest->recovery_audio.size();
+            requests.erase(oldest);
+        }
         if (pending_samples > maximum_pending) {
             emit_error_locked(
-                "Meeting track final inference queue is full; "
-                "this paragraph was not transcribed");
+                request.paragraph_final
+                    ? "Meeting track final inference queue is full; "
+                      "this paragraph was not transcribed"
+                    : "Meeting track final inference queue is full; "
+                      "this continuous window was dropped");
             return;
         }
         requests.push_back(std::move(request));

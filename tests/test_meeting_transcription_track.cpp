@@ -646,6 +646,47 @@ void test_full_queue_refuses_arrival_and_keeps_backlog() {
     assert(published > 0);
 }
 
+void test_full_queue_admits_a_final_over_continuous_windows() {
+    constexpr int sample_rate = 1000;
+    constexpr std::size_t chunk = 100;
+    FakeVad vad(sample_rate, chunk);
+    FakePreview preview(sample_rate, "long");
+    BlockingMoss moss(sample_rate, "long");
+    std::mutex event_mutex;
+    std::vector<speech_core::MeetingTrackEvent> events;
+
+    speech_core::MeetingTranscriptionTrack::Config config;
+    config.sample_rate = sample_rate;
+    config.silence_close_seconds = 0.5f;
+    // Uninterrupted speech long enough to queue continuous windows behind the
+    // held model, so the paragraph's own final arrives to a full queue.
+    config.continuous_update_seconds = 0.5f;
+    config.maximum_window_seconds = 2.0f;
+    config.maximum_pending_seconds = 4.0f;
+    speech_core::MeetingTranscriptionTrack track(
+        preview, moss, vad, config,
+        [&](const speech_core::MeetingTrackEvent& event) {
+            std::lock_guard<std::mutex> lock(event_mutex);
+            events.push_back(event);
+        });
+
+    push_chunks(track, sample_rate, 120, 8, chunk);
+    moss.release();
+    track.wait_idle();
+
+    const auto captured = events_with_lock(event_mutex, events);
+    std::size_t finals = 0;
+    for (const auto& event : captured) {
+        if (event.paragraph_final) ++finals;
+    }
+    // The paragraph closed, so its final had to reach the model even though
+    // the queue was full of the windows that preceded it.
+    if (finals == 0) {
+        std::cerr << "no paragraph-final revision survived a full queue\n";
+    }
+    assert(finals > 0);
+}
+
 void test_preceding_speech_recovers_activity_without_inheritance() {
     constexpr int sample_rate = 1000;
     constexpr std::size_t chunk = 100;
@@ -930,6 +971,7 @@ int main() {
     test_continuous_windows_are_bounded();
     test_continuous_windows_consume_identity_audio_once();
     test_full_queue_refuses_arrival_and_keeps_backlog();
+    test_full_queue_admits_a_final_over_continuous_windows();
     test_preceding_speech_recovers_activity_without_inheritance();
     test_activity_recovery_without_policy_keeps_original();
     test_following_speech_backfills_only_compatible_fragment();
