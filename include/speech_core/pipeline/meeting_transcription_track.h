@@ -135,7 +135,12 @@ public:
     /// Discard revisable work and reset VAD/ASR state without publishing it.
     void cancel();
 
-    /// Wait until every already queued final inference has completed.
+    /// Wait until every already queued final inference has completed AND its
+    /// events have been delivered, so what was published can be read after
+    /// this returns.
+    ///
+    /// Never call this, or `finish()`, from the event callback: the track is
+    /// not idle while a callback is running, so it would wait on itself.
     void wait_idle();
 
 private:
