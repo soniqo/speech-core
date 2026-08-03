@@ -164,6 +164,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/whisper/onnx_whisper_stt.cpp
         src/models/canary/onnx_canary_stt.cpp
         src/models/pyannote/onnx_pyannote_segmentation.cpp
+        src/models/sortformer/onnx_sortformer_diarizer.cpp
         src/models/redimnet/onnx_redimnet_speaker_embedding.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp
     )
@@ -266,6 +267,15 @@ if(SPEECH_CORE_WITH_ONNX)
         target_link_libraries(speech_diarization_parity PRIVATE speech_core_models)
         if(MSVC)
             target_compile_definitions(speech_diarization_parity PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # The same claim for streaming Sortformer, where three things can be
+        # wrong on their own while the graph stays perfect: the mel front-end,
+        # the windowing, and which layout the prediction block is read in.
+        add_executable(speech_sortformer_parity examples/onnx/sortformer_parity.cpp)
+        target_link_libraries(speech_sortformer_parity PRIVATE speech_core_models)
+        if(MSVC)
+            target_compile_definitions(speech_sortformer_parity PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
     endif()
 endif()

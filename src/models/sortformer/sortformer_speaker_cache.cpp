@@ -201,15 +201,29 @@ void SortformerSpeakerCache::compress() {
         [&](std::size_t a, std::size_t b) { return score_of(a) > score_of(b); });
     candidates.resize(take);
 
+    // Order the SELECTED indices, then map them back to frames — not the other
+    // way round. Selection is speaker-major, so sorting after the modulo gives
+    // strict chronological order while sorting before it groups by speaker and
+    // stays chronological only within each speaker. The reference does the
+    // latter, and the difference is invisible to any check that sums the cache:
+    // it holds exactly the same frames either way. What changes is the order
+    // the model sees them in, and from the call after the first compression its
+    // predictions diverge and never recover.
+    constexpr std::size_t kDisabledSlot =
+        std::numeric_limits<std::size_t>::max();
     std::vector<std::size_t> chosen;
     chosen.reserve(take);
     for (const std::size_t flat : candidates) {
-        // A disabled score means the slot has no frame worth keeping, and is
-        // filled with mean silence instead.
+        // A disabled score means the slot has no frame worth keeping. The
+        // sentinel sorts last, exactly as the reference's placeholder index
+        // does, so those slots land at the end and take mean silence.
         chosen.push_back(
-            score_of(flat) == kNegativeInfinity ? padded : flat % padded);
+            score_of(flat) == kNegativeInfinity ? kDisabledSlot : flat);
     }
     std::sort(chosen.begin(), chosen.end());
+    for (std::size_t& slot : chosen) {
+        slot = slot == kDisabledSlot ? padded : slot % padded;
+    }
 
     std::vector<float> next_cache(static_cast<std::size_t>(keep) * width, 0.0f);
     std::vector<float> next_predictions(
@@ -240,7 +254,8 @@ std::vector<float> SortformerSpeakerCache::advance(
     const float* predictions,
     std::size_t prediction_frames,
     int left_context,
-    int right_context) {
+    int right_context,
+    PredictionLayout layout) {
     const std::size_t width = static_cast<std::size_t>(config_.embedding_dim);
     const int speakers = config_.speakers;
     // A chunk shorter than its own context would make this subtraction wrap,
@@ -257,8 +272,16 @@ std::vector<float> SortformerSpeakerCache::advance(
     // Predictions arrive as [cache + fifo + chunk]. The FIFO's slice is the
     // model's latest opinion of frames already queued, which is what scores
     // them when they graduate into the cache.
+    //
+    // Only the width of the middle section is in question, and only the caller
+    // knows it. The valid FIFO frames sit at the start of that section either
+    // way, so the read below is the same; what moves is where the chunk begins.
+    const std::size_t fifo_block =
+        layout == PredictionLayout::FixedFifoBlock
+            ? static_cast<std::size_t>(config_.fifo_frames)
+            : fifo_frames_;
     const std::size_t fifo_offset = cache_frames_;
-    const std::size_t chunk_offset = cache_frames_ + fifo_frames_;
+    const std::size_t chunk_offset = cache_frames_ + fifo_block;
     if (prediction_frames < chunk_offset + chunk_frames) return {};
 
     fifo_predictions_.assign(

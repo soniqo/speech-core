@@ -47,22 +47,50 @@ public:
 
     explicit SortformerSpeakerCache(Config config);
 
+    /// Where a buffer of predictions puts the FIFO.
+    ///
+    /// Predictions always cover [cache | fifo | chunk], but the middle section
+    /// has two widths in circulation and they are indistinguishable from the
+    /// buffer itself.
+    ///
+    /// Choosing wrong is quiet, which is why the caller has to say rather than
+    /// be assumed to have normalised one into the other. A FIFO holding fewer
+    /// frames than its block is wide — the first call of every recording — puts
+    /// the chunk up to `fifo_frames` earlier than the reader expects, so it
+    /// reports on the wrong slice and, worse, seeds the cache's own scoring
+    /// predictions from it at the first compression. That outlives the step
+    /// that caused it, and nothing anywhere reports an error.
+    enum class PredictionLayout {
+        /// `[cache | fifo_frames() | chunk]` — NeMo's synchronous
+        /// `streaming_update` and the numpy spec ported from it, where the FIFO
+        /// tensor really is as short as it claims.
+        Packed,
+        /// `[cache | Config::fifo_frames | chunk]` — the exported ONNX graph,
+        /// whose FIFO block is a fixed width with the unused frames zeroed. The
+        /// valid frames are at the start of the block.
+        FixedFifoBlock,
+    };
+
     /// Advance one step and return this chunk's predictions.
     ///
-    /// `predictions` covers [cache + fifo + chunk] exactly as the graph emitted
-    /// it. `chunk_embeddings` is the graph's per-chunk output, which is what
-    /// enters the FIFO and eventually the cache.
+    /// `chunk_embeddings` is the graph's per-chunk output, which is what enters
+    /// the FIFO and eventually the cache.
     ///
     /// `left_context` and `right_context` are in encoder frames: the chunk
     /// carries context either side that the model needed but that this step
     /// does not own, and including it would publish the same audio twice.
+    ///
+    /// There is deliberately no default `layout`. Both callers are real, the
+    /// wrong one is silent, and a default would pick for whichever was written
+    /// second.
     std::vector<float> advance(
         const float* chunk_embeddings,
         std::size_t chunk_frames,
         const float* predictions,
         std::size_t prediction_frames,
         int left_context,
-        int right_context);
+        int right_context,
+        PredictionLayout layout);
 
     /// The cache and FIFO the next call must feed back to the graph.
     const std::vector<float>& cache() const { return cache_; }
