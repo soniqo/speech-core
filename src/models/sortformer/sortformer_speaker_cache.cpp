@@ -243,9 +243,16 @@ std::vector<float> SortformerSpeakerCache::advance(
     int right_context) {
     const std::size_t width = static_cast<std::size_t>(config_.embedding_dim);
     const int speakers = config_.speakers;
-    const std::size_t owned = chunk_frames
-        - static_cast<std::size_t>(left_context)
-        - static_cast<std::size_t>(right_context);
+    // A chunk shorter than its own context would make this subtraction wrap,
+    // and the reads that follow would run far past both buffers. It means the
+    // caller paired a graph with the wrong context values, which is worth
+    // refusing rather than diagnosing from a crash somewhere else.
+    const std::size_t context = static_cast<std::size_t>(left_context)
+        + static_cast<std::size_t>(right_context);
+    if (left_context < 0 || right_context < 0 || chunk_frames < context) {
+        return {};
+    }
+    const std::size_t owned = chunk_frames - context;
 
     // Predictions arrive as [cache + fifo + chunk]. The FIFO's slice is the
     // model's latest opinion of frames already queued, which is what scores
@@ -270,15 +277,18 @@ std::vector<float> SortformerSpeakerCache::advance(
     fifo_predictions_.insert(
         fifo_predictions_.end(), owned_predictions,
         owned_predictions + owned * speakers);
-    const std::size_t previous_fifo = fifo_frames_;
     fifo_frames_ += owned;
 
     if (static_cast<int>(fifo_frames_) > config_.fifo_frames) {
+        // Enough must leave for the FIFO to fit again. The branch condition
+        // guarantees the overflow is positive, but spelling that out keeps the
+        // subtraction from wrapping if the condition is ever loosened.
+        const std::size_t capacity =
+            static_cast<std::size_t>(config_.fifo_frames);
+        const std::size_t overflow =
+            fifo_frames_ > capacity ? fifo_frames_ - capacity : 0;
         std::size_t pop = static_cast<std::size_t>(config_.update_period);
-        pop = std::max<std::size_t>(
-            pop,
-            owned + previous_fifo
-                - static_cast<std::size_t>(config_.fifo_frames));
+        pop = std::max(pop, overflow);
         pop = std::min(pop, fifo_frames_);
 
         update_silence_profile(
