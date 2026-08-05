@@ -116,8 +116,20 @@ OnnxSortformerDiarizer::OnnxSortformerDiarizer(
     int declared_chunk_len = 0;
     {
         namespace fs = std::filesystem;
-        const fs::path config_path =
-            fs::path(model_path).parent_path() / "config.json";
+        const fs::path model = model_path;
+        // `sortformer-balanced.config.json` before `config.json`, because two
+        // variants can share a directory and a single `config.json` cannot
+        // describe both. Installing a second graph beside the first would
+        // otherwise silently redescribe the first -- the precise failure this
+        // whole change exists to prevent, and easy to do by accident.
+        //
+        // The bare name stays as the fallback so the published single-variant
+        // bundle, which has one graph and one `config.json`, keeps working.
+        fs::path config_path =
+            model.parent_path() / (model.stem().string() + ".config.json");
+        if (!fs::is_regular_file(config_path)) {
+            config_path = model.parent_path() / "config.json";
+        }
         if (fs::is_regular_file(config_path)) {
             const auto config = json::parse_flat_object(
                 json::read_file(config_path.string()));
