@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -74,7 +75,20 @@ int main(int argc, char** argv) {
     const std::vector<float> audio = read_f32(argv[2]);
     const std::vector<float> reference = read_f32(argv[3]);
 
-    speech_core::OnnxSortformerDiarizer diarizer(argv[1], false);
+    // A refusal is a result here, and it was invisible: the wrapper rejects a
+    // bundle whose config and graph describe different variants, and without
+    // this the throw reached `std::terminate` and the process died at
+    // 0xC0000409 with the reason it printed nowhere. The one thing a gate must
+    // never do is fail silently.
+    std::unique_ptr<speech_core::OnnxSortformerDiarizer> loaded;
+    try {
+        loaded = std::make_unique<speech_core::OnnxSortformerDiarizer>(
+            argv[1], false);
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        return 1;
+    }
+    speech_core::OnnxSortformerDiarizer& diarizer = *loaded;
     const std::size_t speakers =
         static_cast<std::size_t>(diarizer.speakers());
     std::printf(
