@@ -2,11 +2,14 @@
 
 #include "speech_core/audio/mel.h"
 #include "speech_core/models/onnx_engine.h"
+#include "speech_core/util/json.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -31,12 +34,13 @@ std::vector<std::int64_t> tensor_shape(
     return out;
 }
 
-[[noreturn]] void wrong_shape(const char* what) {
+[[noreturn]] void wrong_shape(const std::string& what) {
     throw std::runtime_error(
-        std::string("Sortformer ONNX: unexpected ") + what
-        + ". This wrapper drives the `default` export's windowing; a bundle "
-          "exported at another chunk length would be fed the wrong geometry "
-          "and answer confidently rather than fail.");
+        "Sortformer ONNX: unexpected " + what
+        + ". The geometry comes from the graph and the windowing from the "
+          "bundle's config.json; a graph and a config describing different "
+          "variants would otherwise be driven with the wrong chunk length and "
+          "answer confidently rather than fail.");
 }
 
 /// The graph's mel front-end, settled by diffing against features dumped from
@@ -60,11 +64,75 @@ const float kLogFloor = std::ldexp(1.0f, -24);
 /// which is 1.6 hops.
 constexpr std::int64_t kCentringMargin = 2;
 
+/// Read one positive integer from a bundle's `config.json`, if it says so.
+///
+/// Absent leaves the caller's value alone: the first published bundle predates
+/// this and carries the `default` variant's numbers, which are the defaults.
+/// Present but unparseable or non-positive is a fault rather than a fallback —
+/// a bundle that describes itself wrongly is exactly the case this exists to
+/// catch, and continuing with a default would restore the silent failure.
+bool config_int(
+    const json::Dict& config, const char* key, int& out,
+    const std::string& where) {
+    const auto found = config.find(key);
+    if (found == config.end()) return false;
+    int value = 0;
+    try {
+        value = std::stoi(found->second);
+    } catch (...) {
+        throw std::runtime_error(
+            std::string("Sortformer bundle ") + where + " has a non-numeric "
+            + key);
+    }
+    if (value <= 0) {
+        throw std::runtime_error(
+            std::string("Sortformer bundle ") + where + " has a non-positive "
+            + key);
+    }
+    out = value;
+    return true;
+}
+
 }  // namespace
 
 OnnxSortformerDiarizer::OnnxSortformerDiarizer(
     const std::string& model_path, bool hw_accel) {
     api_ = OnnxEngine::get().api();
+
+    // Three numbers decide how this graph is driven and none of them is in it.
+    // `chunk_right_context` sets how many of a window's frames belong to the
+    // next call, so getting it wrong advances the timeline by the wrong amount
+    // every call and every label lands at the wrong time. `spkcache_update_
+    // period` decides which frames the arrival-order cache evicts, and pairing
+    // one variant's graph with another's period evicts the wrong ones while
+    // looking healthy — the model still emits four plausible probabilities per
+    // frame and simply stops meaning the same person.
+    //
+    // The defaults are the `default` variant's, which was the only bundle that
+    // existed when they were written. A `balanced` graph driven by them would
+    // take 121 window frames as 80 chunk frames instead of 100 and evict on a
+    // 188-frame period instead of 100: two silent faults, from a file that was
+    // sitting beside the model saying so. So the bundle is asked.
+    int declared_chunk_len = 0;
+    {
+        namespace fs = std::filesystem;
+        const fs::path config_path =
+            fs::path(model_path).parent_path() / "config.json";
+        if (fs::is_regular_file(config_path)) {
+            const auto config = json::parse_flat_object(
+                json::read_file(config_path.string()));
+            const std::string where = config_path.string();
+            config_int(config, "chunk_left_context", cfg_.left_context, where);
+            config_int(
+                config, "chunk_right_context", cfg_.right_context, where);
+            config_int(config, "subsampling_factor", cfg_.subsampling, where);
+            config_int(
+                config, "spkcache_update_period", cfg_.cache.update_period,
+                where);
+            config_int(config, "chunk_len", declared_chunk_len, where);
+        }
+    }
+
     session_ = OnnxEngine::get().load(model_path, hw_accel);
 
     // Every dimension below is READ FROM THE GRAPH. The windowing this class
@@ -109,6 +177,17 @@ OnnxSortformerDiarizer::OnnxSortformerDiarizer(
     chunk_frames_ =
         window_frames_ - cfg_.left_context - cfg_.right_context;
     if (chunk_frames_ <= 0) wrong_shape("context wider than the window");
+    // The one check that catches a config paired with the wrong graph. The
+    // contexts come from the file and the window comes from the model, so if
+    // the file also names its chunk length, the three have to agree — and when
+    // they do not, every frame this class publishes would be misdated. Both
+    // sources have to be wrong in exactly compensating ways to slip through.
+    if (declared_chunk_len != 0 && declared_chunk_len != chunk_frames_) {
+        wrong_shape(
+            "chunk length: config.json says " + std::to_string(declared_chunk_len)
+            + " but the graph's window less its context is "
+            + std::to_string(chunk_frames_));
+    }
 
     cfg_.cache.speakers = speakers_;
     cfg_.cache.cache_frames = cache_frames_;
