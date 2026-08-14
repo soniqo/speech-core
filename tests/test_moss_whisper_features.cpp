@@ -58,6 +58,36 @@ int main() {
         assert(std::fabs(actual - fixture.value) <= 5e-4f);
     }
 
+    // Whisper large-v3 uses the same exact 400-point frontend with 128 mel
+    // filters. These probes come from transformers 4.57.6
+    // WhisperFeatureExtractor(feature_size=128) on the same deterministic
+    // waveform. They prevent a regression to speech_core::audio::fft_real,
+    // whose documented non-power-of-two behavior pads 400 to 512 and changes
+    // the model input materially.
+    const auto large_v3 =
+        MossWhisperFeatureExtractor(128).extract_padded_chunk(
+            audio.data(), audio.size());
+    assert(large_v3.mel_bins == 128);
+    assert(large_v3.time_frames == 3000);
+    assert(large_v3.data.size() == 384000);
+    const std::vector<Fixture> large_v3_fixtures = {
+        {0, 0, 1.03680742f},
+        {0, 10, 0.92322218f},
+        {5, 50, 0.85368174f},
+        {20, 10, 0.60412019f},
+        {40, 99, 0.39996243f},
+        {79, 0, -0.72825670f},
+        {100, 100, 0.16020703f},
+        {127, 0, -0.86562812f},
+        {127, 2999, -0.86562812f},
+    };
+    for (const auto& fixture : large_v3_fixtures) {
+        const float actual = large_v3.data[
+            static_cast<std::size_t>(
+                fixture.mel * large_v3.time_frames + fixture.frame)];
+        assert(std::fabs(actual - fixture.value) <= 5e-4f);
+    }
+
     std::cout << "MOSS Whisper frontend tests passed\n";
     return 0;
 }
