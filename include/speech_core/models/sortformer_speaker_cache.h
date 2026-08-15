@@ -65,9 +65,10 @@ public:
         /// `streaming_update` and the numpy spec ported from it, where the FIFO
         /// tensor really is as short as it claims.
         Packed,
-        /// `[cache | Config::fifo_frames | chunk]` — the exported ONNX graph,
-        /// whose FIFO block is a fixed width with the unused frames zeroed. The
-        /// valid frames are at the start of the block.
+        /// `[cache | Config::fifo_frames | chunk]` — compatibility for a
+        /// caller that owns a fixed-width FIFO block with unused frames zeroed.
+        /// The current ONNX export does not use this layout: its
+        /// `fixed_concat_and_pad` graph packs valid prefixes.
         FixedFifoBlock,
     };
 
@@ -92,14 +93,19 @@ public:
         int right_context,
         PredictionLayout layout);
 
-    /// The cache and FIFO the next call must feed back to the graph.
+    /// The valid cache and FIFO frames the next call must feed back to the
+    /// graph. Their tensors have fixed capacities at the model boundary, but
+    /// these vectors contain only the valid prefixes; callers zero-pad them
+    /// and pass cache_frames()/fifo_frames() as the corresponding lengths.
     const std::vector<float>& cache() const { return cache_; }
     const std::vector<float>& fifo() const { return fifo_; }
     std::size_t cache_frames() const { return cache_frames_; }
     std::size_t fifo_frames() const { return fifo_frames_; }
 
     /// Forget everything. Arrival order restarts, so a speaker index after this
-    /// has no relationship to one before it.
+    /// has no relationship to one before it. A fresh cache has length zero:
+    /// presenting its zero padding as 188 valid embeddings changes the first
+    /// graph call and corrupts the predictions used to seed the cache.
     void reset();
 
 private:

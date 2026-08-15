@@ -105,13 +105,20 @@ tests without ONNX Runtime. Its cache geometry belongs to the *exported
 variant*: pairing one variant's graph with another's update period evicts the
 wrong frames while looking healthy.
 
-There is no Sortformer session wrapper yet. Completing one needs the ONNX
-session plus a NeMo-compatible 128-bin mel front-end — the same STFT,
-filterbank, hop and pre-emphasis Nemotron uses, but `normalize=per_feature`
-where Nemotron uses `NA`. When it lands it should gain a C++ gate beside
-`speech_diarization_parity`, for the same reason that one exists: a Python
-parity gate proves the exported graph matches PyTorch, and a C++ gate proves
-the wrapper does — a different claim, and the one that ships.
+`OnnxSortformerDiarizer` drives the full streaming session: the NeMo-compatible
+128-bin mel front-end, context windows, packed graph calls, and the cache above.
+The graph's cache and FIFO tensors have fixed capacities, but their companion
+lengths describe valid prefixes. A new recording starts with both lengths at
+zero; the host zero-pads the remaining tensor capacity. The export's
+`fixed_concat_and_pad` operation then packs `[valid cache | valid FIFO | chunk]`
+at the front of its static prediction output. Treating the zero padding as a
+valid 188-frame cache, or reading that output as fixed-capacity blocks, changes
+the first call and seeds arrival order with mismatched predictions.
+
+`speech_sortformer_parity` is the C++ gate beside the Python graph parity test.
+The distinction matters: Python proves the exported graph matches PyTorch;
+the C++ gate proves the wrapper's audio front-end, windowing, valid lengths,
+prediction offsets, and cache updates match the reference driver.
 
 `OnnxVoxCPMTts` is the smaller VoxCPM 0.5B serving wrapper used by the CPU cloud synth path. It loads split prefill/token-step decoder graphs when `voxcpm-text-prefill*.onnx` and `voxcpm-token-step*.onnx` sit beside the requested `voxcpm-decoder*.onnx`, with automatic fallback to the legacy unified decoder graph when split files are absent. It outputs 16 kHz PCM and supports prompt-audio cloning via `set_reference()`. For best clone fidelity, call `set_reference_transcript()` with the exact text spoken in the reference clip before `synthesize()`.
 
