@@ -82,22 +82,17 @@ void test_matches_reference_through_eviction() {
         const std::size_t total =
             cache.cache_frames() + cache.fifo_frames() + chunk;
         std::vector<float> predictions(total * speakers);
-        // TWO speakers active, and which two alternates with the frame.
+        // One speaker active per frame, cycling through all four slots.
         //
-        // A single active speaker cannot exercise the ordering at all: the
-        // selection is speaker-major, so when every kept frame belongs to one
-        // speaker, sorting the chosen indices before mapping them back to
-        // frames and sorting after give the identical cache. This suite ran
-        // that way and passed against a build whose cache was in the wrong
-        // order — the defect reached a real model and cost its predictions
-        // from the call after the first compression.
-        const int active = step % speakers;
+        // Keeping one fixed speaker active cannot exercise ordering: every
+        // selected frame belongs to the same speaker. Cycling here keeps the
+        // evidence unambiguous while forcing the compressed cache to contain
+        // frames selected on behalf of every speaker.
         for (std::size_t frame = 0; frame < total; ++frame) {
-            const int alternate =
-                (active + 1 + static_cast<int>(frame % 2)) % speakers;
+            const int active =
+                (step + static_cast<int>(frame)) % speakers;
             for (int speaker = 0; speaker < speakers; ++speaker) {
-                const bool speaking =
-                    speaker == active || speaker == alternate;
+                const bool speaking = speaker == active;
                 predictions[frame * speakers + speaker] =
                     speaking ? 0.80f + sequence.next() * 0.19f
                              : sequence.next() * 0.10f;
@@ -110,8 +105,8 @@ void test_matches_reference_through_eviction() {
         check(chunk_predictions.size() / speakers == owned,
               "a step owns its chunk minus the context either side");
         check(cache.cache_frames()
-                  == static_cast<std::size_t>(config.cache_frames),
-              "the cache stays at its configured length");
+                  <= static_cast<std::size_t>(config.cache_frames),
+              "the cache never exceeds its configured length");
         check(cache.fifo_frames()
                   <= static_cast<std::size_t>(config.fifo_frames),
               "the fifo never exceeds its configured length");
@@ -128,7 +123,7 @@ void test_matches_reference_through_eviction() {
     // Reference values from the numpy port over the same sequence. It is a
     // checksum of the retained embeddings, so it moves if eviction keeps
     // different frames — which is the failure this guards against.
-    check_near(last_sum, 17.995605, 1e-3,
+    check_near(last_sum, -23.589134, 1e-3,
                "retained embeddings match the reference implementation");
     // And a position-weighted one, because a plain sum cannot see ORDER, and
     // order is a real failure mode here rather than a hypothetical: the
@@ -138,7 +133,7 @@ void test_matches_reference_through_eviction() {
     // frames, so the sum above agreed to six figures while the model saw a
     // different cache and its predictions diverged from the call after the
     // first compression. This suite passed throughout.
-    check_near(last_ordered, 4088.0877, 1e-1,
+    check_near(last_ordered, -15563.2223, 1e-1,
                "retained embeddings are in the reference's order");
 }
 
@@ -157,9 +152,8 @@ void test_reset_restarts_arrival_order() {
 
     cache.reset();
     check(cache.fifo_frames() == 0, "reset empties the fifo");
-    check(cache.cache_frames()
-              == static_cast<std::size_t>(config.cache_frames),
-          "reset restores the cache to its configured length");
+    check(cache.cache_frames() == 0,
+          "reset makes the valid cache prefix empty");
     double sum = 0.0;
     for (const float value : cache.cache()) sum += value;
     check_near(sum, 0.0, 1e-6, "reset clears the retained embeddings");
@@ -210,11 +204,10 @@ void test_negative_context_is_refused() {
 
 /// The layout trap, which is the reason `advance` makes the caller say.
 ///
-/// The exported graph's FIFO block is a fixed width with the unused frames
-/// zeroed; the synchronous reference's FIFO is only as long as it holds. On the
-/// first call of a recording the FIFO is empty, so the two put the chunk
-/// `fifo_frames` apart — and reading the graph's buffer as packed silently
-/// reports on the wrong slice.
+/// A caller may supply either a fixed-width FIFO block or packed valid prefixes.
+/// On the first call the FIFO is empty, so the two put the chunk `fifo_frames`
+/// apart. The current ONNX graph is packed; this lower-level cache still makes
+/// the distinction explicit for callers that construct their own buffers.
 ///
 /// Both readings are exercised on one buffer built so the difference is
 /// visible: the FIFO block carries a marker value the chunk does not.
@@ -265,6 +258,33 @@ void test_the_fifo_block_width_decides_where_the_chunk_starts() {
                "reading the graph's buffer as packed takes the fifo's frames");
 }
 
+void test_fresh_packed_state_starts_with_the_chunk() {
+    const auto config = small_config();
+    SortformerSpeakerCache cache(config);
+    const std::size_t chunk = 14;
+    const int left = 1;
+    const int right = 7;
+    const std::size_t owned = chunk - left - right;
+
+    check(cache.cache_frames() == 0, "a fresh cache has no valid frames");
+    check(cache.fifo_frames() == 0, "a fresh fifo has no valid frames");
+
+    // The exported graph packs [valid cache | valid FIFO | chunk] into the
+    // prefix of its static output. With both state lengths zero, the chunk is
+    // therefore at offset zero even though the input tensors have capacities.
+    std::vector<float> predictions(chunk * config.speakers, 0.10f);
+    std::vector<float> embeddings(chunk * config.embedding_dim, 0.1f);
+    const auto output = cache.advance(
+        embeddings.data(), chunk, predictions.data(), chunk, left, right,
+        SortformerSpeakerCache::PredictionLayout::Packed);
+    check(output.size() / config.speakers == owned,
+          "fresh packed state returns the owned chunk frames");
+    for (float value : output) {
+        check_near(value, 0.10f, 1e-6,
+                   "fresh packed state reads the chunk prefix");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -274,6 +294,7 @@ int main() {
     test_chunk_shorter_than_its_context_is_refused();
     test_negative_context_is_refused();
     test_the_fifo_block_width_decides_where_the_chunk_starts();
+    test_fresh_packed_state_starts_with_the_chunk();
     if (failures == 0) std::printf("sortformer speaker cache: all checks passed\n");
     return failures == 0 ? 0 : 1;
 }

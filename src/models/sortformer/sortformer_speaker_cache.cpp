@@ -106,8 +106,8 @@ SortformerSpeakerCache::SortformerSpeakerCache(Config config)
 
 void SortformerSpeakerCache::reset() {
     const std::size_t width = static_cast<std::size_t>(config_.embedding_dim);
-    cache_.assign(static_cast<std::size_t>(config_.cache_frames) * width, 0.0f);
-    cache_frames_ = static_cast<std::size_t>(config_.cache_frames);
+    cache_.clear();
+    cache_frames_ = 0;
     cache_predictions_.clear();
     cache_scored_ = false;
     fifo_.clear();
@@ -318,11 +318,13 @@ std::vector<float> SortformerSpeakerCache::advance(
             fifo_.data(), fifo_predictions_.data(), pop);
 
         if (!cache_scored_) {
-            // First graduation: nothing has scored the cache's own frames
-            // before, so this pass supplies them.
+            // Until the first compression, the graph's current prediction of
+            // every valid cache frame supersedes the previous call's. Refresh
+            // that prefix on each graduation. Once compressed, the retained
+            // predictions are the scores that selected the retained frames and
+            // can be extended incrementally with newly graduated FIFO frames.
             cache_predictions_.assign(
                 predictions, predictions + cache_frames_ * speakers);
-            cache_scored_ = true;
         }
         cache_.insert(
             cache_.end(), fifo_.begin(), fifo_.begin() + pop * width);
@@ -337,7 +339,10 @@ std::vector<float> SortformerSpeakerCache::advance(
             fifo_predictions_.begin() + pop * speakers);
         fifo_frames_ -= pop;
 
-        if (static_cast<int>(cache_frames_) > config_.cache_frames) compress();
+        if (static_cast<int>(cache_frames_) > config_.cache_frames) {
+            compress();
+            cache_scored_ = true;
+        }
     }
     return chunk_predictions;
 }

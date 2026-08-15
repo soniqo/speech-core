@@ -321,10 +321,10 @@ bool OnnxSortformerDiarizer::advance_step(
     ort_check(api_, api_->CreateCpuMemoryInfo(
         OrtArenaAllocator, OrtMemTypeDefault, &memory));
 
-    // The cache is always presented full. The graph declares it [1, 188, 512]
-    // and every call must fill it; unused slots hold zeros early and a running
-    // mean-silence embedding later, and are meant to leave by scoring rather
-    // than be excluded by a length.
+    // The graph tensors have fixed capacities, but their length inputs describe
+    // the valid prefixes. NeMo starts both prefixes at zero; treating the
+    // initial zero padding as 188 valid cache frames changes attention on the
+    // first call and poisons the predictions used to seed arrival order.
     std::vector<float> spkcache(
         static_cast<std::size_t>(cache_frames_) * embedding_dim_, 0.0f);
     std::copy(cache_->cache().begin(), cache_->cache().end(), spkcache.begin());
@@ -334,7 +334,8 @@ bool OnnxSortformerDiarizer::advance_step(
 
     const std::int64_t held = static_cast<std::int64_t>(cache_->fifo_frames());
     std::int64_t chunk_length = window_mels_;
-    std::int64_t spkcache_length = cache_frames_;
+    std::int64_t spkcache_length =
+        static_cast<std::int64_t>(cache_->cache_frames());
     std::int64_t fifo_length = held;
 
     const std::int64_t chunk_dims[3] = {1, window_mels_, cfg_.mel_bins};
@@ -384,18 +385,19 @@ bool OnnxSortformerDiarizer::advance_step(
 
     std::vector<float> chunk_predictions;
     if (predictions != nullptr && embeddings != nullptr) {
-        // The graph's FIFO block is a fixed width with the unused frames
-        // zeroed, which is not the layout the synchronous reference uses. Say
-        // so; the cache cannot tell from the buffer, and reading it as packed
-        // takes the chunk up to fifo_frames early on the first call of every
-        // recording.
+        // The graph's fixed_concat_and_pad wrapper packs the valid cache, FIFO,
+        // and chunk prefixes at the front of its static output tensor. On a
+        // fresh recording that puts the chunk at frame zero, not after the
+        // cache/FIFO capacities. Reading it as fixed blocks shifts the first
+        // chunk by the 40-frame FIFO width and mismatches cache embeddings with
+        // the probabilities that score them.
         chunk_predictions = cache_->advance(
             embeddings, static_cast<std::size_t>(window_frames_),
             predictions,
             static_cast<std::size_t>(
                 cache_frames_ + fifo_frames_ + window_frames_),
             cfg_.left_context, cfg_.right_context,
-            SortformerSpeakerCache::PredictionLayout::FixedFifoBlock);
+            SortformerSpeakerCache::PredictionLayout::Packed);
     }
 
     for (OrtValue* value : outputs) if (value) api_->ReleaseValue(value);

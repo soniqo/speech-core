@@ -14,12 +14,12 @@
 //      and forty of future. Off by a frame and every label slides; off by the
 //      context and neighbouring calls report the same audio twice.
 //
-//   3. The prediction layout handed to the arrival-order cache. The graph emits
-//      a fixed-width FIFO block; the reference driver's own update derives its
-//      offsets from the FIFO's actual length. Reading one as the other takes the
-//      chunk up to forty frames early on the first call of every recording, and
-//      seeds the cache's scoring from that slice at the first compression —
-//      which outlives the step that caused it.
+//   3. The prediction layout handed to the arrival-order cache. The graph packs
+//      valid cache and FIFO prefixes ahead of the chunk inside a static output
+//      tensor. Reading that as fixed-capacity blocks takes the chunk up to forty
+//      frames late on the first call and pairs cache embeddings with the wrong
+//      scoring predictions at the first compression — which outlives the step
+//      that caused it.
 //
 // The audio must be long enough to overflow the speaker cache. A recording that
 // fits one call never exercises the arrival-order update, and agreement then
