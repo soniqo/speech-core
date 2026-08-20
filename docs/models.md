@@ -182,6 +182,10 @@ the still-separate microphone and playback streams through
 `TimestampedEchoCancellationStream`; alignment or inference failures must be
 handled explicitly rather than substituting raw microphone PCM.
 
+### External Data and Memory Mapping
+
+To minimize peak RSS on memory-constrained devices, heavy ONNX models (≥ 100MB) must be published with external, page-aligned data files. This allows ONNX Runtime to memory-map the weights directly from disk. Use the `scripts/export_external_data.py` tool to convert inline ONNX models into memory-mapped bundles.
+
 ## Building with ONNX support
 
 ```bash
