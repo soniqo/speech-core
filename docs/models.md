@@ -182,6 +182,70 @@ the still-separate microphone and playback streams through
 `TimestampedEchoCancellationStream`; alignment or inference failures must be
 handled explicitly rather than substituting raw microphone PCM.
 
+### Aligned ONNX external data
+
+Large ONNX models can be repacked into a small model protobuf plus one aligned
+weight sidecar. Install the publishing-tool dependencies and write a new
+variant; the command refuses to overwrite either output file:
+
+```bash
+python3 -m pip install -r scripts/requirements-onnx-tools.txt
+python3 scripts/export_external_data.py \
+    model.onnx model-external-v2.onnx
+```
+
+The paired output is `model-external-v2.onnx` and
+`model-external-v2.onnx.data`. Tensor offsets default to 64 KiB alignment,
+which satisfies the Windows allocation-granularity requirement and is page
+aligned on supported Unix targets. Empty tensors remain inline. Existing
+external sidecars are copied in bounded 8 MiB chunks; converting a large
+inline protobuf still requires ONNX to deserialize that input model.
+
+The default 64 KiB threshold leaves smaller inline tensors in the model so
+their alignment padding cannot dominate the bundle size. Lower `--threshold`
+only after measuring the resulting disk-size and memory tradeoff.
+
+Alignment makes CPU memory mapping possible; it does not guarantee zero-copy
+loading for every ONNX Runtime version, execution provider, model transform,
+or platform. Benchmark session creation, first inference, and peak process
+memory with the oldest runtime shipped on each target before publishing a
+variant.
+
+Never replace an already-published inline filename in place. Publish a new
+variant filename or versioned model revision, keep the inline files available,
+and update consumers to download the model protobuf and its sidecar together.
+
+The additive `external-v2/` variants were selected with isolated, alternating
+three-process measurements on an Apple M5 Pro using ONNX Runtime 1.19.2 CPU,
+two inference threads, and disabled CPU arena and memory pattern. All compared
+inference-output hashes were identical:
+
+| Bundle | Load peak RSS saved | Post-warm USS saved | Load time | First inference | Warm inference | Disk |
+|---|---:|---:|---:|---:|---:|---:|
+| Parakeet INT8 | 701 MiB | 688 MiB | -15.9% | +10.8 ms | -0.2% | +0.015% |
+| Whisper Small INT8 | 511 MiB | 511 MiB | -10.7% | -1.1 ms | -0.9% | +0.044% |
+| Canary INT8 | 281 MiB | 268 MiB | -9.2% | +2.9 ms | -1.1% | +0.007% |
+| Canary FP32 | 259 MiB | 255 MiB | -13.7% | +2.1 ms | -0.9% | +0.002% |
+| Sortformer | 208 MiB | 199 MiB | -1.8% | +36.2 ms | -1.6% | +0.774% |
+| ReDimNet | 79 MiB | 75 MiB | -14.9% | -22.6 ms | +0.2% | +4.523% |
+
+Negative latency changes are faster; first-inference values are external minus
+inline, so a positive value is slower.
+
+Paired tests on the same sorted 50-utterance FLEURS English slice also kept
+every ASR hypothesis unchanged: Parakeet INT8 5.92% WER, Whisper Small INT8
+7.14%, and Canary INT8 10.42% for both layouts. These storage-layout results do
+not justify changing the general ASR default from Parakeet to Canary; Canary
+remains useful when its smaller bundle or transcription/translation contract
+fits the application better.
+
+The download helpers pin the audited model-repository commits, fetch each
+sidecar before its small graph protobuf, and retain the filenames expected by
+the runtime. Revisions can be overridden for an explicitly tested bundle with
+`SPEECH_PARAKEET_ONNX_REVISION`, `SPEECH_WHISPER_ONNX_REVISION`,
+`SPEECH_CANARY_ONNX_REVISION`, `SPEECH_SORTFORMER_ONNX_REVISION`, or
+`SPEECH_REDIMNET_ONNX_REVISION`.
+
 ## Building with ONNX support
 
 ```bash
@@ -272,7 +336,7 @@ auto result = stt.transcribe(audio, length, 16000);
   and the published v3 exports do not emit a language token in greedy decode,
   so the wrapper deliberately does not expose a language-forcing API.
 - Streaming supported via `begin_stream` / `push_chunk` / `end_stream` (accumulates audio and re-transcribes each chunk; not a true streaming decoder)
-- Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64.
+- Model files: [soniqo/Parakeet-TDT-0.6B-ONNX](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-ONNX) — `parakeet-encoder.onnx` (FP32, plus external `.onnx.data`) or `parakeet-encoder-int8.onnx` (~840 MB / ~100 MB INT8), `parakeet-decoder-joint.onnx` / `parakeet-decoder-joint-int8.onnx`, `vocab.json`. The download helper selects the aligned `external-v2/` INT8 graph/sidecar pairs while the root inline files remain available. Decoder-joint inputs `targets` + `target_length` are INT32; encoder length input stays INT64.
 
 ## OnnxWhisperStt
 
@@ -318,6 +382,7 @@ SPEECH_CORE_WHISPER_ORT_THREADS=16 \
 - Download helper:
 
 ```bash
+scripts/download_whisper_onnx.sh small int8
 scripts/download_whisper_onnx.sh turbo int8
 scripts/download_whisper_onnx.sh medium fp16
 ```
@@ -326,7 +391,7 @@ scripts/download_whisper_onnx.sh medium fp16
   [soniqo/Whisper-Small-ONNX](https://huggingface.co/soniqo/Whisper-Small-ONNX),
   [soniqo/Whisper-Medium-ONNX](https://huggingface.co/soniqo/Whisper-Medium-ONNX),
   [soniqo/Whisper-Large-v3-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-ONNX),
-  [soniqo/Whisper-Large-v3-Turbo-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX).
+  [soniqo/Whisper-Large-v3-Turbo-ONNX](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX). Small INT8 uses its aligned `external-v2/` graph/sidecar pairs; the other model/precision combinations are unchanged.
 
 ## OnnxCanaryStt
 
@@ -354,7 +419,7 @@ scripts/download_canary_onnx.sh int8
 scripts/download_canary_onnx.sh fp32
 ```
 
-- Model files: [soniqo/Canary-180M-Flash-ONNX](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) — `canary-encoder-int8.onnx` + `canary-decoder-int8.onnx` (273 MB) or the FP32 pair (778 MB), plus `vocab.json` and `config.json`.
+- Model files: [soniqo/Canary-180M-Flash-ONNX](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) — `canary-encoder-int8.onnx` + `canary-decoder-int8.onnx` (273 MB) or the FP32 pair (778 MB), plus `vocab.json` and `config.json`. The helper installs the corresponding aligned `external-v2/` graph/sidecar pairs under those local graph names.
 
 ## LiteRTSileroVad
 

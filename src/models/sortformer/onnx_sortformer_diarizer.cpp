@@ -34,6 +34,23 @@ std::vector<std::int64_t> tensor_shape(
     return out;
 }
 
+std::vector<std::int64_t> tensor_value_shape(
+    const OrtApi* api, const OrtValue* value) {
+    OrtTensorTypeAndShapeInfo* info = nullptr;
+    try {
+        ort_check(api, api->GetTensorTypeAndShape(value, &info));
+        std::size_t dims = 0;
+        ort_check(api, api->GetDimensionsCount(info, &dims));
+        std::vector<std::int64_t> out(dims);
+        ort_check(api, api->GetDimensions(info, out.data(), dims));
+        api->ReleaseTensorTypeAndShapeInfo(info);
+        return out;
+    } catch (...) {
+        if (info != nullptr) api->ReleaseTensorTypeAndShapeInfo(info);
+        throw;
+    }
+}
+
 [[noreturn]] void wrong_shape(const std::string& what) {
     throw std::runtime_error(
         "Sortformer ONNX: unexpected " + what
@@ -182,7 +199,11 @@ OnnxSortformerDiarizer::OnnxSortformerDiarizer(
     // The prediction block covers the cache, the FIFO and the whole window
     // including its context. Anything else means the offsets this class hands
     // the cache would land in the wrong section.
-    if (preds[1] != cache_frames_ + fifo_frames_ + window_frames_) {
+    // The current export leaves this output axis symbolic even though its
+    // runtime value is fixed. Validate a concrete declaration here, and always
+    // validate the materialized tensor after Run below.
+    if (preds[1] != -1
+        && preds[1] != cache_frames_ + fifo_frames_ + window_frames_) {
         wrong_shape("prediction block length");
     }
 
@@ -374,13 +395,51 @@ bool OnnxSortformerDiarizer::advance_step(
     OrtStatus* status = api_->Run(
         session_, nullptr, input_names, inputs, 6, output_names, 3, outputs);
 
+    auto release_io = [&]() {
+        for (OrtValue* value : outputs) if (value) api_->ReleaseValue(value);
+        for (OrtValue* value : inputs) if (value) api_->ReleaseValue(value);
+        api_->ReleaseMemoryInfo(memory);
+    };
+    if (status != nullptr) {
+        release_io();
+        ort_check(api_, status);
+    }
+
+    std::vector<std::int64_t> prediction_shape;
+    std::vector<std::int64_t> embedding_shape;
+    try {
+        prediction_shape = tensor_value_shape(api_, outputs[0]);
+        embedding_shape = tensor_value_shape(api_, outputs[1]);
+    } catch (...) {
+        release_io();
+        throw;
+    }
+    const std::int64_t prediction_frames =
+        cache_frames_ + fifo_frames_ + window_frames_;
+    if (prediction_shape != std::vector<std::int64_t>{
+            1, prediction_frames, speakers_}) {
+        release_io();
+        wrong_shape("runtime prediction block shape");
+    }
+    if (embedding_shape != std::vector<std::int64_t>{
+            1, window_frames_, embedding_dim_}) {
+        release_io();
+        wrong_shape("runtime embedding shape");
+    }
+
     float* predictions = nullptr;
     float* embeddings = nullptr;
-    if (status == nullptr) {
-        api_->GetTensorMutableData(outputs[0],
-                                   reinterpret_cast<void**>(&predictions));
-        api_->GetTensorMutableData(outputs[1],
-                                   reinterpret_cast<void**>(&embeddings));
+    status = api_->GetTensorMutableData(
+        outputs[0], reinterpret_cast<void**>(&predictions));
+    if (status != nullptr) {
+        release_io();
+        ort_check(api_, status);
+    }
+    status = api_->GetTensorMutableData(
+        outputs[1], reinterpret_cast<void**>(&embeddings));
+    if (status != nullptr) {
+        release_io();
+        ort_check(api_, status);
     }
 
     std::vector<float> chunk_predictions;
@@ -400,12 +459,7 @@ bool OnnxSortformerDiarizer::advance_step(
             SortformerSpeakerCache::PredictionLayout::Packed);
     }
 
-    for (OrtValue* value : outputs) if (value) api_->ReleaseValue(value);
-    for (OrtValue* value : inputs) if (value) api_->ReleaseValue(value);
-    api_->ReleaseMemoryInfo(memory);
-    if (status != nullptr) {
-        ort_check(api_, status);
-    }
+    release_io();
 
     out.insert(out.end(), chunk_predictions.begin(), chunk_predictions.end());
     frames_emitted_ += chunk_predictions.size()

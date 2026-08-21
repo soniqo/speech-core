@@ -7,6 +7,28 @@ on:
     branches: [main]
 
 jobs:
+  # The model publishing helper is independent of the C++ build. Exercise it
+  # on Linux and Windows because external-data path and rename behavior differs.
+  onnx-repacker-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ONNX tooling dependencies
+        run: python -m pip install -r scripts/requirements-onnx-tools.txt
+
+      - name: Test external-data repacker
+        run: python -m unittest discover -s tests -p "test_export_external_data.py" -v
+
   # Fast lane: orchestration-only build, no ML deps. Catches anything that
   # breaks the core library on macOS, Linux, or Windows.
   unit-tests:

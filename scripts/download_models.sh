@@ -9,6 +9,7 @@
 set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo"
+PARAKEET_REVISION="${SPEECH_PARAKEET_ONNX_REVISION:-c1652ab21826e26dfc2be5273fe69edc7f9cc938}"
 # Default output: repo-relative scripts/models from a source checkout; the
 # same per-user cache used by the CLIs when CPack installs this script as
 # `speech_download_models`. The name check also covers writable extracted TGZ
@@ -26,7 +27,9 @@ mkdir -p "$OUT/voices"
 
 FILES=(
     "Silero-VAD-v5-ONNX/silero-vad.onnx"
+    "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx.data"
     "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx"
+    "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx.data"
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx"
     "Parakeet-TDT-0.6B-ONNX/vocab.json"
     "Kokoro-82M-ONNX/kokoro-e2e.onnx"
@@ -56,6 +59,21 @@ FILES=(
 for entry in "${FILES[@]}"; do
     repo="${entry%%/*}"
     rel="${entry#*/}"
+    remote_rel="$rel"
+    revision="main"
+    force=0
+    required=0
+    if [[ "$repo" == "Parakeet-TDT-0.6B-ONNX" ]]; then
+        revision="$PARAKEET_REVISION"
+    fi
+    case "$repo/$rel" in
+        Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx*|\
+        Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx*)
+            remote_rel="external-v2/$rel"
+            required=1
+            case "$rel" in *.onnx) force=1 ;; esac
+            ;;
+    esac
     dest="$OUT/${rel#*/voices/}"
     # Handle voices/ subpath
     case "$rel" in
@@ -63,20 +81,37 @@ for entry in "${FILES[@]}"; do
         *) dest="$OUT/$(basename "$rel")" ;;
     esac
 
-    if [[ -f "$dest" && -s "$dest" ]]; then
+    if [[ -f "$dest" && -s "$dest" && "$force" != "1" ]]; then
         echo "[skip] $rel (already exists)"
         continue
     fi
 
-    url="$BASE_URL/$repo/resolve/main/$rel"
-    echo "[fetch] $rel"
-    # Tolerate 404s so a single missing file (e.g. DeepFilterNet3-ONNX/deepfilter.onnx
-    # is not yet published) doesn't kill the whole download. The corresponding
-    # test_* function in test_models.cpp skips at runtime when its files are absent.
-    if ! curl -fL --retry 3 -o "$dest" "$url"; then
+    url="$BASE_URL/$repo/resolve/$revision/$remote_rel"
+    echo "[fetch] $repo@$revision/$remote_rel"
+    # Legacy optional files tolerate 404s (DeepFilter is not always published).
+    # External-data pairs are required: never install a graph after its sidecar
+    # failed, because that would leave an unusable local bundle.
+    temporary="${dest}.part"
+    rm -f "$temporary"
+    if ! curl -fL --retry 3 -o "$temporary" "$url"; then
+        rm -f "$temporary"
+        if [[ "$required" == "1" ]]; then
+            echo "[error] required $repo@$revision/$remote_rel is unavailable" >&2
+            exit 1
+        fi
         echo "[warn] $rel not available (HTTP error) — leaving missing"
-        rm -f "$dest"
+        continue
     fi
+    if [[ ! -s "$temporary" ]]; then
+        rm -f "$temporary"
+        if [[ "$required" == "1" ]]; then
+            echo "[error] required $repo@$revision/$remote_rel is empty" >&2
+            exit 1
+        fi
+        echo "[warn] $rel downloaded as an empty file — leaving missing"
+        continue
+    fi
+    mv "$temporary" "$dest"
 done
 
 echo ""

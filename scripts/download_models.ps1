@@ -27,9 +27,27 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 $voicesDirectory = Join-Path $outputRoot "voices"
 New-Item -ItemType Directory -Force -Path $voicesDirectory | Out-Null
 
+$parakeetRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_PARAKEET_ONNX_REVISION)) {
+    "c1652ab21826e26dfc2be5273fe69edc7f9cc938"
+} else {
+    $env:SPEECH_PARAKEET_ONNX_REVISION
+}
+$redimnetRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_REDIMNET_ONNX_REVISION)) {
+    "e911e3f063899805f3d94ee5d1db53fff8e9f3e8"
+} else {
+    $env:SPEECH_REDIMNET_ONNX_REVISION
+}
+$sortformerRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_SORTFORMER_ONNX_REVISION)) {
+    "a7176b247fb7df5588414c20632f584d4f8562c8"
+} else {
+    $env:SPEECH_SORTFORMER_ONNX_REVISION
+}
+
 $defaultFiles = @(
     "Silero-VAD-v5-ONNX/silero-vad.onnx",
+    "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx.data",
     "Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx",
+    "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx.data",
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx",
     "Parakeet-TDT-0.6B-ONNX/vocab.json",
     "Kokoro-82M-ONNX/kokoro-e2e.onnx",
@@ -70,12 +88,14 @@ $stenografFiles = @(
     "MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC/processor_config.json",
     "MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC/preprocessor_config.json",
     "MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC/vocab.json",
+    "ReDimNet2-B6-ONNX-FP32/ReDimNet2B6.onnx.data",
     "ReDimNet2-B6-ONNX-FP32/ReDimNet2B6.onnx",
     "ReDimNet2-B6-ONNX-FP32/config.json",
     # Only the light transcription pipeline loads this, and which pipeline runs
     # is not known until a session has tried the CUDA provider. It is listed
     # here because the application asks for the manifest a second time when it
     # turns out to need it, and already-present files are skipped.
+    "Sortformer-Diarization-4spk-ONNX/sortformer-default.onnx.data",
     "Sortformer-Diarization-4spk-ONNX/sortformer-default.onnx",
     "Sortformer-Diarization-4spk-ONNX/config.json",
     "LocalVQE-v1.4-AEC-200K-ONNX-FP32/LocalVQEAECResidualMask.onnx",
@@ -93,6 +113,29 @@ foreach ($entry in $files) {
     $slash = $entry.IndexOf('/')
     $repository = $entry.Substring(0, $slash)
     $relativePath = $entry.Substring($slash + 1)
+    $remoteRelativePath = $relativePath
+    $revision = "main"
+    $forceGraph = $false
+    if ($repository -eq "Parakeet-TDT-0.6B-ONNX") {
+        $revision = $parakeetRevision
+    } elseif ($repository -eq "ReDimNet2-B6-ONNX-FP32") {
+        $revision = $redimnetRevision
+    } elseif ($repository -eq "Sortformer-Diarization-4spk-ONNX") {
+        $revision = $sortformerRevision
+    }
+    if ($repository -eq "Parakeet-TDT-0.6B-ONNX" -and
+        $relativePath -like "parakeet-*-int8.onnx*") {
+        $remoteRelativePath = "external-v2/$relativePath"
+        $forceGraph = $relativePath.EndsWith(".onnx")
+    } elseif ($repository -eq "ReDimNet2-B6-ONNX-FP32" -and
+              $relativePath -like "ReDimNet2B6.onnx*") {
+        $remoteRelativePath = "external-v2/$relativePath"
+        $forceGraph = $relativePath.EndsWith(".onnx")
+    } elseif ($repository -eq "Sortformer-Diarization-4spk-ONNX" -and
+              $relativePath -like "sortformer-default.onnx*") {
+        $remoteRelativePath = "external-v2/$relativePath"
+        $forceGraph = $relativePath.EndsWith(".onnx")
+    }
     if ($ModelSet -eq "stenograf") {
         # Keep each application model in its repository directory. Nemotron
         # external-data references and common config/vocab filenames require
@@ -104,7 +147,8 @@ foreach ($entry in $files) {
         $destination = Join-Path $outputRoot ([System.IO.Path]::GetFileName($relativePath))
     }
 
-    if ((Test-Path -LiteralPath $destination) -and
+    if (-not $forceGraph -and
+        (Test-Path -LiteralPath $destination) -and
         (Get-Item -LiteralPath $destination).Length -gt 0) {
         Write-Host "[skip] $relativePath (already exists)"
         continue
@@ -114,8 +158,8 @@ foreach ($entry in $files) {
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
     $temporary = "$destination.part"
     Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $temporary
-    $url = "https://huggingface.co/soniqo/$repository/resolve/main/$relativePath"
-    Write-Host "[fetch] $relativePath"
+    $url = "https://huggingface.co/soniqo/$repository/resolve/$revision/$remoteRelativePath"
+    Write-Host "[fetch] $repository@$revision/$remoteRelativePath"
 
     & curl.exe --fail --location --retry 3 --output $temporary $url
     if ($LASTEXITCODE -ne 0) {
