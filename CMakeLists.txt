@@ -689,6 +689,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_onnx_moss_model"
            OR TEST_NAME STREQUAL "test_onnx_localvqe_model"
            OR TEST_NAME STREQUAL "test_onnx_redimnet_model"
+           OR TEST_NAME STREQUAL "test_onnx_sortformer_model"
            OR TEST_NAME STREQUAL "test_redimnet_audio_preparation"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_openai_tts_server"
@@ -846,6 +847,16 @@ if(SPEECH_CORE_BUILD_TESTS)
             PRIVATE speech_core_models)
         add_test(NAME test_onnx_redimnet_model
                  COMMAND test_onnx_redimnet_model)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_onnx_sortformer_model.cpp)
+        add_executable(test_onnx_sortformer_model
+            tests/test_onnx_sortformer_model.cpp)
+        target_link_libraries(test_onnx_sortformer_model
+            PRIVATE speech_core_models)
+        add_test(NAME test_onnx_sortformer_model
+                 COMMAND test_onnx_sortformer_model)
     endif()
 
     if(SPEECH_CORE_WITH_ONNX AND
