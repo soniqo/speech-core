@@ -1,14 +1,17 @@
 #include "speech_core/models/supertonic_tokenizer.h"
 
 #include "speech_core/util/json.h"
+#include "speech_core/util/text_chunker.h"
 
 #include <utf8proc.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 namespace speech_core {
 namespace {
@@ -141,6 +144,55 @@ bool ends_with_terminal(const std::vector<char32_t>& v) {
     return kTerm.find(v.back()) != std::u32string::npos;
 }
 
+
+// Sentence terminals for chunk boundaries. helper.py::_chunk_text splits on `(?<=[.!?])\s+`; the
+// CJK forms are included so ja/ko text gets sentence-level packing too.
+const std::u32string& sentence_terminals() {
+    static const std::u32string kTerm = U".!?…。！？";
+    return kTerm;
+}
+
+size_t count_codepoints(const std::string& s) {
+    size_t n = 0;
+    for (unsigned char c : s)
+        if ((c & 0xC0) != 0x80) ++n;
+    return n;
+}
+
+bool ends_with_sentence_terminal(const std::string& s) {
+    const std::vector<char32_t> v = utf8_to_u32(s);
+    return !v.empty() && sentence_terminals().find(v.back()) != std::u32string::npos;
+}
+
+// Smallest piece the balanced splitters may produce (codepoints). Matches the chunk() budget floor.
+constexpr int kMinPieceCodepoints = 8;
+
+// Bisect `text` while `latent_frames` says it overflows the window (see fit_to_window()).
+void fit_recursive(const std::string& text,
+                   const std::function<int(const std::string&, bool)>& latent_frames,
+                   int max_frames, int min_codepoints, int max_depth, int depth,
+                   bool continuation, std::vector<SupertonicPiece>& out) {
+    if (latent_frames(text, continuation) <= max_frames || depth >= max_depth) {
+        out.push_back({text, continuation, false});
+        return;
+    }
+    const size_t n = count_codepoints(text);
+    std::vector<std::string> halves;
+    if (n >= 2 * static_cast<size_t>(min_codepoints))
+        halves = split_text_for_synthesis_retry(text, count_codepoints,
+                                                static_cast<size_t>(min_codepoints), n - 1);
+    if (halves.size() != 2) {  // too short to split: hand it back for the caller to truncate
+        out.push_back({text, continuation, false});
+        return;
+    }
+    // The left half continues into the right one unless the cut landed on a sentence boundary
+    // (then it keeps its own terminal punctuation and the host may pause after it).
+    fit_recursive(halves[0], latent_frames, max_frames, min_codepoints, max_depth, depth + 1,
+                  !ends_with_sentence_terminal(halves[0]), out);
+    fit_recursive(halves[1], latent_frames, max_frames, min_codepoints, max_depth, depth + 1,
+                  continuation, out);
+}
+
 }  // namespace
 
 SupertonicTokenizer::SupertonicTokenizer(const std::string& unicode_indexer_path,
@@ -168,6 +220,12 @@ SupertonicTokenizer::SupertonicTokenizer(const std::string& unicode_indexer_path
         throw std::runtime_error("Supertonic: unicode_indexer.json parsed empty");
 }
 
+SupertonicTokenizer::SupertonicTokenizer(std::vector<int32_t> indexer)
+    : indexer_(std::move(indexer)) {
+    if (indexer_.empty())
+        throw std::runtime_error("Supertonic: unicode indexer table is empty");
+}
+
 bool SupertonicTokenizer::supports(const std::string& lang) const {
     return available_langs().count(lang) != 0;
 }
@@ -177,7 +235,8 @@ int32_t SupertonicTokenizer::lookup(uint32_t cp) const {
     return kUnknownId;
 }
 
-std::string SupertonicTokenizer::preprocess(const std::string& text, const std::string& lang) const {
+std::string SupertonicTokenizer::preprocess(const std::string& text, const std::string& lang,
+                                            bool continuation) const {
     // 1) NFKD.
     std::string s = nfkd(text);
 
@@ -211,7 +270,9 @@ std::string SupertonicTokenizer::preprocess(const std::string& text, const std::
     while (s.find("''")   != std::string::npos) replace_all(s, "''", "'");
     while (s.find("``")   != std::string::npos) replace_all(s, "``", "`");
 
-    // 6) collapse whitespace + trim, then 7) ensure terminal punctuation.
+    // 6) collapse whitespace + trim, then 7) ensure terminal punctuation. helper.py always closes
+    // with "."; a fragment that continues in the next chunk gets "," instead so the model renders
+    // continuation intonation rather than a sentence-final fall (#140).
     {
         std::vector<char32_t> in = utf8_to_u32(s);
         std::vector<char32_t> out;
@@ -228,7 +289,7 @@ std::string SupertonicTokenizer::preprocess(const std::string& text, const std::
         }
         while (!out.empty() && out.front() == ' ') out.erase(out.begin());
         while (!out.empty() && out.back() == ' ')  out.pop_back();
-        if (!ends_with_terminal(out)) out.push_back('.');
+        if (!ends_with_terminal(out)) out.push_back(continuation ? ',' : '.');
         s = u32_to_utf8(out);
     }
 
@@ -239,8 +300,9 @@ std::string SupertonicTokenizer::preprocess(const std::string& text, const std::
 }
 
 SupertonicTokenizer::Tokens
-SupertonicTokenizer::process(const std::string& text, const std::string& lang, int text_t) const {
-    const std::string wrapped = preprocess(text, lang);
+SupertonicTokenizer::process(const std::string& text, const std::string& lang, int text_t,
+                             bool continuation) const {
+    const std::string wrapped = preprocess(text, lang, continuation);
     const std::vector<char32_t> cps = utf8_to_u32(wrapped);
 
     Tokens t;
@@ -254,72 +316,99 @@ SupertonicTokenizer::process(const std::string& text, const std::string& lang, i
     return t;
 }
 
+int SupertonicTokenizer::wrapped_length(const std::string& text, const std::string& lang) const {
+    return static_cast<int>(utf8_to_u32(preprocess(text, lang, false)).size());
+}
+
 std::vector<std::string>
 SupertonicTokenizer::chunk(const std::string& text, const std::string& lang, int max_codepoints) const {
-    // Cap so the wrapped, tokenized form fits the exported fixed text length (max_text_tokens_).
+    // Raw-codepoint packing budget (helper.py's max_len). Default: what the wrapped form can hold;
     // tag overhead = len("<lang>") + len("</lang>") = 2*lang + 5.
-    int cap = max_text_tokens_ - (2 * static_cast<int>(lang.size()) + 5) - 1;
-    if (max_codepoints > 0 && max_codepoints < cap) cap = max_codepoints;  // fixed-window duration cap
-    if (cap < 8) cap = 8;
+    int budget = max_text_tokens_ - (2 * static_cast<int>(lang.size()) + 5) - 1;
+    if (max_codepoints > 0 && max_codepoints < budget) budget = max_codepoints;
+    if (budget < kMinPieceCodepoints) budget = kMinPieceCodepoints;
 
     const std::vector<char32_t> cps = utf8_to_u32(text);
 
     // Sentence-ish split at terminal punctuation followed by whitespace (faithful subset of
     // helper.py::_chunk_text; the abbreviation-guard regex there is a refinement — boundary
-    // differences only shift where the 0.3 s inter-chunk silence lands, not parity).
-    static const std::u32string kTerm = U".!?…。！？";
+    // differences only shift where the inter-chunk silence lands, not parity).
     std::vector<std::vector<char32_t>> sentences;
     std::vector<char32_t> cur;
+    auto push_sentence = [&]() {
+        size_t a = 0, b = cur.size();
+        while (a < b && is_ws(cur[a])) ++a;
+        while (b > a && is_ws(cur[b - 1])) --b;
+        if (b > a) sentences.emplace_back(cur.begin() + a, cur.begin() + b);
+        cur.clear();
+    };
     for (size_t i = 0; i < cps.size(); ++i) {
         cur.push_back(cps[i]);
-        const bool term    = kTerm.find(cps[i]) != std::u32string::npos;
-        const bool nextws  = (i + 1 < cps.size()) && is_ws(cps[i + 1]);
-        if (term && nextws) { sentences.push_back(cur); cur.clear(); }
+        const bool term   = sentence_terminals().find(cps[i]) != std::u32string::npos;
+        const bool nextws = (i + 1 < cps.size()) && is_ws(cps[i + 1]);
+        if (term && nextws) push_sentence();
     }
-    if (!cur.empty()) sentences.push_back(cur);
+    push_sentence();
 
     std::vector<std::string> out;
     std::vector<char32_t> chunk_cps;
     auto flush = [&]() {
-        size_t a = 0, b = chunk_cps.size();
-        while (a < b && chunk_cps[a] == ' ') ++a;
-        while (b > a && chunk_cps[b - 1] == ' ') --b;
-        if (b > a) out.push_back(u32_to_utf8(std::vector<char32_t>(chunk_cps.begin() + a,
-                                                                   chunk_cps.begin() + b)));
+        if (!chunk_cps.empty()) emit_within_capacity(u32_to_utf8(chunk_cps), lang, out);
         chunk_cps.clear();
     };
     auto fits = [&](int extra) {
-        return static_cast<int>(chunk_cps.size()) + (chunk_cps.empty() ? 0 : 1) + extra <= cap;
-    };
-    auto append_unit = [&](const std::vector<char32_t>& u) {
-        if (!chunk_cps.empty()) chunk_cps.push_back(' ');
-        chunk_cps.insert(chunk_cps.end(), u.begin(), u.end());
+        return static_cast<int>(chunk_cps.size()) + (chunk_cps.empty() ? 0 : 1) + extra <= budget;
     };
 
-    for (auto& sent : sentences) {
-        if (static_cast<int>(sent.size()) <= cap) {
+    for (const auto& sent : sentences) {
+        if (static_cast<int>(sent.size()) <= budget) {
             if (!fits(static_cast<int>(sent.size()))) flush();
-            append_unit(sent);
+            if (!chunk_cps.empty()) chunk_cps.push_back(' ');
+            chunk_cps.insert(chunk_cps.end(), sent.begin(), sent.end());
             continue;
         }
-        // Oversize sentence: hard-split on word boundaries (and pathologically long tokens).
+        // Longer than the packing budget: keep it whole. Word-packing it at the budget strands the
+        // last word or two of a 57–62-codepoint sentence in its own chunk ("... sous les" |
+        // "arbres.", #140). The caller measures the sentence's real duration and only splits it —
+        // in balanced halves at the best boundary — when it overflows the window (fit_to_window).
         flush();
-        std::vector<char32_t> word;
-        auto push_word = [&]() {
-            if (word.empty()) return;
-            if (!fits(static_cast<int>(word.size()))) flush();
-            append_unit(word);
-            word.clear();
-        };
-        for (char32_t c : sent) {
-            if (is_ws(c)) { push_word(); continue; }
-            word.push_back(c);
-            if (static_cast<int>(word.size()) >= cap) push_word();
-        }
-        push_word();
+        emit_within_capacity(u32_to_utf8(sent), lang, out);
     }
     flush();
     if (out.empty()) out.emplace_back();  // degenerate input → one empty chunk
+    return out;
+}
+
+// Emit `text` as one chunk when its wrapped form fits max_text_tokens_ — process() would otherwise
+// truncate it silently, and NFKD adds a codepoint per accented letter, so a raw-codepoint budget
+// alone cannot guarantee this. Otherwise bisect at the best sentence/clause/word boundary until
+// every piece fits.
+void SupertonicTokenizer::emit_within_capacity(const std::string& text, const std::string& lang,
+                                               std::vector<std::string>& out) const {
+    if (wrapped_length(text, lang) <= max_text_tokens_) {
+        out.push_back(text);
+        return;
+    }
+    const size_t n = count_codepoints(text);
+    std::vector<std::string> halves;
+    if (n >= 2 * static_cast<size_t>(kMinPieceCodepoints))
+        halves = split_text_for_synthesis_retry(text, count_codepoints, kMinPieceCodepoints, n - 1);
+    if (halves.size() != 2) {  // nothing to cut on; process() truncates this one
+        out.push_back(text);
+        return;
+    }
+    emit_within_capacity(halves[0], lang, out);
+    emit_within_capacity(halves[1], lang, out);
+}
+
+std::vector<SupertonicPiece> SupertonicTokenizer::fit_to_window(
+    const std::string& chunk,
+    const std::function<int(const std::string& text, bool continuation)>& latent_frames,
+    int max_frames, int min_codepoints, int max_depth) {
+    std::vector<SupertonicPiece> out;
+    if (min_codepoints < 1) min_codepoints = 1;
+    fit_recursive(chunk, latent_frames, max_frames, min_codepoints, max_depth, 0, false, out);
+    for (size_t i = 1; i < out.size(); ++i) out[i].pause_before = !out[i - 1].continuation;
     return out;
 }
 

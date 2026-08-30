@@ -26,8 +26,16 @@ namespace speech_core {
 ///   L = ceil(duration*44100/(512*6)); noisy = randn([1,144,L])*latent_mask; speed divides duration.
 ///
 /// Unlike VoxCPM2, this is **non-autoregressive**: a fixed `total_step` ODE loop (default 8), no stop
-/// logits, no KV cache. Each synthesize() splits text into ≤T-token chunks, runs the four graphs per
-/// chunk, and streams the trimmed PCM through the TTSChunkCallback (0.3 s silence between chunks).
+/// logits, no KV cache. The published graphs are fixed-shape (T = 128 text tokens, L = 64 latent
+/// frames ≈ 4.5 s), so synthesize() packs sentences into chunks, runs the duration predictor on each
+/// as a preflight, and bisects a chunk at its best sentence/clause/word boundary only when its
+/// predicted audio overflows the window — a long sentence is never word-packed at a character
+/// count. A piece that overflows by a small margin (≤ kWindowStretchMax) is spoken slightly faster
+/// to fit instead of being cut (the same host-side mechanism as set_speed()). The four graphs run
+/// per piece and the trimmed PCM streams through the TTSChunkCallback; the inter-chunk silence
+/// (0.3 s) is inserted only where a sentence ends. A piece that continues into the next one is
+/// tokenized with a trailing "," rather than a sentence-final ".", and the seam between the two
+/// is trimmed to a comma-length pause.
 ///
 /// Validated end-to-end against the ONNX reference at 66–82 dB mag-STFT SNR (en/de/ko); see the
 /// Runner repo's `speech-models/stmodels/controlled_ab.py`. Voice is a precomputed style pair
@@ -81,8 +89,18 @@ private:
         std::vector<float> style_dp;   // [1,8,16]   → 128
     };
 
-    // Synthesize one ≤T-token chunk into trimmed 44.1 kHz PCM. chunk_index decorrelates the noise.
-    std::vector<float> synth_chunk(const std::string& chunk, const std::string& language, size_t chunk_index);
+    // Tokenized piece + its predicted duration. The duration predictor is the first graph anyway,
+    // so it doubles as the fixed-window preflight (see synthesize()).
+    struct Prepared {
+        SupertonicTokenizer::Tokens tok;
+        float duration      = 0.0f;  // seconds after speed; 0 ⇒ nothing to synthesize
+        int   latent_frames = 0;     // L_true = ceil(int(duration * SR) / 3072)
+    };
+    Prepared prepare_chunk(const std::string& text, const std::string& language, bool continuation);
+
+    // text_encoder → vector_estimator × N → vocoder on a prepared piece → trimmed 44.1 kHz PCM.
+    // piece_index decorrelates the latent noise between the pieces of one utterance.
+    std::vector<float> synth_prepared(const Prepared& prepared, size_t piece_index);
     const VoiceStyle& current_voice() const;
     void destroy_graphs() noexcept;  // idempotent; used by the dtor and ctor-failure cleanup
 
@@ -103,6 +121,15 @@ private:
     static constexpr int kStyleTtlFloats = 50 * 256;  // 12800
     static constexpr int kStyleDpFloats  = 8 * 16;    // 128
     static constexpr int kSampleRate     = 44100;
+    // A piece whose predicted latent length overflows the fixed window by at most this ratio is
+    // tempo-fitted into the window (its duration is clamped, so it is spoken up to 10% faster)
+    // rather than bisected mid-sentence. Beyond it the planner splits the text.
+    static constexpr float kWindowStretchMax = 1.10f;
+    // At a forced intra-sentence split the model's own utterance padding on both pieces would
+    // leave a ~700 ms gap; the seam is trimmed to this much tail + head silence (150 ms total,
+    // chosen by ear against 250 ms).
+    static constexpr int kSeamTailMs = 100;
+    static constexpr int kSeamHeadMs = 50;
 
     int               total_step_      = 8;
     float             speed_           = 1.05f;
