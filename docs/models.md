@@ -1210,7 +1210,9 @@ fewer split/retries are more important than the shorter graph's latency.
 - 24 kHz Float32 output
 - One callback per safe internal text chunk; `is_final=true` marks the final one
 - Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
-  until `set_voice()` selects an explicit persistent voice
+  until `set_voice()` selects an explicit persistent voice; `set_voice("")`
+  restores `af_heart` and re-arms the auto-switch, and unknown voices throw
+  `std::invalid_argument`
 - Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
 - Unsafe length, non-finite PCM, or numerical instability triggers bounded split/retry; output is never clamped or silently dropped
 - Output post-processing: trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary

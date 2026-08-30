@@ -493,6 +493,70 @@ void test_kokoro_tts(const std::string& dir) {
     std::printf("ok (samples=%zu)\n", total_samples);
 }
 
+// set_voice(): unknown ids throw before touching state, an explicit voice
+// changes the audio and pins it across language changes, and "" restores the
+// default plus the language auto-switch.
+void test_kokoro_voice_selection(const std::string& dir) {
+    std::string model = dir + "/kokoro-e2e.onnx";
+    std::string voices = dir + "/voices";
+    if (!file_exists(model) || !file_exists(dir + "/vocab_index.json") ||
+        !file_exists(voices + "/af_heart.bin") || !file_exists(voices + "/ff_siwis.bin")) {
+        std::printf("  [skip] kokoro files (incl. voices/{af_heart,ff_siwis}.bin) not in %s\n",
+                    dir.c_str());
+        return;
+    }
+    std::printf("  test_kokoro_voice_selection ... ");
+
+    speech_core::KokoroTts tts(model, voices, dir, /*hw_accel=*/false);
+    // Kokoro draws its `random_phases` graph input from rand(); reseed before
+    // every render so two renders with the same voice are comparable.
+    auto render = [&](const char* text, const char* lang) {
+        std::srand(1234u);
+        std::vector<float> pcm;
+        tts.synthesize(text, lang, [&](const float* s, size_t n, bool) {
+            pcm.insert(pcm.end(), s, s + n);
+        });
+        return pcm;
+    };
+    auto mean_abs_diff = [](const std::vector<float>& a, const std::vector<float>& b) {
+        if (a.size() != b.size()) return 1.0;
+        double acc = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) acc += std::fabs(a[i] - b[i]);
+        return a.empty() ? 0.0 : acc / static_cast<double>(a.size());
+    };
+
+    bool threw = false;
+    try {
+        tts.set_voice("no_such_voice");
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    REQUIRE(threw);
+
+    // Explicit voice vs. default, then "" restores the default output.
+    const auto base = render("Hello world.", "en");
+    REQUIRE(!base.empty());
+    tts.set_voice("ff_siwis");
+    const auto voiced = render("Hello world.", "en");
+    REQUIRE(mean_abs_diff(voiced, base) > 1e-3);
+    tts.set_voice("");
+    const auto restored = render("Hello world.", "en");
+    REQUIRE(mean_abs_diff(restored, base) < 1e-3);
+
+    // An explicit voice survives a language change; "" re-arms the
+    // language-driven switch (fr -> ff_siwis).
+    tts.set_voice("af_heart");
+    const auto pinned_fr = render("Bonjour le monde.", "fr");
+    tts.set_voice("");
+    const auto auto_fr = render("Bonjour le monde.", "fr");
+    tts.set_voice("ff_siwis");
+    const auto explicit_fr = render("Bonjour le monde.", "fr");
+    REQUIRE(mean_abs_diff(pinned_fr, auto_fr) > 1e-3);
+    REQUIRE(mean_abs_diff(auto_fr, explicit_fr) < 1e-3);
+
+    std::printf("ok (base=%zu voiced=%zu)\n", base.size(), voiced.size());
+}
+
 void test_kokoro_short_turn_profile(const std::string& dir) {
     const char* model_env = std::getenv("SPEECH_KOKORO_REALTIME_ONNX_PATH");
     if (!model_env || !file_exists(model_env) ||
@@ -1305,6 +1369,7 @@ int main() {
     RUN(test_onnx_canary_stt);
     RUN(test_nemotron_multilingual_stt);
     RUN(test_kokoro_tts);
+    RUN(test_kokoro_voice_selection);
     RUN(test_kokoro_short_turn_profile);
     RUN(test_deepfilter);
     RUN(test_sidon_restorer);

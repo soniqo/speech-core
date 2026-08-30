@@ -93,6 +93,7 @@ public:
         const std::string& language,
         const TtsSynthesisOptions& options,
         TTSChunkCallback on_chunk);
+    virtual void set_voice(const std::string& voice_id) {}
     virtual int output_sample_rate() const = 0;
     virtual void cancel() {}
 };
@@ -104,6 +105,8 @@ using TTSChunkCallback = std::function<void(
 The callback is invoked for each audio chunk during synthesis. `is_final=true` marks the last chunk. Implementations that aren't streaming-capable can emit a single chunk with `is_final=true`.
 
 `synthesize()` is the streaming API and is not deprecated. `synthesize_with_options()` is the uniform delivery/post-processing API for all TTS implementations through the base default. `Streaming` with no post-processing delegates to `synthesize()`. `Buffered` accumulates all PCM for the submitted text input, applies the requested offline post-processing chain, then invokes the callback once with `is_final=true`. Any offline post-processing belongs on the complete buffered result, not on individual streaming chunks or internal text chunks. Models only need to override `synthesize_with_options()` when they need custom buffering around internal decoder chunks. `VoicePipeline` currently calls `synthesize()` unless a future pipeline config threads synthesis options through.
+
+`set_voice()` selects a backend voice preset for subsequent `synthesize()` calls — Supertonic `F1`…`F5` / `M1`…`M5`, Kokoro `af_heart`, `ff_siwis`, … An empty id restores the backend default (and, for Kokoro, re-arms the language-driven voice switch); unknown ids throw `std::invalid_argument`. The base default is a no-op so fixed-voice backends (Pocket, VoxCPM, …) need no override. It is not synchronized against `synthesize()` — a host that offers a per-call voice (speech-android's `synthesize(text, language, voice)`) wraps `set_voice(id)` → `synthesize()` → `set_voice("")` under its own lock.
 
 **Reference implementations:** `KokoroTts` (Kokoro 82M via ONNX Runtime;
 sentence/chunk-split output with a final marker) and `LiteRTKokoroTts` (the

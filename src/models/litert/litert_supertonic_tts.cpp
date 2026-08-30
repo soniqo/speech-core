@@ -125,6 +125,7 @@ LiteRTSupertonicTts::LiteRTSupertonicTts(const std::string& duration_path,
         if (voices_.empty())
             throw std::runtime_error("Supertonic: no voice styles in " + voice_styles_dir);
         if (!voices_.count(voice_id_)) voice_id_ = voices_.begin()->first;
+        default_voice_id_ = voice_id_;
     } catch (...) {
         destroy_graphs();  // release any LiteRt handles acquired before the failure, then rethrow
         throw;
@@ -149,6 +150,10 @@ void LiteRTSupertonicTts::destroy_graphs() noexcept {
 void LiteRTSupertonicTts::cancel() { cancelled_.store(true); }
 
 void LiteRTSupertonicTts::set_voice(const std::string& voice_id) {
+    if (voice_id.empty()) {
+        voice_id_ = default_voice_id_;
+        return;
+    }
     if (!voices_.count(voice_id))
         throw std::invalid_argument("Supertonic: unknown voice '" + voice_id + "'");
     voice_id_ = voice_id;

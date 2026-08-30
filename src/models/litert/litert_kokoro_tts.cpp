@@ -326,7 +326,7 @@ void LiteRTKokoroTts::load_support_data(const std::string& data_dir) {
         phonemizer_.load_language_dict(
             lang, data_dir + "/dict_" + lang + ".json");
     }
-    set_voice("af_heart");
+    set_voice("");
     current_lang_ = "en";
 }
 
@@ -373,12 +373,25 @@ std::vector<float> LiteRTKokoroTts::load_voice_embedding(
 }
 
 void LiteRTKokoroTts::set_voice(const std::string& name) {
+    if (name.empty()) {
+        voice_embedding_ = load_voice_embedding("af_heart");
+        voice_overridden_ = false;
+        current_lang_.clear();  // re-run the auto-switch on the next synthesize()
+        return;
+    }
+    const std::filesystem::path path =
+        std::filesystem::path(voices_dir_) / (name + ".bin");
+    if (!std::filesystem::exists(path)) {
+        throw std::invalid_argument("Kokoro LiteRT: unknown voice '" + name + "'");
+    }
     voice_embedding_ = load_voice_embedding(name);
+    voice_overridden_ = true;
 }
 
 void LiteRTKokoroTts::auto_switch_voice(const std::string& language) {
     if (language == current_lang_) return;
     current_lang_ = language;
+    if (voice_overridden_) return;
 
     struct LangVoice {
         const char* language;

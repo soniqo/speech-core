@@ -111,6 +111,12 @@ KokoroTts::Config KokoroTts::Config::short_turn_3p5s(bool hw_accel) {
     return config;
 }
 
+namespace {
+// Voice selected at construction and by set_voice(""); also the auto-switch
+// target for English.
+constexpr const char* kDefaultVoice = "af_heart";
+}  // namespace
+
 KokoroTts::KokoroTts(
     const std::string& model_path,
     const std::string& voices_dir,
@@ -150,9 +156,8 @@ KokoroTts::KokoroTts(
             data_dir + "/dict_" + lang + ".json");
     }
 
-    // Load default voice
-    set_voice("af_heart");
-    voice_overridden_ = false;
+    // Load the default voice with the language auto-switch armed.
+    set_voice("");
     current_lang_ = "en";
 }
 
@@ -161,7 +166,22 @@ KokoroTts::~KokoroTts() {
 }
 
 void KokoroTts::set_voice(const std::string& name) {
-    voice_embedding_ = load_voice_embedding(name);
+    if (name.empty()) {
+        // Back to the engine default. Clearing current_lang_ makes the next
+        // synthesize() re-run the language auto-switch, so a language other
+        // than English picks up its mapped voice again.
+        if (!load_voice_embedding(kDefaultVoice, voice_embedding_)) {
+            voice_embedding_.assign(256, 0.0f);
+        }
+        voice_overridden_ = false;
+        current_lang_.clear();
+        return;
+    }
+    std::vector<float> embedding;
+    if (!load_voice_embedding(name, embedding)) {
+        throw std::invalid_argument("Kokoro: unknown voice '" + name + "'");
+    }
+    voice_embedding_ = std::move(embedding);
     voice_overridden_ = true;
 }
 
@@ -172,17 +192,19 @@ void KokoroTts::set_speed(float speed) {
     speed_ = speed;
 }
 
-std::vector<float> KokoroTts::load_voice_embedding(const std::string& name) {
+bool KokoroTts::load_voice_embedding(const std::string& name,
+                                     std::vector<float>& out) {
     std::string path = voices_dir_ + "/" + name + ".bin";
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         LOGE("Voice file not found: %s", path.c_str());
-        return std::vector<float>(256, 0.0f);
+        return false;
     }
 
     std::vector<float> embedding(256);
     file.read(reinterpret_cast<char*>(embedding.data()), 256 * sizeof(float));
-    return embedding;
+    out = std::move(embedding);
+    return true;
 }
 
 void KokoroTts::auto_switch_voice(const std::string& lang) {
@@ -206,8 +228,8 @@ void KokoroTts::auto_switch_voice(const std::string& lang) {
 
     for (auto& entry : map) {
         if (lang == entry.lang) {
-            auto emb = load_voice_embedding(entry.voice);
-            if (emb[0] != 0.0f || emb[1] != 0.0f) {  // check not zeroed (missing file)
+            std::vector<float> emb;
+            if (load_voice_embedding(entry.voice, emb)) {
                 voice_embedding_ = std::move(emb);
                 LOGI("TTS: auto-switched voice to %s for language %s", entry.voice, entry.lang);
             }

@@ -66,7 +66,10 @@ public:
 
     /// Select an explicit voice for subsequent synthesis calls. Once set,
     /// language changes no longer replace it with a language-default voice.
-    void set_voice(const std::string& name);
+    /// An empty name restores `af_heart` and re-arms the language-driven
+    /// auto-switch. Throws std::invalid_argument when `<name>.bin` is not in
+    /// the voices directory.
+    void set_voice(const std::string& name) override;
     /// Set the model duration scalar used by the next synthesis. Values match
     /// the OpenAI speech API range: 0.25 (slowest) through 4.0 (fastest).
     void set_speed(float speed);
@@ -74,7 +77,9 @@ public:
 private:
     enum class ChunkResult { Emitted, RetrySmaller, Cancelled };
 
-    std::vector<float> load_voice_embedding(const std::string& name);
+    /// Reads `<name>.bin` into [out]. Returns false (leaving [out] untouched)
+    /// when the file is missing.
+    bool load_voice_embedding(const std::string& name, std::vector<float>& out);
     void auto_switch_voice(const std::string& language);
     bool synthesize_with_retry(const std::string& text,
                                const TTSChunkCallback& on_chunk,

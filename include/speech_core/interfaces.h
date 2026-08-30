@@ -179,6 +179,15 @@ public:
         const TtsSynthesisOptions& options,
         TTSChunkCallback on_chunk);
 
+    /// Select a backend voice preset for subsequent synthesis calls, e.g.
+    /// Supertonic `F1`…`F5` / `M1`…`M5` or Kokoro `af_heart`, `ff_siwis`.
+    /// An empty id restores the backend default (for Kokoro this also
+    /// re-arms the language-driven voice switch). Unknown ids throw
+    /// std::invalid_argument. Backends with a single fixed voice keep this
+    /// no-op default. Not synchronized against synthesize(): callers
+    /// serialize both on one instance.
+    virtual void set_voice(const std::string& /*voice_id*/) {}
+
     /// Output sample rate in Hz.
     virtual int output_sample_rate() const = 0;
 
