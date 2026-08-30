@@ -794,7 +794,12 @@ tts.synthesize("Bonjour tout le monde.", "fr", [](const float* samples, size_t l
   `set_speed()`, rather than cut mid-sentence. A piece that
   continues into the next one is tokenized with a trailing `,` instead of the usual sentence-
   final `.`, and the 0.3 s inter-chunk silence (`set_chunk_silence()`) is inserted only where a
-  sentence actually ends, never at a forced intra-sentence split. A piece too short to split
+  sentence actually ends, never at a forced intra-sentence split. Each piece also carries the
+  model's own utterance padding (~400 ms trailing, ~300 ms leading), so at a forced split the
+  seam is trimmed to 150 ms (`kSeamTailMs` + `kSeamHeadMs`), which reads as a short comma pause;
+  the second piece still restarts with sentence-initial prosody, since it is a separate
+  generation — the structural fix is an L=128 graph bucket (see follow-ups). A piece too
+  short to split
   that still overflows is trimmed to the window with a log line, as before.
 - `set_speed()` divides the predicted duration (default 1.05); `set_seed()` fixes the latent
   noise for reproducible output; `SUPERTONIC_LATENT_FRAMES` overrides the window only for

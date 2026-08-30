@@ -92,6 +92,32 @@ void load_style(const std::string& path, std::vector<float>& ttl, std::vector<fl
     dp  = extract_style(text, "style_dp");
 }
 
+// Near-silence gate for the seam trims below (-46 dBFS; the vocoder's silence floor is well under it).
+constexpr float kSeamSilenceGate = 0.005f;
+
+size_t leading_silence(const std::vector<float>& pcm) {
+    size_t i = 0;
+    while (i < pcm.size() && std::fabs(pcm[i]) < kSeamSilenceGate) ++i;
+    return i;
+}
+
+size_t trailing_silence(const std::vector<float>& pcm) {
+    size_t n = 0;
+    while (n < pcm.size() && std::fabs(pcm[pcm.size() - 1 - n]) < kSeamSilenceGate) ++n;
+    return n;
+}
+
+// Cut leading / trailing near-silence beyond `keep` samples.
+void trim_head(std::vector<float>& pcm, size_t keep) {
+    const size_t s = leading_silence(pcm);
+    if (s > keep) pcm.erase(pcm.begin(), pcm.begin() + static_cast<std::ptrdiff_t>(s - keep));
+}
+
+void trim_tail(std::vector<float>& pcm, size_t keep) {
+    const size_t s = trailing_silence(pcm);
+    if (s > keep) pcm.resize(pcm.size() - (s - keep));
+}
+
 }  // namespace
 
 LiteRTSupertonicTts::LiteRTSupertonicTts(const std::string& duration_path,
@@ -230,6 +256,17 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
                  piece.continuation ? " (continues)" : "", piece.pause_before ? " (pause)" : "");
             std::vector<float> pcm = synth_prepared(p, piece_index++);
             if (cancelled_.load()) return;
+
+            // A forced split lands mid-sentence, but every piece carries the model's own utterance
+            // padding — ~400 ms of trailing and ~250–380 ms of leading silence — so the raw seam is
+            // ~700 ms of dead air. Trim both sides down to a short comma-length gap (150 ms; the
+            // model's own comma pause is ~250 ms, but the second piece restarts with sentence-
+            // initial emphasis, and a tighter seam reads as more connected). Sentence boundaries
+            // keep their padding.
+            if (piece.continuation)
+                trim_tail(pcm, static_cast<size_t>(kSeamTailMs * kSampleRate / 1000));
+            if (pi > 0 && !piece.pause_before)
+                trim_head(pcm, static_cast<size_t>(kSeamHeadMs * kSampleRate / 1000));
 
             const bool is_final = (ci + 1 == chunks.size()) && (pi + 1 == pieces.size());
             // Silence only where a sentence ends: between chunks, and between pieces whose cut

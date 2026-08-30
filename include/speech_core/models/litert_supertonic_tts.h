@@ -33,8 +33,9 @@ namespace speech_core {
 /// count. A piece that overflows by a small margin (≤ kWindowStretchMax) is spoken slightly faster
 /// to fit instead of being cut (the same host-side mechanism as set_speed()). The four graphs run
 /// per piece and the trimmed PCM streams through the TTSChunkCallback; the inter-chunk silence
-/// (0.3 s) is inserted only where a sentence ends, and a piece that continues into the next one
-/// is tokenized with a trailing "," rather than a sentence-final ".".
+/// (0.3 s) is inserted only where a sentence ends. A piece that continues into the next one is
+/// tokenized with a trailing "," rather than a sentence-final ".", and the seam between the two
+/// is trimmed to a comma-length pause.
 ///
 /// Validated end-to-end against the ONNX reference at 66–82 dB mag-STFT SNR (en/de/ko); see the
 /// Runner repo's `speech-models/stmodels/controlled_ab.py`. Voice is a precomputed style pair
@@ -121,6 +122,11 @@ private:
     // tempo-fitted into the window (its duration is clamped, so it is spoken up to 10% faster)
     // rather than bisected mid-sentence. Beyond it the planner splits the text.
     static constexpr float kWindowStretchMax = 1.10f;
+    // At a forced intra-sentence split the model's own utterance padding on both pieces would
+    // leave a ~700 ms gap; the seam is trimmed to this much tail + head silence (150 ms total,
+    // chosen by ear against 250 ms).
+    static constexpr int kSeamTailMs = 100;
+    static constexpr int kSeamHeadMs = 50;
 
     int               total_step_      = 8;
     float             speed_           = 1.05f;
