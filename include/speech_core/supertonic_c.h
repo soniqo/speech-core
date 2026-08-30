@@ -49,7 +49,8 @@ sc_supertonic_t sc_supertonic_create_from_paths(const char* duration_path,
 
 void sc_supertonic_destroy(sc_supertonic_t synth);
 
-/// Select the voice (e.g. "F1", "M3"). No-op + error string on unknown id.
+/// Select the voice (e.g. "F1", "M3"); "" restores the default. No-op + error
+/// string on unknown id.
 void sc_supertonic_set_voice(sc_supertonic_t synth, const char* voice_id);
 
 /// Flow-matching ODE steps: 5 (fast) · 8 (default) · 12 (quality).

@@ -53,8 +53,10 @@ public:
     int output_sample_rate() const override { return 44100; }
     void cancel() override;
 
-    /// Select the voice (e.g. "F1", "M3"). Default "F1". Throws if unknown.
-    void set_voice(const std::string& voice_id);
+    /// Select the voice (e.g. "F1", "M3"). Default "F1" (or the first loaded
+    /// style when F1 is absent); an empty id restores that default. Throws
+    /// std::invalid_argument if unknown.
+    void set_voice(const std::string& voice_id) override;
 
     /// Flow-matching ODE steps: 5 (fast) · 8 (default) · 12 (quality).
     void set_total_step(int total_step) { total_step_ = total_step; }
@@ -92,6 +94,7 @@ private:
     std::unique_ptr<SupertonicTokenizer>        tokenizer_;
     std::unordered_map<std::string, VoiceStyle> voices_;
     std::string                                 voice_id_ = "F1";
+    std::string                                 default_voice_id_;  // resolved in the ctor
 
     static constexpr int kTextT          = 128;       // fixed text length (relpos attention)
     static constexpr int kLatentChannels = 144;       // latent_dim(24) * chunk_compress(6)

@@ -50,7 +50,11 @@ public:
     int output_sample_rate() const override { return 24000; }
     void cancel() override;
 
-    void set_voice(const std::string& name);
+    /// Select an explicit voice; language changes then no longer replace it.
+    /// An empty name restores `af_heart` and re-arms the language auto-switch.
+    /// Throws std::invalid_argument when `<name>.bin` is not in the voices
+    /// directory.
+    void set_voice(const std::string& name) override;
     void set_speed(float speed);
     void set_seed(uint32_t seed) { seed_ = seed; }
 
@@ -116,6 +120,7 @@ private:
     std::vector<float> voice_embedding_;
     std::string voices_dir_;
     std::string current_lang_;
+    bool voice_overridden_ = false;
     float speed_ = 1.0f;
     uint32_t seed_ = 0;
     uint32_t seed_used_ = 0;
