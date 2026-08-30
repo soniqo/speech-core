@@ -801,9 +801,18 @@ tts.synthesize("Bonjour tout le monde.", "fr", [](const float* samples, size_t l
   generation — the structural fix is an L=128 graph bucket (see follow-ups). A piece too
   short to split
   that still overflows is trimmed to the window with a log line, as before.
+- **Latent buckets.** A bundle may ship extra fixed-L exports of the two L-dependent graphs
+  next to the base ones — `vector_estimator_L128.tflite` + `vocoder_L128.tflite` (≈ 9 s) — produced
+  by `speech-models/stmodels/export_litert.py --latent-frames 64 128`. They are discovered at
+  construction (`latent_buckets()`) and loaded on first use, so memory only grows when a long
+  piece actually needs one. Each piece runs on the smallest bucket whose window holds its
+  predicted duration (`choose_latent_bucket()`): short sentences keep the cheap L=64 graph, a
+  sentence the base window cannot hold is generated in one pass on L=128 — one coherent
+  prosodic contour instead of a split — and a split only remains for text longer than the
+  largest bucket. The planner's window is the largest bucket plus the 10% stretch.
 - `set_speed()` divides the predicted duration (default 1.05); `set_seed()` fixes the latent
-  noise for reproducible output; `SUPERTONIC_LATENT_FRAMES` overrides the window only for
-  experiments against a re-exported graph.
+  noise for reproducible output; `SUPERTONIC_LATENT_FRAMES` overrides the base window only for
+  experiments against a re-exported base graph.
 - Tests: `tests/test_supertonic_tokenizer.cpp` (built with `SPEECH_CORE_WITH_LITERT=ON`, no
   bundle needed) pins the chunking, capacity, continuation-terminator, and window-fitting
   behaviour, including the French paragraph from #140.

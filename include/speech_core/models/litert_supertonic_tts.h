@@ -37,6 +37,13 @@ namespace speech_core {
 /// tokenized with a trailing "," rather than a sentence-final ".", and the seam between the two
 /// is trimmed to a comma-length pause.
 ///
+/// **Latent buckets.** Because L is fixed per graph, a bundle may ship extra exports of the two
+/// L-dependent graphs next to the base ones — `vector_estimator_L128.tflite` + `vocoder_L128.tflite`
+/// (≈ 9 s), and so on. They are discovered at construction and loaded lazily; each piece runs on
+/// the smallest bucket whose window holds its predicted duration, so a long sentence is generated
+/// in one pass (one coherent prosodic contour) and a split only remains for text longer than the
+/// largest bucket. Short pieces keep using the cheap base graph.
+///
 /// Validated end-to-end against the ONNX reference at 66–82 dB mag-STFT SNR (en/de/ko); see the
 /// Runner repo's `speech-models/stmodels/controlled_ab.py`. Voice is a precomputed style pair
 /// (`voice_styles/<id>.json`); on-device voice cloning is out of scope (the style-extractor isn't
@@ -83,6 +90,14 @@ public:
     /// Available voice ids loaded from `voice_styles_dir`.
     std::vector<std::string> voices() const;
 
+    /// Latent-window buckets in the bundle, in frames of 3072 samples, ascending; [0] is the base
+    /// graph pair (L=64 for the published bundle), the rest are optional `*_L{N}.tflite` siblings.
+    std::vector<int> latent_buckets() const;
+
+    /// Index into `buckets` (ascending frames) of the smallest window that holds `frames`, or the
+    /// last one when none does (the caller then tempo-fits or truncates). Pure; unit-tested.
+    static size_t choose_latent_bucket(const std::vector<int>& buckets, int frames);
+
 private:
     struct VoiceStyle {
         std::vector<float> style_ttl;  // [1,50,256] → 12800
@@ -98,16 +113,31 @@ private:
     };
     Prepared prepare_chunk(const std::string& text, const std::string& language, bool continuation);
 
+    // One fixed-L export of the two L-dependent graphs. Handles are raw (freed in destroy_graphs()).
+    struct LatentBucket {
+        int                 frames = 0;             // L
+        std::string         vector_path, vocoder_path;
+        LiteRtModel         vector_model  = nullptr; LiteRtCompiledModel vector_compiled  = nullptr;
+        LiteRtModel         vocoder_model = nullptr; LiteRtCompiledModel vocoder_compiled = nullptr;
+        bool                failed = false;         // load attempted and failed; skipped from then on
+        bool loaded() const { return vector_compiled && vocoder_compiled; }
+    };
+
     // text_encoder → vector_estimator × N → vocoder on a prepared piece → trimmed 44.1 kHz PCM.
     // piece_index decorrelates the latent noise between the pieces of one utterance.
-    std::vector<float> synth_prepared(const Prepared& prepared, size_t piece_index);
+    std::vector<float> synth_prepared(const Prepared& prepared, size_t piece_index,
+                                      const LatentBucket& bucket);
+    // Smallest loadable bucket holding `frames` (loads it on first use; falls back on failure).
+    const LatentBucket& bucket_for(int frames);
+    void load_bucket(LatentBucket& bucket);
+    void discover_buckets(const std::string& vector_estimator_path, const std::string& vocoder_path);
     const VoiceStyle& current_voice() const;
     void destroy_graphs() noexcept;  // idempotent; used by the dtor and ctor-failure cleanup
 
     LiteRtModel         duration_model_  = nullptr;  LiteRtCompiledModel duration_compiled_  = nullptr;
     LiteRtModel         encoder_model_   = nullptr;  LiteRtCompiledModel encoder_compiled_   = nullptr;
-    LiteRtModel         vector_model_    = nullptr;  LiteRtCompiledModel vector_compiled_    = nullptr;
-    LiteRtModel         vocoder_model_   = nullptr;  LiteRtCompiledModel vocoder_compiled_   = nullptr;
+    std::vector<LatentBucket> buckets_;              // ascending frames; [0] = base, loaded in the ctor
+    bool                hw_accel_        = false;
 
     std::unique_ptr<SupertonicTokenizer>        tokenizer_;
     std::unordered_map<std::string, VoiceStyle> voices_;
