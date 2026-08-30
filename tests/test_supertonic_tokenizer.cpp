@@ -2,6 +2,7 @@
 // greedy word-packing stranded the last word of a 57–62-codepoint sentence in its own chunk, the
 // fragment was tokenized with a sentence-final "." and followed by 0.3 s of silence, and NFKD
 // growth could push a chunk past the fixed text length so process() truncated it silently.
+#include "speech_core/models/litert_supertonic_tts.h"
 #include "speech_core/models/supertonic_tokenizer.h"
 
 #include <cassert>
@@ -328,6 +329,21 @@ void test_fit_depth_bound_terminates() {
     std::printf("  PASS: fit_depth_bound_terminates\n");
 }
 
+// ---- LiteRTSupertonicTts::choose_latent_bucket() ----
+
+void test_choose_latent_bucket() {
+    const std::vector<int> two = {64, 128};
+    assert(LiteRTSupertonicTts::choose_latent_bucket(two, 20)  == 0);   // short piece: cheap base graph
+    assert(LiteRTSupertonicTts::choose_latent_bucket(two, 64)  == 0);   // exactly the base window
+    assert(LiteRTSupertonicTts::choose_latent_bucket(two, 65)  == 1);   // one frame over: next bucket
+    assert(LiteRTSupertonicTts::choose_latent_bucket(two, 128) == 1);
+    assert(LiteRTSupertonicTts::choose_latent_bucket(two, 200) == 1);   // over everything: largest (tempo-fit/truncate)
+    const std::vector<int> base_only = {64};
+    assert(LiteRTSupertonicTts::choose_latent_bucket(base_only, 65) == 0);
+    assert(LiteRTSupertonicTts::choose_latent_bucket({}, 10) == 0);
+    std::printf("  PASS: choose_latent_bucket\n");
+}
+
 }  // namespace
 
 int main() {
@@ -347,6 +363,7 @@ int main() {
     test_fit_measures_with_the_continuation_flag();
     test_fit_too_short_returned_for_truncation();
     test_fit_depth_bound_terminates();
+    test_choose_latent_bucket();
     std::printf("ALL PASSED\n");
     return 0;
 }

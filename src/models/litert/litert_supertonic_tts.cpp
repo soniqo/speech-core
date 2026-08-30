@@ -15,12 +15,12 @@
 namespace speech_core {
 namespace {
 
-// Exported fixed latent length (frames) of the vector_estimator / vocoder graphs. The published
-// LiteRT bundle is fixed-shape (T=128, L=64). A dynamic-L export is currently BLOCKED upstream:
-// litert_torch/odml_torch can't lower SupertonicTTS's relpos attention + ConvNeXt with a symbolic L
-// (see speech-models/stmodels/export_litert.py). The host instead caps chunk length to this window
-// (synthesize() below); longer chunks would need L-buckets or an upstream fix. SUPERTONIC_LATENT_FRAMES
-// overrides this only for experiments against a re-exported graph.
+// Fixed latent length (frames) of the *base* vector_estimator / vocoder graphs. The published
+// LiteRT bundle is fixed-shape (T=128, L=64). A dynamic-L export is BLOCKED upstream: litert_torch
+// can't lower SupertonicTTS's relpos attention + ConvNeXt with a symbolic L (see
+// speech-models/stmodels/export_litert.py), so longer windows ship as extra fixed-L *buckets*
+// (`*_L{N}.tflite` siblings, discovered in the ctor). SUPERTONIC_LATENT_FRAMES overrides the base
+// only for experiments against a re-exported base graph.
 int graph_latent_frames() {
     if (const char* e = std::getenv("SUPERTONIC_LATENT_FRAMES")) {
         int v = std::atoi(e);
@@ -92,6 +92,48 @@ void load_style(const std::string& path, std::vector<float>& ttl, std::vector<fl
     dp  = extract_style(text, "style_dp");
 }
 
+// Physical input slot per signature role, parsed from the tensor names of the model's main
+// subgraph (`serving_default_args_N[:0]`, N = signature position). ai_edge_torch / litert_torch
+// permute the slots away from the signature order, and differently per toolchain version: the
+// published base graphs bind [text_mask, text_ids, style_dp] where a current re-export binds
+// [text_ids, style_dp, text_mask]. When a name cannot be parsed, or the slots do not form a
+// permutation, `legacy` (the published bundle's introspected order) is used.
+template <size_t N>
+std::array<int, N> input_slots(LiteRtModel model, const std::array<int, N>& legacy, const char* what) {
+    std::array<int, N> slots;
+    slots.fill(-1);
+    LiteRtParamIndex main = 0;
+    LiteRtSubgraph   sg   = nullptr;
+    LiteRtParamIndex n    = 0;
+    if (LiteRtGetMainModelSubgraphIndex(model, &main) == kLiteRtStatusOk &&
+        LiteRtGetModelSubgraph(model, main, &sg) == kLiteRtStatusOk &&
+        LiteRtGetNumSubgraphInputs(sg, &n) == kLiteRtStatusOk && n == N) {
+        for (LiteRtParamIndex i = 0; i < n; ++i) {
+            LiteRtTensor t = nullptr;
+            const char*  nm = nullptr;
+            if (LiteRtGetSubgraphInput(sg, i, &t) != kLiteRtStatusOk || !t ||
+                LiteRtGetTensorName(t, &nm) != kLiteRtStatusOk || !nm) continue;
+            const std::string name(nm);
+            const size_t pos = name.find("args_");
+            if (pos == std::string::npos) continue;
+            const int role = std::atoi(name.c_str() + pos + 5);
+            if (role >= 0 && role < static_cast<int>(N) && slots[static_cast<size_t>(role)] < 0)
+                slots[static_cast<size_t>(role)] = static_cast<int>(i);
+        }
+    }
+    for (int s : slots) {
+        if (s < 0) {
+            LOGI("Supertonic: %s input names not parseable; using the published slot order", what);
+            return legacy;
+        }
+    }
+    return slots;
+}
+
+constexpr std::array<int, 3> kLegacyDurationSlots = {1, 2, 0};              // [text_mask, text_ids, style_dp]
+constexpr std::array<int, 3> kLegacyEncoderSlots  = {1, 2, 0};              // [text_mask, text_ids, style_ttl]
+constexpr std::array<int, 7> kLegacyVectorSlots   = {3, 6, 1, 2, 5, 0, 4};  // [cur, ttl, lmask, noisy, tot, tmask, emb]
+
 // Near-silence gate for the seam trims below (-46 dBFS; the vocoder's silence floor is well under it).
 constexpr float kSeamSilenceGate = 0.005f;
 
@@ -130,12 +172,23 @@ LiteRTSupertonicTts::LiteRTSupertonicTts(const std::string& duration_path,
     // The four LiteRt handles are raw (no per-member RAII), so a throw partway through loading would
     // leak the already-acquired graphs (a partially-constructed object never runs the dtor). Guard
     // the whole construction and release on failure.
+    hw_accel_ = hw_accel;
     try {
         auto& engine = LiteRTEngine::get();
-        engine.load(duration_path,         hw_accel, &duration_model_, &duration_compiled_);
-        engine.load(text_encoder_path,     hw_accel, &encoder_model_,  &encoder_compiled_);
-        engine.load(vector_estimator_path, hw_accel, &vector_model_,   &vector_compiled_);
-        engine.load(vocoder_path,          hw_accel, &vocoder_model_,  &vocoder_compiled_);
+        engine.load(duration_path,     hw_accel, &duration_model_, &duration_compiled_);
+        engine.load(text_encoder_path, hw_accel, &encoder_model_,  &encoder_compiled_);
+        duration_slots_ = input_slots<3>(duration_model_, kLegacyDurationSlots, "duration_predictor");
+        encoder_slots_  = input_slots<3>(encoder_model_,  kLegacyEncoderSlots,  "text_encoder");
+
+        // Base bucket: the graphs given explicitly, loaded now. Larger buckets are optional
+        // `*_L{N}.tflite` siblings, discovered here and loaded on first use (see bucket_for()).
+        LatentBucket base;
+        base.frames       = graph_latent_frames();
+        base.vector_path  = vector_estimator_path;
+        base.vocoder_path = vocoder_path;
+        buckets_.push_back(base);
+        load_bucket(buckets_.front());
+        discover_buckets(vector_estimator_path, vocoder_path);
 
         namespace fs = std::filesystem;
         tokenizer_ = std::make_unique<SupertonicTokenizer>(
@@ -164,14 +217,91 @@ LiteRTSupertonicTts::~LiteRTSupertonicTts() { destroy_graphs(); }
 // Free compiled-before-model (litert_engine.h contract); idempotent + nulls each handle so the ctor
 // can call it on failure without risking a double-free.
 void LiteRTSupertonicTts::destroy_graphs() noexcept {
-    if (vocoder_compiled_)  { LiteRtDestroyCompiledModel(vocoder_compiled_);  vocoder_compiled_  = nullptr; }
-    if (vocoder_model_)     { LiteRtDestroyModel(vocoder_model_);             vocoder_model_     = nullptr; }
-    if (vector_compiled_)   { LiteRtDestroyCompiledModel(vector_compiled_);   vector_compiled_   = nullptr; }
-    if (vector_model_)      { LiteRtDestroyModel(vector_model_);              vector_model_      = nullptr; }
+    for (auto it = buckets_.rbegin(); it != buckets_.rend(); ++it) {
+        if (it->vocoder_compiled) { LiteRtDestroyCompiledModel(it->vocoder_compiled); it->vocoder_compiled = nullptr; }
+        if (it->vocoder_model)    { LiteRtDestroyModel(it->vocoder_model);            it->vocoder_model    = nullptr; }
+        if (it->vector_compiled)  { LiteRtDestroyCompiledModel(it->vector_compiled);  it->vector_compiled  = nullptr; }
+        if (it->vector_model)     { LiteRtDestroyModel(it->vector_model);             it->vector_model     = nullptr; }
+    }
     if (encoder_compiled_)  { LiteRtDestroyCompiledModel(encoder_compiled_);  encoder_compiled_  = nullptr; }
     if (encoder_model_)     { LiteRtDestroyModel(encoder_model_);             encoder_model_     = nullptr; }
     if (duration_compiled_) { LiteRtDestroyCompiledModel(duration_compiled_); duration_compiled_ = nullptr; }
     if (duration_model_)    { LiteRtDestroyModel(duration_model_);            duration_model_    = nullptr; }
+}
+
+void LiteRTSupertonicTts::load_bucket(LatentBucket& b) {
+    auto& engine = LiteRTEngine::get();
+    engine.load(b.vector_path,  hw_accel_, &b.vector_model,  &b.vector_compiled);
+    engine.load(b.vocoder_path, hw_accel_, &b.vocoder_model, &b.vocoder_compiled);
+    b.vector_slots = input_slots<7>(b.vector_model, kLegacyVectorSlots, "vector_estimator");
+}
+
+// Register `vector_estimator_L<N>.tflite` + `vocoder_L<N>.tflite` pairs found next to the base
+// graphs, for N larger than the base window. Nothing is loaded here.
+void LiteRTSupertonicTts::discover_buckets(const std::string& vector_estimator_path,
+                                           const std::string& vocoder_path) {
+    namespace fs = std::filesystem;
+    const std::string prefix = "vector_estimator_L", suffix = ".tflite";
+    std::error_code ec;
+    const fs::path vdir = fs::path(vector_estimator_path).parent_path();
+    const fs::path wdir = fs::path(vocoder_path).parent_path();
+    for (const auto& entry : fs::directory_iterator(vdir, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() <= prefix.size() + suffix.size() ||
+            name.compare(0, prefix.size(), prefix) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+        const std::string digits = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) continue;
+        const int frames = std::atoi(digits.c_str());
+        if (frames <= buckets_.front().frames) continue;
+        const fs::path vocoder = wdir / ("vocoder_L" + digits + suffix);
+        if (!fs::exists(vocoder, ec)) continue;
+        LatentBucket b;
+        b.frames       = frames;
+        b.vector_path  = entry.path().string();
+        b.vocoder_path = vocoder.string();
+        buckets_.push_back(b);
+    }
+    std::sort(buckets_.begin() + 1, buckets_.end(),
+              [](const LatentBucket& a, const LatentBucket& b) { return a.frames < b.frames; });
+    for (size_t i = 1; i < buckets_.size(); ++i)
+        LOGI("Supertonic: latent bucket L=%d available (%.1f s), loaded on first use",
+             buckets_[i].frames, static_cast<double>(buckets_[i].frames) * kChunkSamples / kSampleRate);
+}
+
+std::vector<int> LiteRTSupertonicTts::latent_buckets() const {
+    std::vector<int> out;
+    for (const auto& b : buckets_)
+        if (!b.failed) out.push_back(b.frames);
+    return out;
+}
+
+size_t LiteRTSupertonicTts::choose_latent_bucket(const std::vector<int>& buckets, int frames) {
+    for (size_t i = 0; i < buckets.size(); ++i)
+        if (frames <= buckets[i]) return i;
+    return buckets.empty() ? 0 : buckets.size() - 1;
+}
+
+const LiteRTSupertonicTts::LatentBucket& LiteRTSupertonicTts::bucket_for(int frames) {
+    for (;;) {
+        std::vector<int>    sizes;
+        std::vector<size_t> index;
+        for (size_t i = 0; i < buckets_.size(); ++i) {
+            if (buckets_[i].failed) continue;
+            sizes.push_back(buckets_[i].frames);
+            index.push_back(i);
+        }
+        LatentBucket& b = buckets_[index[choose_latent_bucket(sizes, frames)]];  // base never fails
+        if (b.loaded()) return b;
+        try {
+            load_bucket(b);
+            return b;
+        } catch (const std::exception& e) {
+            LOGE("Supertonic: latent bucket L=%d failed to load (%s); falling back to a smaller window",
+                 b.frames, e.what());
+            b.failed = true;  // partially acquired handles are released in destroy_graphs()
+        }
+    }
 }
 
 void LiteRTSupertonicTts::cancel() { cancelled_.store(true); }
@@ -215,7 +345,7 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
     // measured below with the duration predictor, and bisected at its best boundary only if it
     // really overflows — never word-packed at a character count (#140). A residual overflow (a
     // piece too short to split further) is logged + trimmed in synth_prepared().
-    const int L = graph_latent_frames();
+    const int L = buckets_.front().frames;  // base window sizes the packing budget
     const double window_s = static_cast<double>(L) * kChunkSamples / kSampleRate;
     const bool cjk = (language == "ko" || language == "ja");
     const int budget = std::max(8, static_cast<int>(window_s * (cjk ? 6 : 14) * 0.9));
@@ -227,9 +357,10 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
     auto key = [](const std::string& t, bool continuation) {
         return std::string(continuation ? "," : ".") + t;
     };
-    // A small overflow is absorbed by tempo (synth_prepared clamps the duration to the window);
-    // only a larger one makes the planner split the text.
-    const int max_frames = static_cast<int>(L * kWindowStretchMax);
+    // The planner may use the largest bucket; a small overflow beyond it is absorbed by tempo
+    // (synth_prepared clamps the duration to the window), only a larger one splits the text.
+    const int L_max = latent_buckets().back();
+    const int max_frames = static_cast<int>(L_max * kWindowStretchMax);
     auto measure = [&](const std::string& t, bool continuation) -> int {
         if (cancelled_.load()) return 0;  // "fits"; the loop below exits before synthesizing
         auto it = prepared.find(key(t, continuation));
@@ -237,7 +368,7 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
             it = prepared.emplace(key(t, continuation), prepare_chunk(t, language, continuation)).first;
         const int frames = it->second.latent_frames;
         if (frames > max_frames)
-            LOGI("Supertonic: candidate needs L=%d > %d (window %d + stretch); splitting", frames, max_frames, L);
+            LOGI("Supertonic: candidate needs L=%d > %d (window %d + stretch); splitting", frames, max_frames, L_max);
         return frames;
     };
 
@@ -254,12 +385,13 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
             const Prepared p = it != prepared.end()
                 ? std::move(it->second)
                 : prepare_chunk(piece.text, language, piece.continuation);
+            const LatentBucket& bucket = bucket_for(p.latent_frames);
             // Never log synthesis input: callers may send private or sensitive text.
             LOGI("Supertonic: chunk %zu/%zu piece %zu/%zu: L=%d/%d%s%s%s",
-                 ci + 1, chunks.size(), pi + 1, pieces.size(), p.latent_frames, L,
-                 p.latent_frames > L ? " (tempo-fit)" : "",
+                 ci + 1, chunks.size(), pi + 1, pieces.size(), p.latent_frames, bucket.frames,
+                 p.latent_frames > bucket.frames ? " (tempo-fit)" : "",
                  piece.continuation ? " (continues)" : "", piece.pause_before ? " (pause)" : "");
-            std::vector<float> pcm = synth_prepared(p, piece_index++);
+            std::vector<float> pcm = synth_prepared(p, piece_index++, bucket);
             if (cancelled_.load()) return;
 
             // A forced split lands mid-sentence, but every piece carries the model's own utterance
@@ -309,13 +441,15 @@ LiteRTSupertonicTts::Prepared LiteRTSupertonicTts::prepare_chunk(const std::stri
     LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size() * sizeof(float), voice.style_dp.data());
 
     // --- 1) duration_predictor → duration[1] ---
-    // LiteRtRunCompiledModel binds ins[] by the graph's tensor-INDEX order, which the ai_edge_torch
-    // export permutes away from the (args_0=ids, args_1=style_dp, args_2=text_mask) declaration.
-    // Introspected order of the published duration_predictor.tflite: [text_mask, text_ids, style_dp].
+    // LiteRtRunCompiledModel binds ins[] by the graph's input-slot order, which the converter
+    // permutes away from the (args_0=ids, args_1=style_dp, args_2=text_mask) signature; the slot
+    // per role was resolved from the tensor names at load (input_slots()).
     float duration = 0.0f;
     {
         LiteRtHostBuffer out(env, t_dur, sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_dp.raw() };
+        const LiteRtTensorBuffer by_role[3] = { in_ids.raw(), in_dp.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3] = {};
+        for (size_t r = 0; r < 3; ++r) ins[duration_slots_[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(duration_compiled_, 0, 3, ins, 1, outs),
                      "duration_predictor Run");
@@ -332,7 +466,8 @@ LiteRTSupertonicTts::Prepared LiteRTSupertonicTts::prepare_chunk(const std::stri
     return p;
 }
 
-std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t piece_index) {
+std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t piece_index,
+                                                       const LatentBucket& bucket) {
     if (!(p.duration > 0.0f)) return {};
 
     LiteRtEnvironment env = LiteRTEngine::get().env();
@@ -348,12 +483,13 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
     LiteRtHostBuffer in_mask(env, t_mask, p.tok.mask.size() * sizeof(float), p.tok.mask.data());
     LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
 
-    // --- 2) text_encoder → text_emb[1,256,T] ---
-    // Introspected tensor-index order of text_encoder.tflite: [text_mask, text_ids, style_ttl].
+    // --- 2) text_encoder → text_emb[1,256,T] --- (roles: text_ids, style_ttl, text_mask)
     std::vector<float> text_emb(static_cast<size_t>(256) * kTextT);
     {
         LiteRtHostBuffer out(env, t_emb, text_emb.size() * sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_ttl.raw() };
+        const LiteRtTensorBuffer by_role[3] = { in_ids.raw(), in_ttl.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3] = {};
+        for (size_t r = 0; r < 3; ++r) ins[encoder_slots_[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(encoder_compiled_, 0, 3, ins, 1, outs),
                      "text_encoder Run");
@@ -362,7 +498,7 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
 
     // --- latent window: the graph runs at fixed L; L_true valid frames inside it ---
     const int chunk_size = kChunkSamples;  // 512 * 6 = 3072
-    const int L          = graph_latent_frames();
+    const int L          = bucket.frames;
     const double window_s = static_cast<double>(chunk_size) * L / kSampleRate;
     int   L_true   = p.latent_frames;
     float duration = p.duration;
@@ -409,12 +545,14 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
         LiteRtHostBuffer in_tot  (env, t_step, sizeof(float), &total_step_f);
         LiteRtHostBuffer out     (env, t_lat,  xt.size() * sizeof(float));
 
-        // Introspected tensor-index order of vector_estimator.tflite:
-        // [current_step, style_ttl, latent_mask, noisy, total_step, text_mask, text_emb].
-        LiteRtTensorBuffer ins[7]  = { in_cur.raw(), in_ttl.raw(), in_lmask.raw(),
-                                       in_noisy.raw(), in_tot.raw(), in_mask.raw(), in_emb.raw() };
+        // Roles: noisy, text_emb, style_ttl, latent_mask, text_mask, current_step, total_step —
+        // placed into the bucket's physical slots (resolved from tensor names at load).
+        const LiteRtTensorBuffer by_role[7] = { in_noisy.raw(), in_emb.raw(), in_ttl.raw(), in_lmask.raw(),
+                                                in_mask.raw(), in_cur.raw(), in_tot.raw() };
+        LiteRtTensorBuffer ins[7] = {};
+        for (size_t r = 0; r < 7; ++r) ins[bucket.vector_slots[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
-        litert_check(LiteRtRunCompiledModel(vector_compiled_, 0, 7, ins, 1, outs),
+        litert_check(LiteRtRunCompiledModel(bucket.vector_compiled, 0, 7, ins, 1, outs),
                      "vector_estimator Run");
         out.read(xt.data(), xt.size() * sizeof(float));
     }
@@ -428,7 +566,7 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
         LiteRtHostBuffer out(env, t_wav, wav.size() * sizeof(float));
         LiteRtTensorBuffer ins[1]  = { in_latent.raw() };
         LiteRtTensorBuffer outs[1] = { out.raw() };
-        litert_check(LiteRtRunCompiledModel(vocoder_compiled_, 0, 1, ins, 1, outs), "vocoder Run");
+        litert_check(LiteRtRunCompiledModel(bucket.vocoder_compiled, 0, 1, ins, 1, outs), "vocoder Run");
         out.read(wav.data(), wav.size() * sizeof(float));
     }
 
