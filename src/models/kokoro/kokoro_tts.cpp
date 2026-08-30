@@ -223,7 +223,6 @@ void KokoroTts::auto_switch_voice(const std::string& lang) {
         {"hi", "hf_alpha"},
         {"ja", "jf_alpha"},
         {"zh", "zf_xiaobei"},
-        {"ko", "kf_somi"},
     };
 
     for (auto& entry : map) {

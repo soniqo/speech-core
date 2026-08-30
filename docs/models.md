@@ -1235,7 +1235,6 @@ Voice embeddings are 256-float `.bin` files in `voices_dir`. Default voice is `a
 | `hi` | hf_alpha |
 | `ja` | jf_alpha |
 | `zh` | zf_xiaobei |
-| `ko` | kf_somi |
 
 ### Data directory
 
