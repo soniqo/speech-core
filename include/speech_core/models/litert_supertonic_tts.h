@@ -4,6 +4,7 @@
 #include "speech_core/models/litert_engine.h"
 #include "speech_core/models/supertonic_tokenizer.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -113,12 +114,23 @@ private:
     };
     Prepared prepare_chunk(const std::string& text, const std::string& language, bool continuation);
 
+    // Physical input slot per signature role. The converter permutes a graph's input slots away
+    // from the signature order (and differently per toolchain version), so slots are resolved from
+    // the tensor names (`serving_default_args_N`) at load time; see input_slots() in the .cpp.
+    //   duration_predictor roles: 0 text_ids, 1 style_dp,  2 text_mask
+    //   text_encoder roles:       0 text_ids, 1 style_ttl, 2 text_mask
+    //   vector_estimator roles:   0 noisy, 1 text_emb, 2 style_ttl, 3 latent_mask, 4 text_mask,
+    //                             5 current_step, 6 total_step
+    using Slots3 = std::array<int, 3>;
+    using Slots7 = std::array<int, 7>;
+
     // One fixed-L export of the two L-dependent graphs. Handles are raw (freed in destroy_graphs()).
     struct LatentBucket {
         int                 frames = 0;             // L
         std::string         vector_path, vocoder_path;
         LiteRtModel         vector_model  = nullptr; LiteRtCompiledModel vector_compiled  = nullptr;
         LiteRtModel         vocoder_model = nullptr; LiteRtCompiledModel vocoder_compiled = nullptr;
+        Slots7              vector_slots{};
         bool                failed = false;         // load attempted and failed; skipped from then on
         bool loaded() const { return vector_compiled && vocoder_compiled; }
     };
@@ -136,6 +148,8 @@ private:
 
     LiteRtModel         duration_model_  = nullptr;  LiteRtCompiledModel duration_compiled_  = nullptr;
     LiteRtModel         encoder_model_   = nullptr;  LiteRtCompiledModel encoder_compiled_   = nullptr;
+    Slots3              duration_slots_{};
+    Slots3              encoder_slots_{};
     std::vector<LatentBucket> buckets_;              // ascending frames; [0] = base, loaded in the ctor
     bool                hw_accel_        = false;
 

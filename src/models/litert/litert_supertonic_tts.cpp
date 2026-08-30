@@ -92,6 +92,48 @@ void load_style(const std::string& path, std::vector<float>& ttl, std::vector<fl
     dp  = extract_style(text, "style_dp");
 }
 
+// Physical input slot per signature role, parsed from the tensor names of the model's main
+// subgraph (`serving_default_args_N[:0]`, N = signature position). ai_edge_torch / litert_torch
+// permute the slots away from the signature order, and differently per toolchain version: the
+// published base graphs bind [text_mask, text_ids, style_dp] where a current re-export binds
+// [text_ids, style_dp, text_mask]. When a name cannot be parsed, or the slots do not form a
+// permutation, `legacy` (the published bundle's introspected order) is used.
+template <size_t N>
+std::array<int, N> input_slots(LiteRtModel model, const std::array<int, N>& legacy, const char* what) {
+    std::array<int, N> slots;
+    slots.fill(-1);
+    LiteRtParamIndex main = 0;
+    LiteRtSubgraph   sg   = nullptr;
+    LiteRtParamIndex n    = 0;
+    if (LiteRtGetMainModelSubgraphIndex(model, &main) == kLiteRtStatusOk &&
+        LiteRtGetModelSubgraph(model, main, &sg) == kLiteRtStatusOk &&
+        LiteRtGetNumSubgraphInputs(sg, &n) == kLiteRtStatusOk && n == N) {
+        for (LiteRtParamIndex i = 0; i < n; ++i) {
+            LiteRtTensor t = nullptr;
+            const char*  nm = nullptr;
+            if (LiteRtGetSubgraphInput(sg, i, &t) != kLiteRtStatusOk || !t ||
+                LiteRtGetTensorName(t, &nm) != kLiteRtStatusOk || !nm) continue;
+            const std::string name(nm);
+            const size_t pos = name.find("args_");
+            if (pos == std::string::npos) continue;
+            const int role = std::atoi(name.c_str() + pos + 5);
+            if (role >= 0 && role < static_cast<int>(N) && slots[static_cast<size_t>(role)] < 0)
+                slots[static_cast<size_t>(role)] = static_cast<int>(i);
+        }
+    }
+    for (int s : slots) {
+        if (s < 0) {
+            LOGI("Supertonic: %s input names not parseable; using the published slot order", what);
+            return legacy;
+        }
+    }
+    return slots;
+}
+
+constexpr std::array<int, 3> kLegacyDurationSlots = {1, 2, 0};              // [text_mask, text_ids, style_dp]
+constexpr std::array<int, 3> kLegacyEncoderSlots  = {1, 2, 0};              // [text_mask, text_ids, style_ttl]
+constexpr std::array<int, 7> kLegacyVectorSlots   = {3, 6, 1, 2, 5, 0, 4};  // [cur, ttl, lmask, noisy, tot, tmask, emb]
+
 // Near-silence gate for the seam trims below (-46 dBFS; the vocoder's silence floor is well under it).
 constexpr float kSeamSilenceGate = 0.005f;
 
@@ -135,6 +177,8 @@ LiteRTSupertonicTts::LiteRTSupertonicTts(const std::string& duration_path,
         auto& engine = LiteRTEngine::get();
         engine.load(duration_path,     hw_accel, &duration_model_, &duration_compiled_);
         engine.load(text_encoder_path, hw_accel, &encoder_model_,  &encoder_compiled_);
+        duration_slots_ = input_slots<3>(duration_model_, kLegacyDurationSlots, "duration_predictor");
+        encoder_slots_  = input_slots<3>(encoder_model_,  kLegacyEncoderSlots,  "text_encoder");
 
         // Base bucket: the graphs given explicitly, loaded now. Larger buckets are optional
         // `*_L{N}.tflite` siblings, discovered here and loaded on first use (see bucket_for()).
@@ -189,6 +233,7 @@ void LiteRTSupertonicTts::load_bucket(LatentBucket& b) {
     auto& engine = LiteRTEngine::get();
     engine.load(b.vector_path,  hw_accel_, &b.vector_model,  &b.vector_compiled);
     engine.load(b.vocoder_path, hw_accel_, &b.vocoder_model, &b.vocoder_compiled);
+    b.vector_slots = input_slots<7>(b.vector_model, kLegacyVectorSlots, "vector_estimator");
 }
 
 // Register `vector_estimator_L<N>.tflite` + `vocoder_L<N>.tflite` pairs found next to the base
@@ -396,13 +441,15 @@ LiteRTSupertonicTts::Prepared LiteRTSupertonicTts::prepare_chunk(const std::stri
     LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size() * sizeof(float), voice.style_dp.data());
 
     // --- 1) duration_predictor → duration[1] ---
-    // LiteRtRunCompiledModel binds ins[] by the graph's tensor-INDEX order, which the ai_edge_torch
-    // export permutes away from the (args_0=ids, args_1=style_dp, args_2=text_mask) declaration.
-    // Introspected order of the published duration_predictor.tflite: [text_mask, text_ids, style_dp].
+    // LiteRtRunCompiledModel binds ins[] by the graph's input-slot order, which the converter
+    // permutes away from the (args_0=ids, args_1=style_dp, args_2=text_mask) signature; the slot
+    // per role was resolved from the tensor names at load (input_slots()).
     float duration = 0.0f;
     {
         LiteRtHostBuffer out(env, t_dur, sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_dp.raw() };
+        const LiteRtTensorBuffer by_role[3] = { in_ids.raw(), in_dp.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3] = {};
+        for (size_t r = 0; r < 3; ++r) ins[duration_slots_[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(duration_compiled_, 0, 3, ins, 1, outs),
                      "duration_predictor Run");
@@ -436,12 +483,13 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
     LiteRtHostBuffer in_mask(env, t_mask, p.tok.mask.size() * sizeof(float), p.tok.mask.data());
     LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
 
-    // --- 2) text_encoder → text_emb[1,256,T] ---
-    // Introspected tensor-index order of text_encoder.tflite: [text_mask, text_ids, style_ttl].
+    // --- 2) text_encoder → text_emb[1,256,T] --- (roles: text_ids, style_ttl, text_mask)
     std::vector<float> text_emb(static_cast<size_t>(256) * kTextT);
     {
         LiteRtHostBuffer out(env, t_emb, text_emb.size() * sizeof(float));
-        LiteRtTensorBuffer ins[3]  = { in_mask.raw(), in_ids.raw(), in_ttl.raw() };
+        const LiteRtTensorBuffer by_role[3] = { in_ids.raw(), in_ttl.raw(), in_mask.raw() };
+        LiteRtTensorBuffer ins[3] = {};
+        for (size_t r = 0; r < 3; ++r) ins[encoder_slots_[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(encoder_compiled_, 0, 3, ins, 1, outs),
                      "text_encoder Run");
@@ -497,10 +545,12 @@ std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t
         LiteRtHostBuffer in_tot  (env, t_step, sizeof(float), &total_step_f);
         LiteRtHostBuffer out     (env, t_lat,  xt.size() * sizeof(float));
 
-        // Introspected tensor-index order of vector_estimator.tflite:
-        // [current_step, style_ttl, latent_mask, noisy, total_step, text_mask, text_emb].
-        LiteRtTensorBuffer ins[7]  = { in_cur.raw(), in_ttl.raw(), in_lmask.raw(),
-                                       in_noisy.raw(), in_tot.raw(), in_mask.raw(), in_emb.raw() };
+        // Roles: noisy, text_emb, style_ttl, latent_mask, text_mask, current_step, total_step —
+        // placed into the bucket's physical slots (resolved from tensor names at load).
+        const LiteRtTensorBuffer by_role[7] = { in_noisy.raw(), in_emb.raw(), in_ttl.raw(), in_lmask.raw(),
+                                                in_mask.raw(), in_cur.raw(), in_tot.raw() };
+        LiteRtTensorBuffer ins[7] = {};
+        for (size_t r = 0; r < 7; ++r) ins[bucket.vector_slots[r]] = by_role[r];
         LiteRtTensorBuffer outs[1] = { out.raw() };
         litert_check(LiteRtRunCompiledModel(bucket.vector_compiled, 0, 7, ins, 1, outs),
                      "vector_estimator Run");
