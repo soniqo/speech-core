@@ -747,6 +747,62 @@ tts.synthesize("नमस्ते, आज मौसम बहुत अच्�
   `tokenizer.json`, `config.json` (manifest: token offsets, stop ids, prompt
   template, bucket sizes); the model card documents the full host contract.
 
+## LiteRTSupertonicTts
+
+```cpp
+#include <speech_core/models/litert_supertonic_tts.h>
+
+speech_core::LiteRTSupertonicTts tts(
+    "/models/Supertonic-3-LiteRT/duration_predictor.tflite",
+    "/models/Supertonic-3-LiteRT/text_encoder.tflite",
+    "/models/Supertonic-3-LiteRT/vector_estimator.tflite",
+    "/models/Supertonic-3-LiteRT/vocoder.tflite",
+    "/models/Supertonic-3-LiteRT",                 // unicode_indexer.json + tts.json
+    "/models/Supertonic-3-LiteRT/voice_styles");   // F1..F5, M1..M5
+
+tts.set_voice("F1");
+tts.set_total_step(8);   // 5 fast · 8 default · 12 quality
+tts.synthesize("Bonjour tout le monde.", "fr", [](const float* samples, size_t length, bool is_final) {
+    // 44.1 kHz Float32 PCM, one callback per synthesized piece (plus 0.3 s silence between sentences).
+});
+```
+
+- SupertonicTTS-3 (99M), non-autoregressive flow matching, 31 languages, G2P-free:
+  the front-end is NFKD + cleanup + `<lang>…</lang>` wrap + a codepoint→id table
+  (`SupertonicTokenizer`, a port of upstream `helper.py::UnicodeProcessor`).
+  Bundle: [soniqo/Supertonic-3-LiteRT](https://huggingface.co/soniqo/Supertonic-3-LiteRT).
+  The C ABI is `supertonic_c.h` (`sc_supertonic_*`).
+- Four graphs per piece: `duration_predictor` → `text_encoder` → `vector_estimator` × `total_step` → `vocoder`.
+  The published graphs are **fixed-shape**: T = 128 text tokens and L = 64 latent frames
+  (64 × 3072 samples ≈ 4.46 s of audio). A dynamic-L export is blocked upstream
+  (`litert_torch` cannot lower the relpos attention + ConvNeXt stack with a symbolic L), so the
+  host has to keep every piece inside that window. The CoreML port in speech-swift has a dynamic
+  L and none of the chunking below.
+- **Chunking.** `SupertonicTokenizer::chunk()` packs sentences (terminal punctuation followed by
+  whitespace) greedily up to a raw-codepoint budget — `int(window_s × 14 chars/s × 0.9)` = 56
+  for the L=64 graph (6 chars/s for `ko`/`ja`). A sentence longer than the budget is kept whole
+  rather than word-packed at the budget, which used to strand its last word or two in a tiny
+  chunk (`"… sous les"` | `"arbres."`, issue #140). Every chunk is guaranteed to fit the 128-token
+  text length *after* NFKD and the language wrap (`wrapped_length()`); accented text expands
+  under NFKD, and a raw-codepoint cap alone let `process()` truncate such chunks silently.
+- **Window fitting.** `synthesize()` runs the duration predictor on each chunk as a preflight
+  (`SupertonicTokenizer::fit_to_window()`); only when the predicted audio overflows the window
+  is the chunk bisected — at the best sentence, clause, or word boundary, in balanced halves,
+  via the core `split_text_for_synthesis_retry()` — and each half measured again. An overflow
+  of at most 10% (`kWindowStretchMax`) is absorbed by tempo instead: the piece's duration is
+  clamped to the window so it is spoken slightly faster, the same host-side mechanism as
+  `set_speed()`, rather than cut mid-sentence. A piece that
+  continues into the next one is tokenized with a trailing `,` instead of the usual sentence-
+  final `.`, and the 0.3 s inter-chunk silence (`set_chunk_silence()`) is inserted only where a
+  sentence actually ends, never at a forced intra-sentence split. A piece too short to split
+  that still overflows is trimmed to the window with a log line, as before.
+- `set_speed()` divides the predicted duration (default 1.05); `set_seed()` fixes the latent
+  noise for reproducible output; `SUPERTONIC_LATENT_FRAMES` overrides the window only for
+  experiments against a re-exported graph.
+- Tests: `tests/test_supertonic_tokenizer.cpp` (built with `SPEECH_CORE_WITH_LITERT=ON`, no
+  bundle needed) pins the chunking, capacity, continuation-terminator, and window-fitting
+  behaviour, including the French paragraph from #140.
+
 ## LiteRTWeSpeakerEmbedding
 
 ```cpp

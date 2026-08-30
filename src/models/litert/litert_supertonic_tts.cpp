@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <random>
 #include <stdexcept>
 
@@ -178,52 +179,92 @@ void LiteRTSupertonicTts::synthesize(const std::string& text,
         seed_used_ = rd();
     }
 
-    // Keep each chunk's predicted audio within the fixed latent window (L frames). The chars/sec is a
-    // conservative heuristic; because dynamic-L is blocked upstream (see graph_latent_frames()), this
-    // cap is the truncation guard. Any residual overflow is logged + trimmed in synth_chunk().
-    const double window_s = static_cast<double>(graph_latent_frames()) * kChunkSamples / kSampleRate;
+    // The fixed latent window (L frames) bounds each piece's audio. A chars/sec heuristic only
+    // decides which short sentences share a chunk; a longer sentence is kept whole by chunk(),
+    // measured below with the duration predictor, and bisected at its best boundary only if it
+    // really overflows — never word-packed at a character count (#140). A residual overflow (a
+    // piece too short to split further) is logged + trimmed in synth_prepared().
+    const int L = graph_latent_frames();
+    const double window_s = static_cast<double>(L) * kChunkSamples / kSampleRate;
     const bool cjk = (language == "ko" || language == "ja");
-    const int dur_cap = std::max(8, static_cast<int>(window_s * (cjk ? 6 : 14) * 0.9));
-    const std::vector<std::string> chunks = tokenizer_->chunk(text, language, dur_cap);
+    const int budget = std::max(8, static_cast<int>(window_s * (cjk ? 6 : 14) * 0.9));
+    const std::vector<std::string> chunks = tokenizer_->chunk(text, language, budget);
     const int silence = static_cast<int>(chunk_silence_s_ * kSampleRate);
 
+    // Preflight cache: a candidate that fits is synthesized from that prediction, not measured twice.
+    std::map<std::string, Prepared> prepared;
+    auto key = [](const std::string& t, bool continuation) {
+        return std::string(continuation ? "," : ".") + t;
+    };
+    // A small overflow is absorbed by tempo (synth_prepared clamps the duration to the window);
+    // only a larger one makes the planner split the text.
+    const int max_frames = static_cast<int>(L * kWindowStretchMax);
+    auto measure = [&](const std::string& t, bool continuation) -> int {
+        if (cancelled_.load()) return 0;  // "fits"; the loop below exits before synthesizing
+        auto it = prepared.find(key(t, continuation));
+        if (it == prepared.end())
+            it = prepared.emplace(key(t, continuation), prepare_chunk(t, language, continuation)).first;
+        const int frames = it->second.latent_frames;
+        if (frames > max_frames)
+            LOGI("Supertonic: candidate needs L=%d > %d (window %d + stretch); splitting", frames, max_frames, L);
+        return frames;
+    };
+
+    size_t piece_index = 0;
     for (size_t ci = 0; ci < chunks.size(); ++ci) {
         if (cancelled_.load()) return;
-        std::vector<float> pcm = synth_chunk(chunks[ci], language, ci);
-        const bool is_final = (ci + 1 == chunks.size());
+        prepared.clear();
+        const std::vector<SupertonicPiece> pieces =
+            SupertonicTokenizer::fit_to_window(chunks[ci], measure, max_frames);
+        for (size_t pi = 0; pi < pieces.size(); ++pi) {
+            if (cancelled_.load()) return;
+            const SupertonicPiece& piece = pieces[pi];
+            auto it = prepared.find(key(piece.text, piece.continuation));
+            const Prepared p = it != prepared.end()
+                ? std::move(it->second)
+                : prepare_chunk(piece.text, language, piece.continuation);
+            // Never log synthesis input: callers may send private or sensitive text.
+            LOGI("Supertonic: chunk %zu/%zu piece %zu/%zu: L=%d/%d%s%s%s",
+                 ci + 1, chunks.size(), pi + 1, pieces.size(), p.latent_frames, L,
+                 p.latent_frames > L ? " (tempo-fit)" : "",
+                 piece.continuation ? " (continues)" : "", piece.pause_before ? " (pause)" : "");
+            std::vector<float> pcm = synth_prepared(p, piece_index++);
+            if (cancelled_.load()) return;
 
-        if (ci > 0 && silence > 0) {
-            std::vector<float> sil(static_cast<size_t>(silence), 0.0f);
-            on_chunk(sil.data(), sil.size(), false);
+            const bool is_final = (ci + 1 == chunks.size()) && (pi + 1 == pieces.size());
+            // Silence only where a sentence ends: between chunks, and between pieces whose cut
+            // landed on a sentence boundary — never inside a sentence the window forced apart.
+            const bool pause = (pi == 0) ? (ci > 0) : piece.pause_before;
+            if (pause && silence > 0) {
+                std::vector<float> sil(static_cast<size_t>(silence), 0.0f);
+                on_chunk(sil.data(), sil.size(), false);
+            }
+            on_chunk(pcm.data(), pcm.size(), is_final);
         }
-        on_chunk(pcm.data(), pcm.size(), is_final);
     }
 }
 
-std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
-                                                    const std::string& language,
-                                                    size_t chunk_index) {
+LiteRTSupertonicTts::Prepared LiteRTSupertonicTts::prepare_chunk(const std::string& text,
+                                                                 const std::string& language,
+                                                                 bool continuation) {
     LiteRtEnvironment env = LiteRTEngine::get().env();
     const VoiceStyle& voice = current_voice();
 
-    // --- tokenize → fixed-T ids + mask ---
-    const SupertonicTokenizer::Tokens tok = tokenizer_->process(chunk, language, kTextT);
+    Prepared p;
+    p.tok = tokenizer_->process(text, language, kTextT, continuation);
 
     // The exported LiteRT graphs take text_ids as INT64 (ai_edge_torch traces ids with torch.long;
     // the CoreML export is int32 via a wrapper, but LiteRT stays int64 — confirmed against the
     // published .tflite signatures). Widen the i32 tokenizer ids into an i64 input buffer.
-    const std::vector<int64_t> ids64(tok.ids.begin(), tok.ids.end());
-    const LiteRtRankedTensorType t_ids   = make_type(kLiteRtElementTypeInt64,   {1, kTextT});
-    const LiteRtRankedTensorType t_mask  = make_type(kLiteRtElementTypeFloat32, {1, 1, kTextT});
-    const LiteRtRankedTensorType t_ttl   = make_type(kLiteRtElementTypeFloat32, {1, 50, 256});
-    const LiteRtRankedTensorType t_dp    = make_type(kLiteRtElementTypeFloat32, {1, 8, 16});
-    const LiteRtRankedTensorType t_emb   = make_type(kLiteRtElementTypeFloat32, {1, 256, kTextT});
-    const LiteRtRankedTensorType t_dur   = make_type(kLiteRtElementTypeFloat32, {1});
+    const std::vector<int64_t> ids64(p.tok.ids.begin(), p.tok.ids.end());
+    const LiteRtRankedTensorType t_ids  = make_type(kLiteRtElementTypeInt64,   {1, kTextT});
+    const LiteRtRankedTensorType t_mask = make_type(kLiteRtElementTypeFloat32, {1, 1, kTextT});
+    const LiteRtRankedTensorType t_dp   = make_type(kLiteRtElementTypeFloat32, {1, 8, 16});
+    const LiteRtRankedTensorType t_dur  = make_type(kLiteRtElementTypeFloat32, {1});
 
     LiteRtHostBuffer in_ids (env, t_ids,  ids64.size() * sizeof(int64_t), ids64.data());
-    LiteRtHostBuffer in_mask(env, t_mask, tok.mask.size() * sizeof(float),   tok.mask.data());
-    LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
-    LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size()  * sizeof(float), voice.style_dp.data());
+    LiteRtHostBuffer in_mask(env, t_mask, p.tok.mask.size() * sizeof(float), p.tok.mask.data());
+    LiteRtHostBuffer in_dp  (env, t_dp,   voice.style_dp.size() * sizeof(float), voice.style_dp.data());
 
     // --- 1) duration_predictor → duration[1] ---
     // LiteRtRunCompiledModel binds ins[] by the graph's tensor-INDEX order, which the ai_edge_torch
@@ -239,7 +280,31 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
         out.read(&duration, sizeof(float));
     }
     duration /= speed_;
-    if (!(duration > 0.0f) || std::isnan(duration)) return {};
+    if (!(duration > 0.0f) || std::isnan(duration)) return p;  // nothing to synthesize
+
+    // --- latent geometry: L_true = ceil(int(dur*SR) / 3072) ---
+    // Match the reference (infer.py): truncate dur*SR to integer samples BEFORE the ceil.
+    const long long wav_len = static_cast<long long>(duration * kSampleRate);
+    p.duration      = duration;
+    p.latent_frames = static_cast<int>((wav_len + kChunkSamples - 1) / kChunkSamples);
+    return p;
+}
+
+std::vector<float> LiteRTSupertonicTts::synth_prepared(const Prepared& p, size_t piece_index) {
+    if (!(p.duration > 0.0f)) return {};
+
+    LiteRtEnvironment env = LiteRTEngine::get().env();
+    const VoiceStyle& voice = current_voice();
+
+    const std::vector<int64_t> ids64(p.tok.ids.begin(), p.tok.ids.end());
+    const LiteRtRankedTensorType t_ids  = make_type(kLiteRtElementTypeInt64,   {1, kTextT});
+    const LiteRtRankedTensorType t_mask = make_type(kLiteRtElementTypeFloat32, {1, 1, kTextT});
+    const LiteRtRankedTensorType t_ttl  = make_type(kLiteRtElementTypeFloat32, {1, 50, 256});
+    const LiteRtRankedTensorType t_emb  = make_type(kLiteRtElementTypeFloat32, {1, 256, kTextT});
+
+    LiteRtHostBuffer in_ids (env, t_ids,  ids64.size() * sizeof(int64_t), ids64.data());
+    LiteRtHostBuffer in_mask(env, t_mask, p.tok.mask.size() * sizeof(float), p.tok.mask.data());
+    LiteRtHostBuffer in_ttl (env, t_ttl,  voice.style_ttl.size() * sizeof(float), voice.style_ttl.data());
 
     // --- 2) text_encoder → text_emb[1,256,T] ---
     // Introspected tensor-index order of text_encoder.tflite: [text_mask, text_ids, style_ttl].
@@ -253,26 +318,31 @@ std::vector<float> LiteRTSupertonicTts::synth_chunk(const std::string& chunk,
         out.read(text_emb.data(), text_emb.size() * sizeof(float));
     }
 
-    // --- latent geometry: L_true = ceil(int(dur*SR) / 3072); graph runs at fixed L ---
+    // --- latent window: the graph runs at fixed L; L_true valid frames inside it ---
     const int chunk_size = kChunkSamples;  // 512 * 6 = 3072
-    // Match the reference (infer.py): truncate dur*SR to integer samples BEFORE the ceil.
-    const long long wav_len = static_cast<long long>(duration * kSampleRate);
-    const int L_true = static_cast<int>((wav_len + chunk_size - 1) / chunk_size);
-    const int L      = graph_latent_frames();
-    const int L_fill = std::min(std::max(L_true, 1), L);  // valid frames inside the fixed window
-    if (L_true > L) {
-        LOGE("Supertonic: chunk needs L=%d frames > fixed graph L=%d; audio truncated to %.2fs "
-             "(shorten the chunk; dynamic L is blocked upstream).",
-             L_true, L, static_cast<double>(chunk_size) * L / kSampleRate);
+    const int L          = graph_latent_frames();
+    const double window_s = static_cast<double>(chunk_size) * L / kSampleRate;
+    int   L_true   = p.latent_frames;
+    float duration = p.duration;
+    if (L_true > L && L_true <= static_cast<int>(L * kWindowStretchMax)) {
+        // Tempo-fit: clamp the duration to the window so the piece is spoken slightly faster (the
+        // model fills exactly L frames) instead of cutting the sentence.
+        duration = static_cast<float>(window_s);
+        L_true   = L;
+    } else if (L_true > L) {
+        LOGE("Supertonic: piece needs L=%d frames > fixed graph L=%d and cannot be split further; "
+             "audio truncated to %.2fs (dynamic L is blocked upstream).",
+             L_true, L, window_s);
     }
+    const int L_fill = std::min(std::max(L_true, 1), L);  // valid frames inside the fixed window
 
     // latent_mask[1,1,L]: 1.0 for the first L_fill frames, else 0.
     std::vector<float> latent_mask(static_cast<size_t>(L), 0.0f);
     for (int t = 0; t < L_fill; ++t) latent_mask[t] = 1.0f;
 
-    // noisy[1,144,L] = randn * latent_mask (row-major c*L + t). Mix the chunk index into the seed so
-    // multi-chunk utterances draw distinct noise per chunk (the reference advances one shared RNG).
-    std::mt19937 rng(seed_used_ + 0x9E3779B9u * static_cast<uint32_t>(chunk_index + 1));
+    // noisy[1,144,L] = randn * latent_mask (row-major c*L + t). Mix the piece index into the seed so
+    // multi-piece utterances draw distinct noise per piece (the reference advances one shared RNG).
+    std::mt19937 rng(seed_used_ + 0x9E3779B9u * static_cast<uint32_t>(piece_index + 1));
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<float> xt(static_cast<size_t>(kLatentChannels) * L);
     for (int c = 0; c < kLatentChannels; ++c)

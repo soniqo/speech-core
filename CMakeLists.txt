@@ -683,6 +683,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_litert_voxcpm2_clone_cli"
            OR TEST_NAME STREQUAL "test_indic_mio_istft"
            OR TEST_NAME STREQUAL "test_indic_mio_tokenizer"
+           OR TEST_NAME STREQUAL "test_supertonic_tokenizer"
            OR TEST_NAME STREQUAL "test_litert_indic_mio"
            OR TEST_NAME STREQUAL "test_pocket_tts"
            OR TEST_NAME STREQUAL "test_pocket_tts_tokenizer"
@@ -923,6 +924,13 @@ if(SPEECH_CORE_BUILD_TESTS)
         target_compile_definitions(test_indic_mio_tokenizer PRIVATE
             SPEECH_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME test_indic_mio_tokenizer COMMAND test_indic_mio_tokenizer)
+    endif()
+
+    # SupertonicTokenizer chunking + window fitting (pure unit — no model bundle needed).
+    if(SPEECH_CORE_WITH_LITERT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_supertonic_tokenizer.cpp)
+        add_executable(test_supertonic_tokenizer tests/test_supertonic_tokenizer.cpp)
+        target_link_libraries(test_supertonic_tokenizer PRIVATE speech_core_models_litert)
+        add_test(NAME test_supertonic_tokenizer COMMAND test_supertonic_tokenizer)
     endif()
 
     # Indic-Mio e2e smoke (skips when SPEECH_CORE_INDIC_MIO_BUNDLE unset).
