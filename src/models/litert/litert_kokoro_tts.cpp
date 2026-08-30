@@ -400,7 +400,7 @@ void LiteRTKokoroTts::auto_switch_voice(const std::string& language) {
     static const LangVoice voices[] = {
         {"en", "af_heart"}, {"fr", "ff_siwis"}, {"es", "ef_dora"},
         {"it", "if_sara"}, {"pt", "pf_dora"},  {"hi", "hf_alpha"},
-        {"ja", "jf_alpha"}, {"zh", "zf_xiaobei"}, {"ko", "kf_somi"},
+        {"ja", "jf_alpha"}, {"zh", "zf_xiaobei"},
     };
 
     for (const auto& entry : voices) {
