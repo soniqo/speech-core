@@ -7,6 +7,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 | Model | Interface | Header | Status |
 |---|---|---|---|
 | `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` | full |
+| `OnnxSmartTurn` | `TurnCompletionInterface` | `speech_core/models/onnx_smart_turn.h` | full |
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
 | `OnnxWhisperStt` | `STTInterface` | `speech_core/models/onnx_whisper_stt.h` | full |
 | `OnnxCanaryStt` | `STTInterface` | `speech_core/models/onnx_canary_stt.h` | full (offline, en/de/es/fr) |
@@ -313,6 +314,39 @@ float prob = vad.process_chunk(samples_512, 512);  // → [0, 1]
 - LSTM state carried across chunks; `reset()` clears it between sessions
 - Returns speech probability; feed to `StreamingVAD` for start/end events
 - Model files: [soniqo/Silero-VAD-v5-ONNX](https://huggingface.co/soniqo/Silero-VAD-v5-ONNX) — `silero-vad.onnx` (~2 MB)
+
+## OnnxSmartTurn
+
+Pipecat Smart Turn v3.2 — end-of-turn classifier. A VAD only hears silence;
+Smart Turn listens to the prosody of the whole utterance and scores whether
+the user has finished their turn, so a mid-sentence pause keeps the agent
+waiting while a finished sentence gets an immediate reply. Whisper-Tiny
+encoder + attention pooling + MLP head, 8.0 M parameters, 23 languages.
+
+```cpp
+#include <speech_core/models/onnx_smart_turn.h>
+
+speech_core::OnnxSmartTurn model("/models/smart-turn-v3.2-int8.onnx");
+
+// Audio of the turn so far at any rate (resampled to 16 kHz internally).
+float p = model.turn_complete_probability(turn.data(), turn.size(), rate);
+
+// Or let the pipeline ask it on every VAD pause (before start()).
+pipeline.set_turn_completion(&model);
+```
+
+- Graph contract: `audio [1, 128000] float32` (the last 8 s of 16 kHz audio) → `probability [1, 1] float32`. `kSampleRate = 16000`, `kWindowSamples = 128000`.
+- The Whisper log-mel front-end — including the zero-mean / unit-variance waveform normalisation the model was trained with — is embedded in the graph, so there is no C++ feature extraction.
+- Window: the last 8 s of the turn, zero-padded at the front when the turn is shorter (`OnnxSmartTurn::prepare_window()`); longer turns contribute only their final 8 s.
+- Pipeline: `VoicePipeline::set_turn_completion()` / `TurnDetector::set_turn_completion()`. Once attached, a VAD pause only ends the user's turn when the probability reaches `AgentConfig::turn_completion_threshold` (default 0.5). Below it the detector holds the turn — audio keeps accumulating, further speech continues the same turn, the next pause asks again on the whole turn — until `AgentConfig::turn_completion_max_silence` (default 2.0 s from the start of the pause, 0 = never) ends it anyway. Eager STT respects the veto; force-split and `flush()` bypass the classifier. Details in [pipeline.md](pipeline.md#end-of-turn-classifier-smart-turn).
+- Cost: one synchronous call per pause on the audio thread — about 35 ms on an Apple M5 Pro with ORT's default two threads (20 ms with four); the int8 graph is the same speed there and mainly saves download size. Expect more on phone-class CPUs.
+- Upstream accuracy on Pipecat's 31.5k-clip test set: 93.7 % (fp32), 92.6 % (int8).
+- **ONNX-only.** No LiteRT variant.
+- C API: `sc_turn_completion_vtable_t` + `sc_pipeline_set_turn_completion()`, with `sc_config_t.turn_completion_threshold` / `turn_completion_max_silence`; Swift/Kotlin hosts can bridge their own classifier (e.g. CoreML) the same way as `sc_vad_vtable_t`.
+- CLI: `speech_smart_turn <in.wav> [--model path.onnx] [--threshold 0.5] [--json]` (`examples/onnx/smart_turn.cpp`), or `speech turn <utterance.wav>` through the dispatcher — prints the completion probability for the last 8 s of a recording.
+- Tests: `test_turn_detector_smart_turn` (scripted classifier, no model) and `test_onnx_smart_turn_model`, gated on `SPEECH_SMART_TURN_ONNX=/path/to/smart-turn-v3.2-int8.onnx` (`SPEECH_CORE_TEST_AUDIO` optionally points at the finished-sentence fixture WAV).
+- License: BSD-2-Clause — weights by Daily / Pipecat ([pipecat-ai/smart-turn](https://github.com/pipecat-ai/smart-turn), [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3)).
+- Model files: [soniqo/Smart-Turn-v3.2-ONNX](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) — `smart-turn-v3.2.onnx` (float32, 33 MB) and `smart-turn-v3.2-int8.onnx` (int8, ~10 MB). `scripts/download_models.sh` / `.ps1` fetch the int8 graph.
 
 ## ParakeetStt
 

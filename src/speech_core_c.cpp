@@ -187,6 +187,19 @@ public:
     }
 };
 
+class CTurnCompletionAdapter : public TurnCompletionInterface {
+public:
+    explicit CTurnCompletionAdapter(sc_turn_completion_vtable_t vt) : vt_(vt) {}
+    float turn_complete_probability(
+        const float* samples, size_t length, int sample_rate) override {
+        if (!vt_.turn_complete_probability) return 1.0f;
+        return vt_.turn_complete_probability(
+            vt_.context, samples, length, sample_rate);
+    }
+private:
+    sc_turn_completion_vtable_t vt_;
+};
+
 // ---------------------------------------------------------------------------
 // Pipeline handle
 // ---------------------------------------------------------------------------
@@ -198,6 +211,7 @@ struct sc_pipeline_s {
     std::unique_ptr<CVADAdapter> vad;
     std::unique_ptr<CEnhancerAdapter> enhancer;
     std::unique_ptr<CEchoCancellerAdapter> echo_canceller;
+    std::unique_ptr<CTurnCompletionAdapter> turn_completion;
     std::unique_ptr<VoicePipeline> pipeline;
     sc_event_fn event_fn;
     void* event_context;
@@ -246,6 +260,8 @@ sc_config_t sc_config_default(void) {
     c.post_playback_guard = 0.3f;
     c.eager_stt = true;
     c.eager_stt_delay = 0.3f;
+    c.turn_completion_threshold = 0.5f;
+    c.turn_completion_max_silence = 2.0f;
     c.warmup_stt = true;
     c.max_history_messages = 50;
     c.max_history_tokens = 0;
@@ -293,6 +309,8 @@ sc_pipeline_t sc_pipeline_create(
     agent_config.post_playback_guard = config.post_playback_guard;
     agent_config.eager_stt = config.eager_stt;
     agent_config.eager_stt_delay = config.eager_stt_delay;
+    agent_config.turn_completion_threshold = config.turn_completion_threshold;
+    agent_config.turn_completion_max_silence = config.turn_completion_max_silence;
     agent_config.warmup_stt = config.warmup_stt;
     agent_config.max_history_messages = config.max_history_messages;
     agent_config.max_history_tokens = config.max_history_tokens;
@@ -386,6 +404,18 @@ void sc_pipeline_set_echo_canceller(sc_pipeline_t pipeline,
     if (!pipeline) return;
     pipeline->echo_canceller = std::make_unique<CEchoCancellerAdapter>(aec);
     pipeline->pipeline->set_echo_canceller(pipeline->echo_canceller.get());
+}
+
+void sc_pipeline_set_turn_completion(sc_pipeline_t pipeline,
+                                     sc_turn_completion_vtable_t model) {
+    if (!pipeline) return;
+    if (!model.turn_complete_probability) {
+        pipeline->pipeline->set_turn_completion(nullptr);
+        pipeline->turn_completion.reset();
+        return;
+    }
+    pipeline->turn_completion = std::make_unique<CTurnCompletionAdapter>(model);
+    pipeline->pipeline->set_turn_completion(pipeline->turn_completion.get());
 }
 
 void sc_pipeline_add_tool(sc_pipeline_t pipeline, sc_tool_definition_t tool) {

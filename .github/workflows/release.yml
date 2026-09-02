@@ -123,7 +123,8 @@ jobs:
               apt-get update -q
               apt-get install -yq /dist/speech_*_amd64.deb
               for exe in speech_transcribe speech_synthesize speech_phonemize \
-                         speech_voxcpm2_clone speech_demo speech-server; do
+                         speech_smart_turn speech_voxcpm2_clone speech_demo \
+                         speech-server; do
                 echo "--- ldd $exe"
                 test -x "/usr/bin/$exe" || { echo "MISSING $exe"; exit 1; }
                 if ldd /usr/bin/$exe | grep "not found"; then
@@ -167,6 +168,7 @@ jobs:
           for exe in package-root/usr/bin/speech_transcribe \
                      package-root/usr/bin/speech_synthesize \
                      package-root/usr/bin/speech_phonemize \
+                     package-root/usr/bin/speech_smart_turn \
                      package-root/usr/bin/speech-server; do
             file "$exe" | tee /dev/stderr | grep -q "aarch64"
             # shellcheck disable=SC2016 # Match the literal ELF $ORIGIN token.
@@ -270,6 +272,7 @@ jobs:
             "bin/speech_transcribe.exe",
             "bin/speech_synthesize.exe",
             "bin/speech_phonemize.exe",
+            "bin/speech_smart_turn.exe",
             "bin/speech.dll",
             "bin/onnxruntime.dll",
             "bin/onnxruntime_providers_shared.dll",
@@ -297,7 +300,7 @@ jobs:
               $help -notmatch "/v1/audio/transcriptions") {
             throw "speech-server.exe did not start and print endpoint help"
           }
-          foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe")) {
+          foreach ($executable in @("speech_transcribe.exe", "speech_synthesize.exe", "speech_phonemize.exe", "speech_smart_turn.exe")) {
             $executablePath = Join-Path $root.FullName "bin/$executable"
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
             $startInfo.FileName = $executablePath

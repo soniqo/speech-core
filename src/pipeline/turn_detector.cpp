@@ -20,6 +20,38 @@ TurnDetector::TurnDetector(
     }
 }
 
+float TurnDetector::classify_turn() {
+    if (!turn_completion_) return -1.0f;
+    return turn_completion_->turn_complete_probability(
+        utterance_buffer_.data(), utterance_buffer_.size(),
+        vad_.input_sample_rate());
+}
+
+void TurnDetector::end_turn(float time, bool eager, float probability) {
+    in_speech_ = false;
+    turn_hold_ = false;
+    interruption_time_ = -1.0f;
+
+    TurnEvent ended;
+    ended.type = TurnEvent::UserSpeechEnded;
+    ended.time = time;
+    ended.eager = eager;
+    ended.turn_completion_probability = probability;
+    ended.audio = utterance_buffer_;
+    on_event_(ended);
+    utterance_buffer_.clear();
+}
+
+void TurnDetector::hold_turn(float time) {
+    // The classifier says the user is not done: keep the turn open. Audio
+    // keeps accumulating into utterance_buffer_ (in_speech_ stays true), a
+    // later SpeechStarted continues the same turn, and the silence cap in
+    // push_audio ends it if nothing more is said.
+    turn_hold_ = true;
+    turn_hold_since_ = time;
+    eager_pending_ = false;
+}
+
 void TurnDetector::push_audio(const float* samples, size_t count) {
     size_t chunk_size = vad_.chunk_size();
     size_t offset = 0;
@@ -44,11 +76,19 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
 
         for (const auto& vad_event : events) {
             if (vad_event.type == VADEvent::SpeechStarted) {
-                // Prepend pre-speech audio to capture onset
-                utterance_buffer_ = pre_speech_ring_;
-                pre_speech_ring_.clear();
-                utterance_start_ = vad_event.start_time;
-                in_speech_ = true;
+                // The user resuming after a pause the classifier vetoed is
+                // the same turn: keep the buffer and start time, and don't
+                // re-announce the turn to the pipeline.
+                const bool continuing_held_turn = turn_hold_;
+                if (continuing_held_turn) {
+                    turn_hold_ = false;
+                } else {
+                    // Prepend pre-speech audio to capture onset
+                    utterance_buffer_ = pre_speech_ring_;
+                    pre_speech_ring_.clear();
+                    utterance_start_ = vad_event.start_time;
+                    in_speech_ = true;
+                }
                 interruption_confirmed_ = false;
 
                 // If agent is speaking, defer interruption until min duration met
@@ -64,29 +104,28 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                     }
                 }
 
-                TurnEvent started;
-                started.type = TurnEvent::UserSpeechStarted;
-                started.time = vad_event.start_time;
-                on_event_(started);
+                if (!continuing_held_turn) {
+                    TurnEvent started;
+                    started.type = TurnEvent::UserSpeechStarted;
+                    started.time = vad_event.start_time;
+                    on_event_(started);
+                }
 
             } else if (vad_event.type == VADEvent::SpeechPaused) {
                 // Eager STT: start timer when silence begins. After
                 // eager_stt_delay elapses, fire UserSpeechEnded early.
                 if (config_.eager_stt && in_speech_ && !agent_speaking_
-                    && !eager_utterance_sent_) {
+                    && !eager_utterance_sent_ && !turn_hold_) {
                     if (config_.eager_stt_delay <= 0.0f) {
-                        // No delay — fire immediately (original behavior)
-                        eager_utterance_sent_ = true;
-                        in_speech_ = false;
-                        interruption_time_ = -1.0f;
-
-                        TurnEvent ended;
-                        ended.type = TurnEvent::UserSpeechEnded;
-                        ended.time = vad_event.end_time;
-                        ended.eager = true;
-                        ended.audio = utterance_buffer_;
-                        on_event_(ended);
-                        utterance_buffer_.clear();
+                        // No delay — fire immediately (original behavior),
+                        // unless the classifier says the user is mid-sentence.
+                        const float p = classify_turn();
+                        if (p >= 0.0f && p < config_.turn_completion_threshold) {
+                            hold_turn(vad_event.end_time);
+                        } else {
+                            eager_utterance_sent_ = true;
+                            end_turn(vad_event.end_time, /*eager=*/true, p);
+                        }
                     } else {
                         // Start deferred eager timer
                         eager_pending_ = true;
@@ -97,6 +136,8 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             } else if (vad_event.type == VADEvent::SpeechResumed) {
                 // Cancel deferred eager — speech resumed before delay elapsed
                 eager_pending_ = false;
+                // A classifier hold ends the same way: the turn continues.
+                turn_hold_ = false;
 
                 // Speech resumed after a pause — if we sent an eager utterance,
                 // that's already being processed. Treat resumed speech as a
@@ -116,11 +157,11 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 }
 
             } else if (vad_event.type == VADEvent::SpeechEnded) {
-                in_speech_ = false;
                 eager_pending_ = false;  // silence confirmed — normal path handles it
 
                 // If eager STT already fired, silence just confirmed it — skip
                 if (eager_utterance_sent_) {
+                    in_speech_ = false;
                     eager_utterance_sent_ = false;
                     utterance_buffer_.clear();
                     interruption_time_ = -1.0f;
@@ -128,6 +169,7 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                 // During agent speaking: discard speech that was too short
                 // to confirm interruption (AEC residual echo)
                 else if (agent_speaking_ && !interruption_confirmed_) {
+                    in_speech_ = false;
                     // False trigger (AEC residual echo) — restore audio to
                     // pre-speech ring so onset context is preserved for the
                     // next real utterance.
@@ -145,6 +187,7 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                     config_.interruption_recovery_timeout > 0.0f &&
                     (vad_event.end_time - interruption_time_) <
                         config_.interruption_recovery_timeout) {
+                    in_speech_ = false;
                     // Brief interruption — recover
                     TurnEvent recovered;
                     recovered.type = TurnEvent::InterruptionRecovered;
@@ -152,15 +195,20 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
                     on_event_(recovered);
                     interruption_time_ = -1.0f;
                     utterance_buffer_.clear();
-                } else {
-                    // Normal speech ended
-                    interruption_time_ = -1.0f;
-                    TurnEvent ended;
-                    ended.type = TurnEvent::UserSpeechEnded;
-                    ended.time = vad_event.end_time;
-                    ended.audio = utterance_buffer_;
-                    on_event_(ended);
-                    utterance_buffer_.clear();
+                }
+                // The classifier already vetoed this pause (at the eager
+                // moment); silence confirming it changes nothing.
+                else if (turn_hold_) {
+                    // keep holding
+                }
+                // Normal speech ended — ask the classifier, if any
+                else {
+                    const float p = classify_turn();
+                    if (p >= 0.0f && p < config_.turn_completion_threshold) {
+                        hold_turn(vad_event.end_time);
+                    } else {
+                        end_turn(vad_event.end_time, /*eager=*/false, p);
+                    }
                 }
             }
         }
@@ -170,17 +218,21 @@ void TurnDetector::push_audio(const float* samples, size_t count) {
             float elapsed = streaming_vad_.current_time() - eager_pending_time_;
             if (elapsed >= config_.eager_stt_delay) {
                 eager_pending_ = false;
-                eager_utterance_sent_ = true;
-                in_speech_ = false;
-                interruption_time_ = -1.0f;
+                const float p = classify_turn();
+                if (p >= 0.0f && p < config_.turn_completion_threshold) {
+                    hold_turn(eager_pending_time_);
+                } else {
+                    eager_utterance_sent_ = true;
+                    end_turn(eager_pending_time_, /*eager=*/true, p);
+                }
+            }
+        }
 
-                TurnEvent ended;
-                ended.type = TurnEvent::UserSpeechEnded;
-                ended.time = eager_pending_time_;
-                ended.eager = true;
-                ended.audio = utterance_buffer_;
-                on_event_(ended);
-                utterance_buffer_.clear();
+        // Classifier hold: the user never resumed — end the turn on the cap.
+        if (turn_hold_ && config_.turn_completion_max_silence > 0.0f) {
+            float held = streaming_vad_.current_time() - turn_hold_since_;
+            if (held >= config_.turn_completion_max_silence) {
+                end_turn(turn_hold_since_, /*eager=*/false, -1.0f);
             }
         }
 
@@ -229,14 +281,7 @@ void TurnDetector::buffer_pre_speech(const float* samples, size_t count) {
 }
 
 void TurnDetector::force_end_utterance(float time) {
-    in_speech_ = false;
-
-    TurnEvent ended;
-    ended.type = TurnEvent::UserSpeechEnded;
-    ended.time = time;
-    ended.audio = utterance_buffer_;
-    on_event_(ended);
-    utterance_buffer_.clear();
+    end_turn(time, /*eager=*/false, -1.0f);
 
     // Reset VAD state so it can detect new speech
     streaming_vad_.reset();
@@ -268,6 +313,13 @@ void TurnDetector::set_post_playback_guard(float seconds) {
 }
 
 void TurnDetector::flush() {
+    if (turn_hold_) {
+        // The VAD is idle; the classifier was still waiting for more speech.
+        // End of stream settles it, with whatever was buffered meanwhile.
+        end_turn(turn_hold_since_, /*eager=*/false, -1.0f);
+        streaming_vad_.flush();
+        return;
+    }
     auto events = streaming_vad_.flush();
     for (const auto& vad_event : events) {
         if (vad_event.type == VADEvent::SpeechEnded) {
@@ -298,6 +350,8 @@ void TurnDetector::reset() {
     eager_utterance_sent_ = false;
     eager_pending_ = false;
     guard_remaining_samples_ = 0;
+    turn_hold_ = false;
+    turn_hold_since_ = 0.0f;
 }
 
 void TurnDetector::reset_for_new_stream() {

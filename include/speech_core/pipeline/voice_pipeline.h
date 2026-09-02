@@ -115,6 +115,14 @@ public:
     /// Must be called before start(). Pass nullptr to disable.
     void set_echo_canceller(EchoCancellerInterface* aec) { echo_canceller_ = aec; }
 
+    /// Attach an optional end-of-turn classifier (e.g. OnnxSmartTurn). When set,
+    /// a VAD pause only ends the user's turn once the classifier agrees; see
+    /// AgentConfig::turn_completion_threshold / turn_completion_max_silence.
+    /// Must be called before start(). Pass nullptr to disable.
+    void set_turn_completion(TurnCompletionInterface* model) {
+        turn_detector_.set_turn_completion(model);
+    }
+
     /// Access the tool registry for adding tools.
     ToolRegistry& tool_registry() { return tool_registry_; }
 

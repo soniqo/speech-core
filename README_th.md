@@ -43,6 +43,7 @@ speech-core แยกชั้น orchestration ขนาดเล็กที�
 | โมเดล | งาน | ONNX | LiteRT |
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/th/guides/vad) | ตรวจจับกิจกรรมเสียง | ✓ | ✓ |
+| [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | ตรวจจับการจบเทิร์นการพูด | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/th/guides/parakeet) | เสียงเป็นข้อความ | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/th/guides/whisper) | เสียงเป็นข้อความหลายภาษา | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | เสียงเป็นข้อความ + การแปล (en/de/es/fr) | ✓ | — |
@@ -134,6 +135,7 @@ curl -fLO "https://github.com/soniqo/speech-core/releases/download/v${VERSION}/s
 sudo apt install "./speech_${VERSION}_${ARCH}.deb"
 speech download-models
 speech transcribe recording.wav
+speech turn recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
 speech serve

@@ -260,6 +260,32 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Turn completion — end-of-turn classification (utterance-level)
+// ---------------------------------------------------------------------------
+
+/// Decides whether the user has finished their turn once the VAD reports a
+/// pause. A VAD only hears silence; a turn-completion model listens to the
+/// prosody of the whole utterance so a mid-sentence pause keeps the agent
+/// waiting while a finished sentence gets an immediate reply.
+///
+/// Reference implementation: OnnxSmartTurn (Pipecat Smart Turn v3.2).
+class TurnCompletionInterface {
+public:
+    virtual ~TurnCompletionInterface() = default;
+
+    /// Probability [0, 1] that the user's turn is complete.
+    /// @param samples      PCM Float32 audio of the turn so far. Implementations
+    ///                     look at the most recent seconds (Smart Turn: 8 s).
+    /// @param length       Number of samples
+    /// @param sample_rate  Sample rate of `samples` in Hz
+    ///
+    /// Called synchronously from the audio path when the VAD reports a pause,
+    /// so it must return within a few tens of milliseconds.
+    virtual float turn_complete_probability(
+        const float* samples, size_t length, int sample_rate) = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Speech Enhancement
 // ---------------------------------------------------------------------------
 

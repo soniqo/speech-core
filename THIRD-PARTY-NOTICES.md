@@ -94,3 +94,10 @@ The optional Pocket TTS bundle is published separately at
 https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8 under CC BY 4.0. Its
 fixed voice was performed by Alba MacKenna; retain that attribution when the
 bundle is redistributed or used in product notices.
+
+The optional Smart Turn v3.2 bundle is published separately at
+https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX under the BSD-2-Clause
+license, Copyright (c) 2024-2025 Daily (Pipecat). Binary redistributions of
+the model files must reproduce that copyright notice, the license conditions,
+and the disclaimer in the documentation or other materials provided with the
+distribution.

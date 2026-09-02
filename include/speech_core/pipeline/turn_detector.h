@@ -36,6 +36,11 @@ struct TurnEvent {
 
     /// Accumulated user audio for this turn (populated on UserSpeechEnded).
     std::vector<float> audio;
+
+    /// Completion probability from the attached TurnCompletionInterface for
+    /// the pause that ended this turn, or -1 when no classifier ran (no model
+    /// attached, force-split, flush, or the silence cap expired).
+    float turn_completion_probability = -1.0f;
 };
 
 /// Wraps StreamingVAD with interruption handling and utterance accumulation.
@@ -69,6 +74,19 @@ public:
 
     /// Flush any pending turn at end of stream.
     void flush();
+
+    /// Attach an optional end-of-turn classifier. When set, a VAD pause only
+    /// ends the user's turn once the classifier's probability reaches
+    /// AgentConfig::turn_completion_threshold; otherwise the detector keeps
+    /// the turn open (audio keeps accumulating) until the user speaks again
+    /// or turn_completion_max_silence elapses. Pass nullptr to disable.
+    void set_turn_completion(TurnCompletionInterface* model) {
+        turn_completion_ = model;
+    }
+
+    /// True while the classifier has vetoed the last pause and the detector
+    /// is waiting for more speech or the silence cap.
+    bool turn_held() const { return turn_hold_; }
 
     /// Reset all state (clears any active post-playback guard).
     void reset();
@@ -113,7 +131,22 @@ private:
     /// Post-playback guard: remaining samples to suppress before resuming VAD.
     size_t guard_remaining_samples_ = 0;
 
+    /// Optional end-of-turn classifier (not owned).
+    TurnCompletionInterface* turn_completion_ = nullptr;
+    bool turn_hold_ = false;         // classifier vetoed the last pause
+    float turn_hold_since_ = 0.0f;   // start of the pause being held
+
     void force_end_utterance(float time);
+
+    /// Ask the classifier about the turn so far. Returns -1 (treated as
+    /// "complete") when no classifier is attached.
+    float classify_turn();
+
+    /// Emit UserSpeechEnded for the accumulated turn and clear turn state.
+    void end_turn(float time, bool eager, float probability);
+
+    /// Enter the hold state after the classifier vetoed a pause at `time`.
+    void hold_turn(float time);
 };
 
 }  // namespace speech_core

@@ -120,6 +120,17 @@ to prevent backends that ignore cancellation from emitting stale results.
 4. On confirmed speech start: begin buffering audio, emit `UserSpeechStarted`
 5. On confirmed speech end: emit `UserSpeechEnded` with the buffered audio
 
+### End-of-turn classifier (Smart Turn)
+
+Silence alone is a weak signal for the end of a turn: people pause mid-sentence to think, and a VAD-only detector cuts them off. `TurnDetector::set_turn_completion()` — exposed as `VoicePipeline::set_turn_completion()`, call before `start()`, `nullptr` disables — attaches an optional `TurnCompletionInterface` such as `OnnxSmartTurn` (Pipecat Smart Turn v3.2). With a classifier attached, a VAD pause becomes a question rather than a verdict:
+
+1. On a pause — silence confirmed, or the eager-STT moment — the detector calls `turn_complete_probability()` on the audio of the turn so far (Smart Turn looks at the last 8 s). The call is synchronous on the audio thread, once per pause, roughly 20–50 ms on a laptop CPU.
+2. If the probability reaches `turn_completion_threshold` (default 0.5), the turn ends as usual: `UserSpeechEnded` carries the audio, and `TurnEvent::turn_completion_probability` carries the score.
+3. Otherwise the detector **holds** the turn (`turn_held()` is true): audio keeps accumulating, and if the user speaks again it continues the *same* turn — no second `UserSpeechStarted`. The next pause asks the classifier again on the whole turn.
+4. If silence continues for `turn_completion_max_silence` (default 2.0 s, measured from the start of the pause; 0 = never), the turn ends anyway, so a user who trails off still gets a reply.
+
+Eager STT respects the veto: a mid-sentence pause no longer produces an early utterance, while a pause the classifier agrees is final still fires the eager utterance at `eager_stt_delay`. `flush()` settles a held turn at end of stream, and force-split (`max_utterance_duration`) bypasses the classifier. The classifier is never consulted while the agent is speaking, so the short-speech (AEC echo) discard path is unchanged. `turn_completion_probability` is -1 whenever no classifier ran — no model attached, force-split, flush, or the silence cap expired.
+
 ### Force-split
 
 If an utterance exceeds `max_utterance_duration` (default 15s), `TurnDetector` force-ends the current segment and resets the VAD. This prevents unbounded memory growth and triggers intermediate transcriptions.
@@ -215,6 +226,8 @@ config.post_playback_guard = 0.3f;         // seconds — suppress VAD after pla
 // Latency optimizations
 config.eager_stt = true;                   // start STT before silence confirms (saves ~0.3s)
 config.eager_stt_delay = 0.3f;             // seconds in silence before eager fires (filters pauses)
+config.turn_completion_threshold = 0.5f;   // end-of-turn classifier: probability that ends the turn
+config.turn_completion_max_silence = 2.0f; // seconds of silence that end a vetoed turn anyway (0 = never)
 config.warmup_stt = true;                  // dummy transcription at pipeline start (ANE cold start)
 
 // Conversation history
@@ -228,6 +241,8 @@ config.partial_transcription_interval = 1.0f; // seconds between chunk pushes
 
 config.language = "en";                    // STT/TTS language hint (empty = auto-detect)
 ```
+
+The two `turn_completion_*` fields only take effect once a classifier is attached with `VoicePipeline::set_turn_completion()` before `start()` (see [End-of-turn classifier](#end-of-turn-classifier-smart-turn)); without one, turns end on VAD silence as before.
 
 ### Eager STT
 

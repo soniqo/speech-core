@@ -32,6 +32,7 @@ case "$cmd" in
         fi
         run_tool speech_synthesize ;;
     phonemize)         run_tool speech_phonemize "$@" ;;
+    turn)              run_tool speech_smart_turn "$@" ;;
     serve|server)      run_tool speech-server "$@" ;;
     clone)             run_tool speech_voxcpm2_clone "$@" ;;
     demo)              run_tool speech_demo "$@" ;;
@@ -51,6 +52,7 @@ commands:
   serve [--host HOST] [--port PORT]  OpenAI-compatible local audio server
   clone <ref.wav> "<text>" <out.wav> voice cloning (VoxCPM2)
   phonemize "<text>" [language]      text -> phonemes (Kokoro phonemizer)
+  turn <utterance.wav>               end-of-turn probability (Smart Turn)
   demo [--transcribe-only]           live ALSA mic loop
   download-models [litert|voxcpm2]   fetch models to ~/.cache/speech-core
 

@@ -48,6 +48,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 | Transcription | `speech transcribe` | `speech_transcribe.exe` | ✓ | ✓ | ✓ |
 | Kokoro synthesis | `speech speak` | `speech_synthesize.exe` | ✓ | ✓ | ✓ |
 | Kokoro phonemizer | `speech phonemize` | `speech_phonemize.exe` | ✓ | ✓ | ✓ |
+| Smart Turn end-of-turn probability | `speech turn` | `speech_smart_turn.exe` | ✓ | ✓ | ✓ |
 | OpenAI-compatible HTTP audio | `speech serve` | `speech-server.exe` | ✓ | ✓ | ✓ |
 | VoxCPM2 voice cloning | `speech clone` | — | ✓ | — | — |
 | ALSA microphone pipeline | `speech demo` | — | ✓ | — | — |
@@ -61,7 +62,7 @@ are ONNX-only; LiteRT voice cloning remains in the Linux amd64 package.
 ## Quick examples
 
 Download the ONNX models needed by transcription, Kokoro speech synthesis,
-phonemization, and the live demo:
+phonemization, the Smart Turn end-of-turn classifier, and the live demo:
 
 ```bash
 speech download-models
@@ -71,6 +72,7 @@ The default destination is `~/.cache/speech-core/models`. Then run:
 
 ```bash
 speech transcribe recording.wav
+speech turn recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
 speech demo --transcribe-only
@@ -81,6 +83,12 @@ The input to `transcribe` must be a WAV file. Mono and stereo PCM16, PCM24,
 and Float32 WAV inputs are accepted and resampled to 16 kHz mono internally.
 The `demo` command uses the default ALSA capture device unless `--device` is
 provided.
+
+`turn` prints the Smart Turn v3.2 probability that the speaker has finished
+their turn, judged from the last 8 s of a 16-bit PCM WAV (any sample rate;
+resampled to 16 kHz). `--threshold` (default 0.5) sets the complete /
+incomplete verdict and `--json` switches to machine-readable output. Use it
+to tune `turn_completion_threshold` on your own recordings.
 
 VoxCPM2 is an optional, much larger download (about 13 GB for the x86 bundle):
 
@@ -99,6 +107,7 @@ speech transcribe <input.wav>
 speech speak "<text>" [output.wav] [language]
 speech synthesize "<text>" [output.wav] [language]
 speech phonemize "<text>" [language]
+speech turn <utterance.wav> [--model path.onnx] [--threshold 0.5] [--json]
 speech serve [--host HOST] [--port PORT] [--model-dir PATH] [--api-key KEY]
 speech clone [bundle_dir] <ref.wav> "<text>" <out.wav> [instruction] [max_steps] [seed]
 speech demo [--model-dir <path>] [--qnn] [--transcribe-only] [--device <alsa_device>]
@@ -113,6 +122,7 @@ arguments for its complete positional syntax:
 speech_transcribe [model_dir] <input.wav>
 speech_synthesize [model_dir] <output.wav> "<text>" [language]
 speech_phonemize [model_dir] "<text>" [language]
+speech_smart_turn <in.wav> [--model path.onnx] [--threshold 0.5] [--json]
 speech-server [--host HOST] [--port PORT] [--model-dir PATH] [--api-key KEY]
 speech_voxcpm2_clone [bundle_dir] <ref.wav> "<text>" <out.wav> [instruction] [max_steps] [seed]
 ```
@@ -121,7 +131,7 @@ speech_voxcpm2_clone [bundle_dir] <ref.wav> "<text>" <out.wav> [instruction] [ma
 
 | Variable | Used by | Default |
 |---|---|---|
-| `SPEECH_MODEL_DIR` | ONNX transcribe, speak, phonemize, demo, server | `~/.cache/speech-core/models` or `%LOCALAPPDATA%\speech-core\models` |
+| `SPEECH_MODEL_DIR` | ONNX transcribe, speak, phonemize, turn, demo, server | `~/.cache/speech-core/models` or `%LOCALAPPDATA%\speech-core\models` |
 | `SPEECH_SERVER_API_KEY` | Optional bearer authentication for `speech-server` | unset; loopback-only access needs no key |
 | `SPEECH_LITERT_MODEL_DIR` | VoxCPM2 clone | architecture-specific VoxCPM2 cache directory |
 | `SPEECH_CORE_CACHE_DIR` | Overrides the speech-core cache root | `%LOCALAPPDATA%\speech-core`, `$XDG_CACHE_HOME/speech-core`, or `~/.cache/speech-core` |

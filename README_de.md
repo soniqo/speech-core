@@ -43,6 +43,7 @@ speech-core trennt eine kleine, modellunabhängige Orchestrierungsschicht von op
 | Modell | Aufgabe | ONNX | LiteRT |
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/de/guides/vad) | Voice Activity Detection | ✓ | ✓ |
+| [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | End-of-Turn-Erkennung | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/de/guides/parakeet) | Speech-to-Text | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/de/guides/whisper) | Mehrsprachiges Speech-to-Text | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | Speech-to-Text + Übersetzung (en/de/es/fr) | ✓ | — |
@@ -139,6 +140,7 @@ sudo apt install "./speech_${VERSION}_${ARCH}.deb"
 
 speech download-models
 speech transcribe recording.wav
+speech turn recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
 speech serve
