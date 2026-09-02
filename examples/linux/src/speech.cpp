@@ -2,6 +2,7 @@
 
 #include <speech_core/models/deepfilter.h>
 #include <speech_core/models/kokoro_tts.h>
+#include <speech_core/models/onnx_smart_turn.h>
 #include <speech_core/models/parakeet_stt.h>
 #include <speech_core/models/silero_vad.h>
 #include <speech_core/pipeline/agent_config.h>
@@ -25,6 +26,7 @@ struct speech_pipeline_s {
     std::unique_ptr<speech_core::ParakeetStt> stt;
     std::unique_ptr<speech_core::KokoroTts> tts;
     std::unique_ptr<speech_core::DeepFilterEnhancer> enhancer;
+    std::unique_ptr<speech_core::OnnxSmartTurn> smart_turn;
     std::unique_ptr<speech_core::VoicePipeline> pipeline;
 
     speech_event_fn user_callback = nullptr;
@@ -84,6 +86,7 @@ extern "C" speech_config_t speech_config_default(void) {
     config.enable_enhancer = false;
     config.transcribe_only = false;
     config.min_silence_duration = 0.4f;
+    config.enable_smart_turn = false;
     return config;
 }
 
@@ -139,6 +142,24 @@ extern "C" speech_pipeline_t speech_create(speech_config_t config,
         h->pipeline = std::make_unique<speech_core::VoicePipeline>(
             *h->stt, *tts_ptr, nullptr, *h->vad, sc_cfg,
             [raw](const speech_core::PipelineEvent& e) { dispatch_event(raw, e); });
+
+        // Optional end-of-turn classifier: a VAD pause only ends the turn
+        // once Smart Turn agrees the sentence is finished.
+        if (config.enable_smart_turn) {
+            std::string st = dir + "/smart-turn-v3.2" + suffix + ".onnx";
+            if (FILE* f = std::fopen(st.c_str(), "r")) {
+                std::fclose(f);
+            } else {
+                st = dir + "/smart-turn-v3.2.onnx";
+            }
+            if (FILE* f = std::fopen(st.c_str(), "r")) {
+                std::fclose(f);
+                h->smart_turn = std::make_unique<speech_core::OnnxSmartTurn>(st, false);
+                h->pipeline->set_turn_completion(h->smart_turn.get());
+            } else {
+                std::fprintf(stderr, "[speech] smart turn requested but %s not found\n", st.c_str());
+            }
+        }
 
         // Optional enhancer
         if (config.enable_enhancer) {

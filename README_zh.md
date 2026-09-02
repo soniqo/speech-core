@@ -47,6 +47,7 @@ speech-core 将小巧、与模型无关的编排层和可选推理后端分离�
 | 模型 | 任务 | ONNX | LiteRT |
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/zh/guides/vad) | 语音活动检测 | ✓ | ✓ |
+| [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | 话轮结束检测 | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/zh/guides/parakeet) | 语音转文字 | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/zh/guides/whisper) | 多语言语音转文字 | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | 语音转文字 + 翻译（en/de/es/fr） | ✓ | — |
@@ -149,6 +150,7 @@ sudo apt install "./speech_${VERSION}_${ARCH}.deb"
 
 speech download-models
 speech transcribe recording.wav
+speech turn recording.wav
 speech speak "Hello world" hello.wav
 speech phonemize "Bonjour le monde" fr
 speech serve

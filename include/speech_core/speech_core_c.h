@@ -86,6 +86,8 @@ typedef struct {
     float post_playback_guard;
     bool eager_stt;
     float eager_stt_delay;
+    float turn_completion_threshold;   // End-of-turn classifier threshold (default 0.5)
+    float turn_completion_max_silence; // Seconds of silence that end a vetoed turn anyway (default 2.0)
     bool warmup_stt;
     int max_history_messages;     // Max conversation messages (default 50, 0 = unlimited)
     int max_history_tokens;       // Max conversation tokens (default 0 = disabled)
@@ -195,6 +197,18 @@ typedef struct {
     size_t (*chunk_size)(void* ctx);
 } sc_vad_vtable_t;
 
+/// End-of-turn classifier (e.g. Smart Turn). Returns the probability in
+/// [0, 1] that the user has finished their turn, given the audio of the turn
+/// so far (PCM Float32 at sample_rate). Implementations look at the most
+/// recent seconds (Smart Turn: 8 s). Called synchronously from
+/// sc_pipeline_push_audio when the VAD reports a pause, so it must return
+/// within a few tens of milliseconds.
+typedef struct {
+    void* context;
+    float (*turn_complete_probability)(void* ctx, const float* samples,
+                                       size_t length, int sample_rate);
+} sc_turn_completion_vtable_t;
+
 typedef struct {
     void* context;
     void (*chat)(void* ctx, const sc_message_t* messages, size_t count,
@@ -270,6 +284,14 @@ void sc_pipeline_set_enhancer(sc_pipeline_t pipeline,
 /// Must be called before sc_pipeline_start().
 void sc_pipeline_set_echo_canceller(sc_pipeline_t pipeline,
                                      sc_echo_canceller_vtable_t aec);
+
+/// Attach an optional end-of-turn classifier. When set, a VAD pause only ends
+/// the user's turn once the classifier's probability reaches
+/// sc_config_t.turn_completion_threshold; below it the pipeline keeps
+/// listening until the user speaks again or turn_completion_max_silence
+/// elapses. Must be called before sc_pipeline_start().
+void sc_pipeline_set_turn_completion(sc_pipeline_t pipeline,
+                                     sc_turn_completion_vtable_t model);
 
 /// Register a tool with platform callback handler.
 /// Must be called before sc_pipeline_start().

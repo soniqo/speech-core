@@ -69,7 +69,8 @@ $defaultFiles = @(
     "Kokoro-82M-ONNX/voices/am_michael.bin",
     "Kokoro-82M-ONNX/voices/bf_emma.bin",
     "Kokoro-82M-ONNX/voices/bm_george.bin",
-    "DeepFilterNet3-ONNX/deepfilter.onnx"
+    "DeepFilterNet3-ONNX/deepfilter.onnx",
+    "Smart-Turn-v3.2-ONNX/smart-turn-v3.2-int8.onnx"
 )
 
 $stenografFiles = @(

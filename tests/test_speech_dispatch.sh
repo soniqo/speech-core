@@ -9,7 +9,7 @@ cp "$dispatcher" "$tmp/speech"
 chmod +x "$tmp/speech"
 
 for tool in \
-    speech_transcribe speech_synthesize speech_phonemize speech-server \
+    speech_transcribe speech_synthesize speech_phonemize speech_smart_turn speech-server \
     speech_voxcpm2_clone speech_demo speech_download_models \
     speech_download_models_litert speech_download_voxcpm2
 do
@@ -47,6 +47,10 @@ fr' synthesize Bonjour hello.wav fr
 assert_output 'speech_phonemize
 bonjour
 fr' phonemize bonjour fr
+
+assert_output 'speech_smart_turn
+utterance.wav
+--json' turn utterance.wav --json
 
 assert_output 'speech-server
 --host

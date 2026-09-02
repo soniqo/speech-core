@@ -39,6 +39,7 @@ typedef struct {
     bool enable_enhancer;
     bool transcribe_only;
     float min_silence_duration;
+    bool enable_smart_turn;  /* end-of-turn classifier, needs smart-turn-v3.2*.onnx in model_dir */
 } speech_config_t;
 
 typedef void (*speech_event_fn)(const speech_event_t* event, void* context);

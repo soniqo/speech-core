@@ -47,6 +47,19 @@ struct AgentConfig {
     /// speech). 0 = fire on first silence frame (splits on every pause).
     float eager_stt_delay = 0.3f;
 
+    /// Threshold for an optional end-of-turn classifier (see
+    /// TurnDetector::set_turn_completion / TurnCompletionInterface). Once a
+    /// model is attached, a VAD pause only ends the user's turn when the
+    /// classifier's completion probability reaches this value. Below it the
+    /// detector keeps listening: the turn continues if the user speaks again,
+    /// and ends anyway after turn_completion_max_silence.
+    float turn_completion_threshold = 0.5f;
+
+    /// Seconds of continued silence after the classifier said "not finished"
+    /// before the turn ends regardless (protects against a user trailing off).
+    /// Measured from the start of the pause. 0 = never end on silence alone.
+    float turn_completion_max_silence = 2.0f;
+
     /// Run a dummy STT transcription at pipeline start to warm up the model.
     /// First inference on CoreML/Neural Engine is slow due to cold start;
     /// this brings subsequent latency from ~3s to <1s.

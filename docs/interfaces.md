@@ -11,6 +11,7 @@ This file is the C++ counterpart to speech-swift's [`docs/shared-protocols.md`](
 │  VoicePipeline ─┬─► STTInterface            │
 │                 ├─► TTSInterface            │
 │                 ├─► VADInterface            │
+│                 ├─► TurnCompletionInterface │
 │                 ├─► EnhancerInterface       │
 │                 ├─► EchoCancellerInterface  │
 │                 └─► LLMInterface (optional) │
@@ -135,6 +136,24 @@ Returns a speech probability in `[0, 1]` per chunk. The probability stream is co
 **Reference implementation:** `SileroVad` (Silero VAD v5 via ONNX Runtime, 512 samples @ 16 kHz).
 
 **Swift counterpart:** `StreamingVADProvider`.
+
+## TurnCompletionInterface — End-of-turn classification (utterance-level)
+
+```cpp
+class TurnCompletionInterface {
+public:
+    virtual ~TurnCompletionInterface() = default;
+
+    virtual float turn_complete_probability(
+        const float* samples, size_t length, int sample_rate) = 0;
+};
+```
+
+Returns the probability in `[0, 1]` that the user has finished their turn, given the audio of the turn so far. A VAD only hears silence; a turn-completion model listens to the whole utterance, so a mid-sentence pause keeps the agent waiting while a finished sentence gets an immediate reply. `TurnDetector` calls it synchronously from the audio path once per VAD pause (Smart Turn looks at the last 8 s), so implementations must return within a few tens of milliseconds. Optional: attach one with `VoicePipeline::set_turn_completion()`; the decision threshold and the silence cap live in `AgentConfig::turn_completion_threshold` / `turn_completion_max_silence`.
+
+**Reference implementation:** `OnnxSmartTurn` (Pipecat Smart Turn v3.2 via ONNX Runtime, last 8 s @ 16 kHz).
+
+**Swift counterpart:** `SmartTurnModel` (`TurnCompletionProvider`) in speech-swift, bridged through `sc_turn_completion_vtable_t`.
 
 ## EnhancerInterface — Speech enhancement / denoising
 

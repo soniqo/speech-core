@@ -54,6 +54,9 @@ FILES=(
     # DeepFilterNet3's libdf DSP tables are generated in-process, so the legacy
     # auxiliary binary is no longer a runtime dependency.
     "DeepFilterNet3-ONNX/deepfilter.onnx"
+    # Smart Turn v3.2 end-of-turn classifier (optional, ~10 MB); the fp32
+    # graph smart-turn-v3.2.onnx lives in the same repo if you prefer it.
+    "Smart-Turn-v3.2-ONNX/smart-turn-v3.2-int8.onnx"
 )
 
 for entry in "${FILES[@]}"; do

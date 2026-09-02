@@ -82,6 +82,8 @@ Key fields:
 - `post_playback_guard` — suppress VAD after playback (AEC settle)
 - `eager_stt` — start STT before silence confirms (saves latency)
 - `eager_stt_delay` — seconds in PendingSilence before eager fires (filters mid-sentence pauses)
+- `turn_completion_threshold` — end-of-turn classifier threshold (default 0.5; only used once `sc_pipeline_set_turn_completion()` attached one)
+- `turn_completion_max_silence` — seconds of silence after which a turn the classifier vetoed ends anyway (default 2.0, measured from the pause start, 0 = never)
 - `warmup_stt` — dummy STT at pipeline start (Neural Engine cold start)
 - `max_history_messages` — max conversation messages to retain (default 50, 0 = unlimited)
 - `max_history_tokens` — max conversation tokens (default 0 = disabled, requires `count_tokens` on LLM vtable)
@@ -218,6 +220,21 @@ sc_pipeline_set_echo_canceller(pipeline, aec);
 ```
 
 Processing chain: `mic → AEC → enhance → VAD → STT`. Implementations can use SpeexDSP, WebRTC AEC, or platform-native echo cancellation.
+
+### End-of-turn classifier
+
+`sc_pipeline_set_turn_completion()` attaches an optional end-of-turn classifier such as Smart Turn. Once attached, a VAD pause only ends the user's turn when the classifier's completion probability reaches `turn_completion_threshold`; below it the pipeline keeps listening until the user speaks again (same turn) or `turn_completion_max_silence` elapses. Eager STT respects the veto. The callback runs synchronously inside `sc_pipeline_push_audio()` once per pause, so it should return within a few tens of milliseconds (Smart Turn: 20–50 ms on a laptop CPU). Call it before `sc_pipeline_start()`; a NULL `turn_complete_probability` detaches the classifier.
+
+```c
+sc_turn_completion_vtable_t turn = {
+    .context = my_smart_turn,
+    // audio of the turn so far (PCM Float32 at sample_rate); return P(turn complete) in [0, 1]
+    .turn_complete_probability = my_turn_complete_probability_fn
+};
+sc_pipeline_set_turn_completion(pipeline, turn);
+```
+
+Hosts that run the classifier natively (CoreML on Apple platforms, ONNX Runtime elsewhere) bridge it through this vtable exactly like `sc_vad_vtable_t`; speech-core's own ONNX implementation is `OnnxSmartTurn` (see [models.md](models.md#onnxsmartturn)).
 
 ## Standalone TTS C APIs
 

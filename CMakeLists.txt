@@ -167,6 +167,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/sortformer/onnx_sortformer_diarizer.cpp
         src/models/redimnet/onnx_redimnet_speaker_embedding.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp
+        src/models/smartturn/onnx_smart_turn.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
     # avoid duplicate symbols when a downstream binary links both targets, we
@@ -257,6 +258,13 @@ if(SPEECH_CORE_WITH_ONNX)
         target_link_libraries(speech_sidon_restore PRIVATE speech_core_models)
         if(MSVC)
             target_compile_definitions(speech_sidon_restore PRIVATE _USE_MATH_DEFINES NOMINMAX)
+        endif()
+
+        # End-of-turn probability for one recorded utterance (Smart Turn v3.2).
+        add_executable(speech_smart_turn examples/onnx/smart_turn.cpp)
+        target_link_libraries(speech_smart_turn PRIVATE speech_core_models)
+        if(MSVC)
+            target_compile_definitions(speech_smart_turn PRIVATE _USE_MATH_DEFINES NOMINMAX)
         endif()
 
         # Diarization runtime gate: proves the C++ ONNX wrappers reproduce the
@@ -691,6 +699,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_onnx_localvqe_model"
            OR TEST_NAME STREQUAL "test_onnx_redimnet_model"
            OR TEST_NAME STREQUAL "test_onnx_sortformer_model"
+           OR TEST_NAME STREQUAL "test_onnx_smart_turn_model"
            OR TEST_NAME STREQUAL "test_redimnet_audio_preparation"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_openai_tts_server"
@@ -858,6 +867,16 @@ if(SPEECH_CORE_BUILD_TESTS)
             PRIVATE speech_core_models)
         add_test(NAME test_onnx_sortformer_model
                  COMMAND test_onnx_sortformer_model)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX AND
+       EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_onnx_smart_turn_model.cpp)
+        add_executable(test_onnx_smart_turn_model
+            tests/test_onnx_smart_turn_model.cpp)
+        target_link_libraries(test_onnx_smart_turn_model
+            PRIVATE speech_core_models)
+        add_test(NAME test_onnx_smart_turn_model
+                 COMMAND test_onnx_smart_turn_model)
     endif()
 
     if(SPEECH_CORE_WITH_ONNX AND
@@ -1194,7 +1213,7 @@ if(SPEECH_CORE_PACKAGE)
     # Collect whichever CLI targets this configuration actually built.
     set(_pkg_cli_targets "")
     foreach(_t speech_demo speech_transcribe speech_synthesize speech_phonemize
-               speech_server speech_voxcpm2_clone)
+               speech_smart_turn speech_server speech_voxcpm2_clone)
         if(TARGET ${_t})
             list(APPEND _pkg_cli_targets ${_t})
         endif()

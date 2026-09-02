@@ -5,8 +5,8 @@
 speech-core — voice agent pipeline engine in C++17. Provides:
 
 1. **Orchestration core** — state machine, turn detection, interruption handling, speech queue, conversation context, streaming VAD state machine, audio utilities. Zero ML dependencies, pure C++17.
-2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface` (with `SegmentationWindow` / `DiarizedSegment` / `DiarizerConfig` types) in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, speech-cloud, …) implement these with their own model backends.
-3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
+2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `TurnCompletionInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface` (with `SegmentationWindow` / `DiarizedSegment` / `DiarizerConfig` types) in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, speech-cloud, …) implement these with their own model backends.
+3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer`, `OnnxSmartTurn` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
 4. **Optional LiteRT reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt`, `LiteRTKokoroTts`, `LiteRTVoxCPM2Tts`, `LiteRTChatterboxTts`, `LiteRTWeSpeakerEmbedding`, `LiteRTPyannoteSegmentation`, `LiteRTOmnilingualStt`, `LiteRTNemotronStreamingStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Backed by `libLiteRt` from Google's `ai-edge-litert` package (extracted from the PyPI wheel by `scripts/fetch_litert.sh`). DeepFilter LiteRT does not exist yet. `LiteRTKokoroTts` ships the validated three-stage 60-frame FP32 bundle, enforces a 56-frame right-context guard, and is enabled on Windows and Android where the validated runtimes export the required TensorFlow Lite interpreter C API. `LiteRTChatterboxTts` (multilingual TTS, `soniqo/Chatterbox-LiteRT`, C ABI in `chatterbox_c.h`) defaults to greedy decoding; ship the fp16 T3 bundle for Arabic (int8 is English-quality only).
 5. **Diarization** — `DiarizationPipeline` (`DiarizerInterface`) in `include/speech_core/diarization/`. Pure C++17, no ML-runtime dependency, built into the **core** library; composes a `SegmentationInterface` + `EmbeddingInterface` with constrained agglomerative clustering.
 
@@ -83,7 +83,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 | `include/speech_core/tts_synthesis_options.h` | Generic C++ TTS streaming/buffered delivery mode and offline post-process flag contract |
 | `include/speech_core/voxcpm2_c.h` | Standalone VoxCPM2 LiteRT C ABI, including synthesis delivery options and post-process flags |
 | `include/speech_core/models/voxcpm2_synthesis_options.h` | VoxCPM2 compatibility aliases for the generic TTS synthesis options |
-| `include/speech_core/interfaces.h` | Abstract STT / TTS / VAD / Enhancer / AEC / LLM + Segmentation / Embedding / Diarizer interfaces |
+| `include/speech_core/interfaces.h` | Abstract STT / TTS / VAD / Turn completion / Enhancer / AEC / LLM + Segmentation / Embedding / Diarizer interfaces |
 | `include/speech_core/pipeline/voice_pipeline.h` | Main orchestrator |
 | `include/speech_core/pipeline/turn_detector.h` | VAD-driven turn boundaries + interruption logic |
 | `include/speech_core/pipeline/speech_queue.h` | Priority queue with cancel/resume |
@@ -93,6 +93,7 @@ target_link_libraries(my_app PRIVATE speech_core speech_core_models_litert) # + 
 | `include/speech_core/models/parakeet_stt.h` | Parakeet TDT v3 (ORT) — implements `STTInterface` |
 | `include/speech_core/models/kokoro_tts.h` | Kokoro 82M (ORT) — implements `TTSInterface` |
 | `include/speech_core/models/deepfilter.h` | DeepFilterNet3 (ORT) — implements `EnhancerInterface` |
+| `include/speech_core/models/onnx_smart_turn.h` | Smart Turn v3.2 (ORT) — implements `TurnCompletionInterface` |
 | `include/speech_core/models/onnx_engine.h` | ORT singleton with NNAPI/QNN/CPU EP selection |
 | `include/speech_core/models/litert_silero_vad.h` | Silero VAD v5 (LiteRT) — implements `VADInterface` |
 | `include/speech_core/models/litert_parakeet_stt.h` | Parakeet TDT v3 (LiteRT, INT8 encoder) — implements `STTInterface` |
