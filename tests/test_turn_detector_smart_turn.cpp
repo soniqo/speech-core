@@ -22,9 +22,11 @@
 #include "speech_core/pipeline/agent_config.h"
 #include "speech_core/pipeline/turn_detector.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 using namespace speech_core;
