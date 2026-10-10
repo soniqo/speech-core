@@ -209,13 +209,15 @@ void analyze(const float* audio, size_t length,
     }
 }
 
-void compute_features(const std::vector<float>& spec_real,
+static void compute_features_with_state(const std::vector<float>& spec_real,
                       const std::vector<float>& spec_imag,
                       int num_frames,
                       const Config& cfg,
                       const std::vector<int>& erb_widths,
                       std::vector<float>& feat_erb,
-                      std::vector<float>& feat_spec) {
+                      std::vector<float>& feat_spec,
+                      std::vector<float>& mean_state,
+                      std::vector<float>& unit_state) {
     validate_config(cfg);
     validate_widths(erb_widths, cfg);
     if (num_frames < 0 ||
@@ -226,8 +228,6 @@ void compute_features(const std::vector<float>& spec_real,
 
     feat_erb.assign(static_cast<size_t>(num_frames) * cfg.erb_bands, 0.0f);
     feat_spec.assign(static_cast<size_t>(2) * num_frames * cfg.df_bins, 0.0f);
-    std::vector<float> mean_state = make_mean_norm_state(cfg.erb_bands);
-    std::vector<float> unit_state = make_unit_norm_state(cfg.df_bins);
     const float alpha = normalization_alpha(cfg);
     const float one_minus_alpha = 1.0f - alpha;
     const size_t spec_channel_stride = static_cast<size_t>(num_frames) * cfg.df_bins;
@@ -263,6 +263,19 @@ void compute_features(const std::vector<float>& spec_real,
             feat_spec[spec_channel_stride + feature_base + static_cast<size_t>(f)] = im / divisor;
         }
     }
+}
+
+void compute_features(const std::vector<float>& spec_real,
+                      const std::vector<float>& spec_imag,
+                      int num_frames, const Config& cfg,
+                      const std::vector<int>& erb_widths,
+                      std::vector<float>& feat_erb,
+                      std::vector<float>& feat_spec) {
+    auto mean_state = make_mean_norm_state(cfg.erb_bands);
+    auto unit_state = make_unit_norm_state(cfg.df_bins);
+    compute_features_with_state(spec_real, spec_imag, num_frames, cfg,
+                                erb_widths, feat_erb, feat_spec,
+                                mean_state, unit_state);
 }
 
 void apply_network_output(const std::vector<float>& spec_real,
@@ -397,6 +410,98 @@ void synthesize(const std::vector<float>& spec_real,
             memory[shift_remainder + static_cast<size_t>(i)] =
                 second_half[shift_remainder + static_cast<size_t>(i)];
         }
+    }
+}
+
+struct StreamingDSP::Impl {
+    explicit Impl(const Config& config)
+        : cfg(config), widths(make_erb_widths(cfg)),
+          window(make_vorbis_window(cfg.fft_size)),
+          forward(cfg.fft_size, false), inverse(cfg.fft_size, true),
+          analysis_memory(static_cast<size_t>(cfg.fft_size - cfg.hop_size)),
+          synthesis_memory(analysis_memory.size()),
+          time(static_cast<size_t>(cfg.fft_size)),
+          spectrum(static_cast<size_t>(cfg.freq_bins)) {
+        reset();
+    }
+
+    void reset() {
+        std::fill(analysis_memory.begin(), analysis_memory.end(), 0.0f);
+        std::fill(synthesis_memory.begin(), synthesis_memory.end(), 0.0f);
+        mean_state = make_mean_norm_state(cfg.erb_bands);
+        unit_state = make_unit_norm_state(cfg.df_bins);
+    }
+
+    Config cfg;
+    std::vector<int> widths;
+    std::vector<float> window;
+    KissRealPlan forward;
+    KissRealPlan inverse;
+    std::vector<float> analysis_memory;
+    std::vector<float> synthesis_memory;
+    std::vector<float> mean_state;
+    std::vector<float> unit_state;
+    std::vector<kiss_fft_scalar> time;
+    std::vector<kiss_fft_cpx> spectrum;
+};
+
+StreamingDSP::StreamingDSP(const Config& cfg) : impl_(std::make_unique<Impl>(cfg)) {}
+StreamingDSP::~StreamingDSP() = default;
+void StreamingDSP::reset() { impl_->reset(); }
+
+void StreamingDSP::analyze_hop(const float* audio,
+                             std::vector<float>& spec_real,
+                             std::vector<float>& spec_imag,
+                             std::vector<float>& feat_erb,
+                             std::vector<float>& feat_spec) {
+    if (!audio) throw std::invalid_argument("DeepFilterNet3: null input hop");
+    auto& s = *impl_;
+    const size_t history = s.analysis_memory.size();
+    for (size_t i = 0; i < history; ++i) s.time[i] = s.analysis_memory[i] * s.window[i];
+    for (int i = 0; i < s.cfg.hop_size; ++i) {
+        s.time[history + static_cast<size_t>(i)] = audio[i] * s.window[history + static_cast<size_t>(i)];
+    }
+    std::rotate(s.analysis_memory.begin(), s.analysis_memory.begin() + s.cfg.hop_size,
+                s.analysis_memory.end());
+    std::copy_n(audio, s.cfg.hop_size, s.analysis_memory.end() - s.cfg.hop_size);
+    kiss_fftr(s.forward.get(), s.time.data(), s.spectrum.data());
+    const float scale = (2.0f * static_cast<float>(s.cfg.hop_size)) /
+                        (static_cast<float>(s.cfg.fft_size) * s.cfg.fft_size);
+    spec_real.resize(static_cast<size_t>(s.cfg.freq_bins));
+    spec_imag.resize(spec_real.size());
+    for (int f = 0; f < s.cfg.freq_bins; ++f) {
+        spec_real[static_cast<size_t>(f)] = s.spectrum[static_cast<size_t>(f)].r * scale;
+        spec_imag[static_cast<size_t>(f)] = s.spectrum[static_cast<size_t>(f)].i * scale;
+    }
+    compute_features_with_state(spec_real, spec_imag, 1, s.cfg, s.widths,
+                                feat_erb, feat_spec, s.mean_state, s.unit_state);
+}
+
+void StreamingDSP::synthesize_hop(const std::vector<float>& spec_real,
+                                const std::vector<float>& spec_imag, float* output) {
+    auto& s = *impl_;
+    if (!output || spec_real.size() != static_cast<size_t>(s.cfg.freq_bins) ||
+        spec_imag.size() != spec_real.size()) {
+        throw std::invalid_argument("DeepFilterNet3: invalid synthesis hop");
+    }
+    for (int f = 0; f < s.cfg.freq_bins; ++f) {
+        s.spectrum[static_cast<size_t>(f)].r = spec_real[static_cast<size_t>(f)];
+        s.spectrum[static_cast<size_t>(f)].i = spec_imag[static_cast<size_t>(f)];
+    }
+    kiss_fftri(s.inverse.get(), s.spectrum.data(), s.time.data());
+    for (int i = 0; i < s.cfg.fft_size; ++i) s.time[static_cast<size_t>(i)] *= s.window[static_cast<size_t>(i)];
+    for (int i = 0; i < s.cfg.hop_size; ++i) {
+        output[i] = s.time[static_cast<size_t>(i)] + s.synthesis_memory[static_cast<size_t>(i)];
+    }
+    const size_t remainder = s.synthesis_memory.size() - static_cast<size_t>(s.cfg.hop_size);
+    if (remainder > 0) {
+        std::rotate(s.synthesis_memory.begin(), s.synthesis_memory.begin() + s.cfg.hop_size,
+                    s.synthesis_memory.end());
+    }
+    for (size_t i = 0; i < remainder; ++i) s.synthesis_memory[i] += s.time[static_cast<size_t>(s.cfg.hop_size) + i];
+    for (int i = 0; i < s.cfg.hop_size; ++i) {
+        s.synthesis_memory[remainder + static_cast<size_t>(i)] =
+            s.time[static_cast<size_t>(s.cfg.hop_size) + remainder + static_cast<size_t>(i)];
     }
 }
 

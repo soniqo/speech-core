@@ -157,10 +157,25 @@ jobs:
           "$dispatcher" serve --help | grep -q /v1/audio/speech
           "$dispatcher" serve --help | grep -q /v1/audio/transcriptions
 
+      - name: Fetch DeepFilterNet3 regression model
+        run: |
+          mkdir -p build/deepfilter-model
+          curl -fL --retry 3 -o build/deepfilter-model/deepfilter.onnx \
+            "https://huggingface.co/soniqo/DeepFilterNet3-ONNX/resolve/63d8ba442ba900143c468b798e94a04009b2f0c9/deepfilter.onnx"
+          echo "e1157049059434ae0d5857e32c812abea227b975e946b2eb64d001abbce156d3  build/deepfilter-model/deepfilter.onnx" \
+            | sha256sum -c -
+
       - name: Test
-        # Integration tests (test_models, speech_linux_pipeline) skip
-        # cleanly when SPEECH_MODEL_DIR isn't set; everything else runs.
-        run: ctest --test-dir build --output-on-failure
+        # The 8.2 MiB DeepFilter model exercises real streaming/offline parity
+        # on every PR. Other model integrations skip when their bundles are absent.
+        env:
+          DEEPFILTER_TEST_MODEL_DIR: ${{ github.workspace }}/build/deepfilter-model
+        run: |
+          # The pipeline example interprets SPEECH_MODEL_DIR as a full bundle.
+          # Scope the small reference bundle to the direct model executable.
+          SPEECH_MODEL_DIR="$DEEPFILTER_TEST_MODEL_DIR" \
+            ctest --test-dir build --output-on-failure -R '^test_models$'
+          ctest --test-dir build --output-on-failure -E '^test_models$'
 
   # Windows ONNX distribution lane — builds the same CLI/server/package shape
   # released from tags. This catches MSVC, DLL-export, CPack, and archive-layout
@@ -213,11 +228,27 @@ jobs:
         shell: bash
         run: cmake --build build-windows --parallel --config Release
 
-      - name: Test
+      - name: Fetch DeepFilterNet3 regression model
         shell: bash
         run: |
+          mkdir -p build-windows/deepfilter-model
+          curl -fL --retry 3 -o build-windows/deepfilter-model/deepfilter.onnx \
+            "https://huggingface.co/soniqo/DeepFilterNet3-ONNX/resolve/63d8ba442ba900143c468b798e94a04009b2f0c9/deepfilter.onnx"
+          echo "e1157049059434ae0d5857e32c812abea227b975e946b2eb64d001abbce156d3  build-windows/deepfilter-model/deepfilter.onnx" \
+            | sha256sum -c -
+
+      - name: Test
+        shell: bash
+        env:
+          DEEPFILTER_TEST_MODEL_DIR: ${{ github.workspace }}/build-windows/deepfilter-model
+        run: |
+          # Application-directory DLLs take priority over older system DLLs;
+          # PATH alone cannot guarantee the runtime selected at configure time.
+          cp ort-windows/lib/onnxruntime*.dll build-windows/Release/
           export PATH="$PWD/ort-windows/lib:$PATH"
-          ctest --test-dir build-windows --output-on-failure -C Release
+          SPEECH_MODEL_DIR="$DEEPFILTER_TEST_MODEL_DIR" \
+            ctest --test-dir build-windows --output-on-failure -C Release -R '^test_models$'
+          ctest --test-dir build-windows --output-on-failure -C Release -E '^test_models$'
 
       - name: Package and verify
         shell: pwsh

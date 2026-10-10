@@ -23,6 +23,15 @@ audio → [AEC] → [enhance] → VAD → STT → [tools?] → LLM → TTS → a
 5. Final LLM response is sent to `TTSInterface.synthesize()` for audio output
 6. Pipeline emits audio chunks as `ResponseAudioDelta` events
 
+Microphone PCM enters at the VAD sample rate. Enhancement uses
+`EnhancerInterface::enhance_stream()` and persistent resamplers when the enhancer
+requires another rate; for example, 16 kHz capture is converted to 48 kHz for
+DeepFilterNet3 and back before VAD. Enhancement latency delays the input observed
+by turn detection. Partial enhanced VAD frames are retained across capture
+packets. `start()` and `cancel_current_turn()` reset enhancement and
+resampler history. `stop()` discards pending capture rather than flushing its tail
+into a new turn. Use the model's direct flush API when saving a complete recording.
+
 ### Echo
 
 Testing mode — skips the LLM and speaks back the transcribed text:

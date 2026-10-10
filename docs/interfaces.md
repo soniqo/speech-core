@@ -166,10 +166,25 @@ public:
         const float* audio, size_t length, int sample_rate,
         float* output) = 0;
     virtual int input_sample_rate() const = 0;
+    virtual void enhance_stream(
+        const float* audio, size_t length, int sample_rate, float* output) {
+        enhance(audio, length, sample_rate, output);
+    }
+    virtual void reset() {}
 };
 ```
 
 Pre-allocated output buffer. Caller is responsible for sample-rate matching.
+`enhance()` processes a complete buffer. `enhance_stream()` processes consecutive
+capture packets, retaining history where the backend supports it, and may add
+latency. Both write exactly `length` samples. The default streaming method calls
+`enhance()` so existing implementations continue to compile and behave as before.
+Call `reset()` at capture boundaries; serialize it with enhancement calls.
+
+`VoicePipeline` uses `enhance_stream()` and resets it on `start()` and
+`cancel_current_turn()`. When the enhancer and VAD require different rates, the
+pipeline uses persistent resamplers before and after enhancement. The C enhancer
+vtable is unchanged: its existing callback is used by the default streaming method.
 
 **Reference implementation:** `DeepFilterEnhancer` (DeepFilterNet3 via ONNX Runtime, 48 kHz).
 

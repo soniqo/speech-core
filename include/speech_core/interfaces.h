@@ -318,6 +318,18 @@ public:
         float* output) = 0;
 
     virtual int input_sample_rate() const = 0;
+
+    /// Process consecutive packets at input_sample_rate(), retaining stream
+    /// history. Writes length samples; implementations may introduce latency.
+    /// The default preserves the behavior of existing enhancer implementations.
+    virtual void enhance_stream(const float* audio, size_t length, int sample_rate,
+                                float* output) {
+        enhance(audio, length, sample_rate, output);
+    }
+
+    /// Discard capture history after a stream boundary or discontinuity.
+    /// Serialized with enhance_stream(); not a concurrent cancellation hook.
+    virtual void reset() {}
 };
 
 // ---------------------------------------------------------------------------

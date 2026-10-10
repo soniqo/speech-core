@@ -2,6 +2,7 @@
 #include "speech_core/pipeline/turn_detector.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -2896,6 +2897,78 @@ void test_speech_enhancement() {
     printf("  PASS: speech_enhancement\n");
 }
 
+void test_streaming_enhancement_resampling_and_reset() {
+    class RecordingVAD : public MockVAD {
+    public:
+        std::vector<float> captured;
+        float process_chunk(const float* audio, size_t length) override {
+            captured.insert(captured.end(), audio, audio + length);
+            return 0.0f;
+        }
+        void reset() override { MockVAD::reset(); captured.clear(); }
+    };
+    class NativeEnhancer : public EnhancerInterface {
+    public:
+        uint64_t native_samples = 0;
+        int resets = 0;
+        float previous = 0.0f;
+        void enhance(const float*, size_t, int, float*) override {
+            throw std::runtime_error("Pipeline must use the streaming enhancer API");
+        }
+        void enhance_stream(const float* audio, size_t length, int rate, float* output) override {
+            REGRESSION_REQUIRE(rate == 48000);
+            native_samples += length;
+            for (size_t i = 0; i < length; ++i) {
+                output[i] = 0.4f * previous + 0.6f * audio[i];
+                previous = audio[i];
+            }
+        }
+        int input_sample_rate() const override { return 48000; }
+        void reset() override { native_samples = 0; previous = 0.0f; ++resets; }
+    };
+    std::vector<float> input(16013);
+    for (size_t i = 0; i < input.size(); ++i) input[i] = 0.2f * std::sin(2.0f * 3.14159265f * 437.0f * i / 16000.0f);
+    auto run = [&](const std::vector<size_t>& chunks) {
+        MockSTT stt;
+        MockTTS tts;
+        RecordingVAD vad;
+        NativeEnhancer enhancer;
+        auto config = test_config();
+        config.mode = AgentConfig::Mode::Echo;
+        config.warmup_stt = false;
+        VoicePipeline pipeline(stt, tts, nullptr, vad, config, [](const PipelineEvent&) {}, &enhancer);
+        pipeline.start();
+        REGRESSION_REQUIRE(enhancer.resets == 1);
+        size_t offset = 0, packet = 0;
+        while (offset < input.size()) {
+            const size_t count = std::min(chunks[packet++ % chunks.size()], input.size() - offset);
+            pipeline.push_audio(input.data() + offset, count);
+            offset += count;
+        }
+        REGRESSION_REQUIRE(enhancer.native_samples > 47000 && enhancer.native_samples < 3 * input.size());
+        REGRESSION_REQUIRE(vad.captured.size() > 15000);
+        const auto captured = vad.captured;
+        pipeline.cancel_current_turn();
+        REGRESSION_REQUIRE(enhancer.resets == 2);
+        const std::vector<float> silence(2048);
+        pipeline.push_audio(silence.data(), silence.size());
+        REGRESSION_REQUIRE(!vad.captured.empty());
+        for (float value : vad.captured) REGRESSION_REQUIRE(value == 0.0f);
+        pipeline.stop();
+        pipeline.start();
+        REGRESSION_REQUIRE(enhancer.resets == 3);
+        pipeline.push_audio(silence.data(), silence.size());
+        for (float value : vad.captured) REGRESSION_REQUIRE(value == 0.0f);
+        pipeline.stop();
+        return captured;
+    };
+    const auto whole = run({input.size()});
+    const auto packets = run({1, 161, 512, 7, 1001});
+    REGRESSION_REQUIRE(whole.size() == packets.size());
+    for (size_t i = 0; i < whole.size(); ++i) REGRESSION_REQUIRE(std::fabs(whole[i] - packets[i]) < 1e-6f);
+    std::printf("  PASS: streaming_enhancement_resampling_and_reset\n");
+}
+
 // ---------------------------------------------------------------------------
 // Echo cancellation test
 // ---------------------------------------------------------------------------
@@ -3958,6 +4031,7 @@ int main() {
     test_history_token_limit();
     test_history_mask_tool_results();
     test_speech_enhancement();
+    test_streaming_enhancement_resampling_and_reset();
     test_echo_cancellation();
     test_echo_cancellation_with_enhancer();
     test_echo_cancellation_no_reference_transcribe_only();

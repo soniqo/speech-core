@@ -2,3 +2,6 @@
 # the .deb's installed speech_download_models*) even when the repo is checked
 # out on Windows with core.autocrlf=true.
 *.sh text eol=lf
+
+# Generated ONNX graph structure; review the generator and native integration.
+src/models/deepfilter/deepfilter_streaming_graph.inc linguist-generated=true

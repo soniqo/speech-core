@@ -2,6 +2,7 @@
 #include "speech_core/audio/pcm_codec.h"
 
 #include <chrono>
+#include <algorithm>
 #include <stdexcept>
 
 namespace speech_core {
@@ -18,6 +19,8 @@ VoicePipeline::VoicePipeline(
       tts_(tts),
       llm_(llm),
       enhancer_(enhancer),
+      input_sample_rate_(vad.input_sample_rate()),
+      vad_chunk_size_(vad.chunk_size()),
       config_(config),
       on_event_(std::move(on_event)),
       turn_detector_(vad, config,
@@ -62,6 +65,7 @@ void VoicePipeline::start() {
         worker_busy_.store(false);
         turn_detector_.reset_for_new_stream();
         speech_queue_.cancel_all();
+        reset_enhancer_stream();
         running_.store(true);
         state_.store(State::Idle);
         if (echo_canceller_) echo_canceller_->reset();
@@ -135,6 +139,7 @@ void VoicePipeline::cancel_current_turn() {
         turn_detector_.reset_for_new_stream();
         speech_queue_.cancel_all();
         state_.store(State::Idle);
+        reset_enhancer_stream();
         if (echo_canceller_) echo_canceller_->reset();
     }
 
@@ -180,15 +185,68 @@ void VoicePipeline::push_audio(const float* samples, size_t count) {
         audio = aec_buf_.data();
     }
 
-    // Speech enhancement (if set) — denoising after AEC
+    // Speech enhancement (if set) — denoising after AEC. Capture is always at
+    // the VAD rate; retain FIR history when the enhancer requires another rate.
     if (enhancer_ && count > 0) {
+        if (enhancer_input_resampler_) {
+            auto native = enhancer_input_resampler_->process(audio, count);
+            enhance_buf_.resize(native.size());
+            if (!native.empty()) {
+                enhancer_->enhance_stream(native.data(), native.size(), enhancer_->input_sample_rate(),
+                                          enhance_buf_.data());
+            }
+            auto clean = enhancer_output_resampler_->process(enhance_buf_.data(), enhance_buf_.size());
+            push_enhanced_audio(clean.data(), clean.size());
+            return;
+        }
         enhance_buf_.resize(count);
-        enhancer_->enhance(audio, count, enhancer_->input_sample_rate(),
-                           enhance_buf_.data());
-        audio = enhance_buf_.data();
+        enhancer_->enhance_stream(audio, count, input_sample_rate_, enhance_buf_.data());
+        push_enhanced_audio(enhance_buf_.data(), enhance_buf_.size());
+        return;
     }
 
     turn_detector_.push_audio(audio, count);
+}
+
+void VoicePipeline::reset_enhancer_stream() {
+    enhancer_input_resampler_.reset();
+    enhancer_output_resampler_.reset();
+    enhance_buf_.clear();
+    enhanced_pending_count_ = 0;
+    enhanced_pending_.clear();
+    if (!enhancer_) return;
+    if (vad_chunk_size_ == 0) throw std::invalid_argument("VAD chunk size must be positive");
+    enhanced_pending_.resize(vad_chunk_size_);
+    enhancer_->reset();
+    const int native_rate = enhancer_->input_sample_rate();
+    if (native_rate != input_sample_rate_) {
+        enhancer_input_resampler_ = std::make_unique<StreamingResampler>(input_sample_rate_, native_rate);
+        enhancer_output_resampler_ = std::make_unique<StreamingResampler>(native_rate, input_sample_rate_);
+    }
+}
+
+void VoicePipeline::push_enhanced_audio(const float* samples, size_t count) {
+    // TurnDetector consumes complete VAD frames. Resampling and arbitrary mic
+    // packets can leave a partial frame; dropping it loses PCM at every call.
+    if (count == 0) return;
+    size_t offset = 0;
+    if (enhanced_pending_count_ > 0) {
+        const size_t copied = std::min(count, vad_chunk_size_ - enhanced_pending_count_);
+        std::copy_n(samples, copied, enhanced_pending_.data() + enhanced_pending_count_);
+        enhanced_pending_count_ += copied;
+        offset += copied;
+        if (enhanced_pending_count_ == vad_chunk_size_) {
+            enhanced_pending_count_ = 0;
+            turn_detector_.push_audio(enhanced_pending_.data(), vad_chunk_size_);
+        } else {
+            return;
+        }
+    }
+    const size_t complete = (count - offset) / vad_chunk_size_ * vad_chunk_size_;
+    if (complete > 0) turn_detector_.push_audio(samples + offset, complete);
+    offset += complete;
+    enhanced_pending_count_ = count - offset;
+    std::copy_n(samples + offset, enhanced_pending_count_, enhanced_pending_.data());
 }
 
 void VoicePipeline::worker_loop() {

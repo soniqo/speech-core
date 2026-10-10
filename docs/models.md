@@ -1360,11 +1360,11 @@ std::vector<float> clean(audio.size());
 enh.enhance(audio.data(), audio.size(), 48000, clean.data());
 ```
 
-- DeepFilterNet3 — ~2.1M params, real-time speech enhancement
+- DeepFilterNet3 — ~2.1M params, offline and streaming speech enhancement
 - 48 kHz input (caller must resample if needed)
 - Native 960-point STFT (480-sample hop) with libdf analysis scaling, ERB and
   complex-feature normalization, neural mask + deep-filter coefficients, and
-  streaming overlap-add with 480-sample delay compensation
+  overlap-add with 480-sample delay compensation for complete-buffer calls
 - The canonical Vorbis window, disjoint ERB widths, and normalization states
   are generated in-process. The optional legacy `auxiliary_path` argument
   accepts `deepfilter-auxiliary.bin` and validates it for compatibility, but
@@ -1374,6 +1374,44 @@ enh.enhance(audio.data(), audio.size(), 48000, clean.data());
   `df_coefs [1,5,T,96,2]`; incompatible output shapes fail explicitly.
 - Distribution repository: [soniqo/DeepFilterNet3-ONNX](https://huggingface.co/soniqo/DeepFilterNet3-ONNX). The runtime needs `deepfilter.onnx`
   (~8.2 MiB, FP32); `deepfilter-auxiliary.bin` is legacy/optional.
+
+`enhance()` remains an independent, delay-compensated offline call. For microphone
+packets use `enhance_stream()`; it preserves STFT overlap, normalization, all five
+GRU states, three convolution caches, and the deep-filter spectrum history. Work
+and memory per frame remain bounded as capture continues. Do not submit each
+microphone packet to the offline method.
+
+```cpp
+enh.reset();  // new capture session
+// Repeat for each packet, including packets smaller than one 480-sample hop.
+std::vector<float> clean_packet(packet.size());
+enh.enhance_stream(packet.data(), packet.size(), 48000, clean_packet.data());
+// At end of recording, append this once to the emitted packets.
+auto tail = enh.flush_stream();
+```
+
+Streaming writes the same sample count as each submitted packet with a fixed
+1,920-sample (40 ms) delay. The initial delayed samples are zero. The delay covers
+the STFT, two-frame model lookahead, and one hop of buffering so arbitrary packet
+boundaries give the same result. For a saved recording, concatenate the packets
+and tail, then remove `stream_latency_samples()` samples from the beginning.
+The resulting length and waveform match a complete-buffer call within floating
+point tolerance. A second flush returns no samples; call `reset()` before further
+input. Offline calls do not affect an active stream. The class requires external
+serialization of calls.
+
+The streaming session uses CPU ONNX Runtime >= 1.18 and the published source model
+with SHA-256 `e1157049059434ae0d5857e32c812abea227b975e946b2eb64d001abbce156d3`.
+Its small graph template is compiled into the ONNX backend; initializers refer
+to validated byte ranges in the existing model file and are copied by ORT at
+session creation. No second model download or Python runtime is required. Other
+exports remain supported by `enhance()` but fail explicitly in streaming mode.
+`scripts/generate_deepfilter_streaming_graph.py` regenerates the template and
+checks neural output parity using `onnx`, `numpy`, and `onnxruntime`.
+
+This path preserves the existing Python-style offline model behavior. The upstream
+Rust runtime additionally selects stages using local-SNR thresholds and offers
+optional post-filter/attenuation controls; those policies are not enabled here.
 
 ## OnnxSidonRestorer
 

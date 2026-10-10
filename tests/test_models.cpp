@@ -32,6 +32,7 @@
 #include "speech_core/vad/streaming_vad.h"
 
 #include "voxcpm2_tokenizer_test_util.h"
+#include "wav_test_fixture.h"
 
 #include <algorithm>
 #include <cctype>
@@ -622,6 +623,152 @@ void test_deepfilter(const std::string& dir) {
     REQUIRE(peak < 2.0f);
 
     std::printf("ok (peak=%.4f)\n", peak);
+}
+
+void test_deepfilter_streaming(const std::string& dir) {
+    const std::string model = dir + "/deepfilter.onnx";
+    if (!file_exists(model)) {
+        std::printf("  [skip] deepfilter.onnx not in %s\n", dir.c_str());
+        return;
+    }
+    speech_core::DeepFilterEnhancer enh(model, {}, false);
+    REQUIRE(enh.stream_latency_samples() == 1920);
+    REQUIRE(enh.flush_stream().empty());
+    enh.enhance_stream(nullptr, 0, 48000, nullptr);
+    float sample = 0.1f;
+    bool bad_rate = false, bad_pointer = false;
+    try { enh.enhance_stream(&sample, 1, 16000, &sample); }
+    catch (const std::invalid_argument&) { bad_rate = true; }
+    try { enh.enhance_stream(nullptr, 1, 48000, &sample); }
+    catch (const std::invalid_argument&) { bad_pointer = true; }
+    REQUIRE(bad_rate && bad_pointer);
+
+    auto render = [&](const std::vector<float>& input, const std::vector<size_t>& chunks, bool in_place) {
+        enh.reset();
+        auto output = in_place ? input : std::vector<float>(input.size());
+        size_t offset = 0, packet = 0;
+        while (offset < input.size()) {
+            const size_t count = (std::min)(chunks[packet++ % chunks.size()], input.size() - offset);
+            enh.enhance_stream(in_place ? output.data() + offset : input.data() + offset,
+                               count, 48000, output.data() + offset);
+            offset += count;
+        }
+        auto tail = enh.flush_stream();
+        output.insert(output.end(), tail.begin(), tail.end());
+        return output;
+    };
+    auto max_error = [](const std::vector<float>& reference, const std::vector<float>& actual, size_t delay) {
+        if (actual.size() != reference.size() + delay) return 100.0f;
+        float error = 0;
+        for (size_t i = 0; i < reference.size(); ++i) error = (std::max)(error, std::fabs(reference[i] - actual[i + delay]));
+        return error;
+    };
+    const size_t delay = enh.stream_latency_samples();
+    float worst_error = 0;
+    for (size_t length : {size_t(1), size_t(479), size_t(480), size_t(481), size_t(960), size_t(1001), size_t(1217)}) {
+        std::vector<float> input(length);
+        for (size_t i = 0; i < length; ++i) input[i] = 0.2f * std::sin(2.0f * kPi * 437.0f * i / 48000.0f);
+        std::vector<float> offline(length);
+        enh.enhance(input.data(), length, 48000, offline.data());
+        const auto whole = render(input, {length}, false);
+        const auto packets = render(input, {1, 97, 512, 11}, true);
+        REQUIRE(whole == packets);
+        const float error = max_error(offline, packets, delay);
+        REQUIRE(error < 2e-5f);
+        worst_error = (std::max)(worst_error, error);
+        REQUIRE(std::all_of(packets.begin(), packets.begin() + delay, [](float v) { return v == 0.0f; }));
+        REQUIRE(enh.flush_stream().empty());
+        bool closed = false;
+        try { enh.enhance_stream(&sample, 1, 48000, &sample); }
+        catch (const std::logic_error&) { closed = true; }
+        REQUIRE(closed);
+    }
+
+    speech_core::WavData wav;
+    REQUIRE(speech_core::load_wav_mono_pcm16(test_audio_path(), &wav));
+    REQUIRE(wav.sample_rate > 0 && wav.samples.size() >= static_cast<size_t>(9 * wav.sample_rate));
+    auto noisy = speech_core::Resampler::resample(wav.samples.data() + 5 * wav.sample_rate,
+        static_cast<size_t>(4 * wav.sample_rate), wav.sample_rate, 48000);
+    // Deterministic background noise avoids a tone-only quality regression test.
+    uint32_t random = 147;
+    for (auto& value : noisy) {
+        random = random * UINT32_C(1664525) + UINT32_C(1013904223);
+        value += 0.04f * (static_cast<float>(random >> 8) / 16777216.0f - 0.5f);
+    }
+    std::vector<float> offline(noisy.size());
+    enh.enhance(noisy.data(), noisy.size(), 48000, offline.data());
+    const auto whole = render(noisy, {noisy.size()}, false);
+    for (const auto& chunks : std::vector<std::vector<size_t>>{{480}, {512}, {1536}, {4800}, {1, 511, 7, 1001}}) {
+        const auto packets = render(noisy, chunks, false);
+        REQUIRE(whole == packets);
+        const float error = max_error(offline, packets, delay);
+        REQUIRE(error < 2e-5f);
+        worst_error = (std::max)(worst_error, error);
+    }
+    // Offline calls must be independent and must not disturb an active stream.
+    enh.reset();
+    std::vector<float> interleaved(noisy.size()), independent(noisy.size());
+    const size_t first = 1001;
+    enh.enhance_stream(noisy.data(), first, 48000, interleaved.data());
+    bad_rate = false;
+    bad_pointer = false;
+    try { enh.enhance_stream(&sample, 1, 16000, &sample); }
+    catch (const std::invalid_argument&) { bad_rate = true; }
+    try { enh.enhance_stream(nullptr, 1, 48000, &sample); }
+    catch (const std::invalid_argument&) { bad_pointer = true; }
+    REQUIRE(bad_rate && bad_pointer);  // rejected calls must preserve history
+    enh.enhance(noisy.data(), noisy.size(), 48000, independent.data());
+    REQUIRE(independent == offline);
+    enh.enhance_stream(noisy.data() + first, noisy.size() - first, 48000, interleaved.data() + first);
+    const auto tail = enh.flush_stream();
+    interleaved.insert(interleaved.end(), tail.begin(), tail.end());
+    REQUIRE(interleaved == whole);
+
+    // Reset discards partially filled hops, delayed PCM, GRUs, and norm state.
+    enh.reset();
+    std::vector<float> discarded(1001);
+    enh.enhance_stream(noisy.data(), discarded.size(), 48000, discarded.data());
+    enh.reset();
+    std::vector<float> after_reset(noisy.size());
+    enh.enhance_stream(noisy.data(), noisy.size(), 48000, after_reset.data());
+    const auto reset_tail = enh.flush_stream();
+    after_reset.insert(after_reset.end(), reset_tail.begin(), reset_tail.end());
+    REQUIRE(after_reset == whole);
+
+    // The offline ORT loader accepts UTF-8 paths; the streaming loader must too.
+    wav_test::TemporaryDirectory temporary("deepfilter-stream");
+    const auto utf8_path = temporary.path / std::filesystem::u8path(u8"deepfilter-\u97f3\u58f0.onnx");
+    std::filesystem::copy_file(std::filesystem::u8path(model), utf8_path);
+    std::vector<float> short_offline(first);
+    enh.enhance(noisy.data(), first, 48000, short_offline.data());
+    {
+        speech_core::DeepFilterEnhancer utf8(utf8_path.u8string(), {}, false);
+        std::vector<float> output(first);
+        utf8.enhance_stream(noisy.data(), first, 48000, output.data());
+        const auto utf8_tail = utf8.flush_stream();
+        output.insert(output.end(), utf8_tail.begin(), utf8_tail.end());
+        REQUIRE(max_error(short_offline, output, delay) < 2e-5f);
+    }
+    // A harmless ModelProto doc_string changes the file layout. It remains a
+    // valid batch model but must not be used with the pinned external offsets.
+    {
+        std::ofstream annotated(utf8_path, std::ios::binary | std::ios::app);
+        annotated.put('\x32');  // ModelProto.doc_string, length-delimited
+        annotated.put('\x0b');
+        annotated.write("stream-test", 11);
+        REQUIRE(annotated.good());
+    }
+    speech_core::DeepFilterEnhancer variant(utf8_path.u8string(), {}, false);
+    std::vector<float> output(first);
+    variant.enhance(noisy.data(), first, 48000, output.data());
+    REQUIRE(output == short_offline);
+    bool unsupported = false;
+    try { variant.enhance_stream(noisy.data(), first, 48000, output.data()); }
+    catch (const std::runtime_error& error) {
+        unsupported = std::string(error.what()).find("published") != std::string::npos;
+    }
+    REQUIRE(unsupported);
+    std::printf("  test_deepfilter_streaming ... ok (offline max error=%.3g, packet invariance exact)\n", worst_error);
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1465,7 @@ int main() {
     RUN(test_kokoro_voice_selection);
     RUN(test_kokoro_short_turn_profile);
     RUN(test_deepfilter);
+    RUN(test_deepfilter_streaming);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_voxcpm2_tokenizer);

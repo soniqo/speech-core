@@ -189,6 +189,52 @@ void test_immutable_deep_filter_and_fusion() {
     std::printf("  PASS: immutable_deep_filter_and_fusion\n");
 }
 
+void test_persistent_frontend_matches_batch() {
+    const dsp::Config cfg;
+    const auto window = dsp::make_vorbis_window(cfg.fft_size);
+    const auto widths = dsp::make_erb_widths(cfg);
+    std::vector<float> audio(static_cast<size_t>(8 * cfg.hop_size));
+    for (size_t i = 0; i < audio.size(); ++i) {
+        audio[i] = static_cast<float>(0.2 * std::sin(2.0 * kPi * 437.0 * i / cfg.sample_rate) +
+                                      0.07 * std::cos(2.0 * kPi * 2107.0 * i / cfg.sample_rate));
+    }
+    std::vector<float> batch_real, batch_imag, batch_erb, batch_spec;
+    dsp::analyze(audio.data(), audio.size(), cfg, window, batch_real, batch_imag);
+    const int frames = dsp::frame_count(audio.size(), cfg);
+    dsp::compute_features(batch_real, batch_imag, frames, cfg, widths, batch_erb, batch_spec);
+    dsp::StreamingDSP stream(cfg);
+    std::vector<float> real, imag, erb, spec;
+    std::vector<float> zero(static_cast<size_t>(cfg.hop_size));
+    std::vector<float> raw(static_cast<size_t>(frames * cfg.hop_size));
+    for (int t = 0; t < frames; ++t) {
+        const float* input = t < 8 ? audio.data() + t * cfg.hop_size : zero.data();
+        stream.analyze_hop(input, real, imag, erb, spec);
+        for (int f = 0; f < cfg.freq_bins; ++f) {
+            assert(approx(real[static_cast<size_t>(f)], batch_real[static_cast<size_t>(t * cfg.freq_bins + f)], 2e-7));
+            assert(approx(imag[static_cast<size_t>(f)], batch_imag[static_cast<size_t>(t * cfg.freq_bins + f)], 2e-7));
+        }
+        for (int band = 0; band < cfg.erb_bands; ++band) {
+            assert(approx(erb[static_cast<size_t>(band)], batch_erb[static_cast<size_t>(t * cfg.erb_bands + band)], 2e-6));
+        }
+        for (int channel = 0; channel < 2; ++channel) {
+            for (int f = 0; f < cfg.df_bins; ++f) {
+                assert(approx(spec[static_cast<size_t>(channel * cfg.df_bins + f)],
+                              batch_spec[static_cast<size_t>((channel * frames + t) * cfg.df_bins + f)], 2e-6));
+            }
+        }
+        stream.synthesize_hop(real, imag, raw.data() + t * cfg.hop_size);
+    }
+    for (size_t i = 0; i < audio.size(); ++i) assert(approx(raw[i + cfg.hop_size], audio[i], 2e-5));
+
+    stream.reset();
+    stream.analyze_hop(audio.data(), real, imag, erb, spec);
+    for (int band = 0; band < cfg.erb_bands; ++band) assert(approx(erb[static_cast<size_t>(band)], batch_erb[static_cast<size_t>(band)], 2e-6));
+    stream.synthesize_hop(real, imag, zero.data());
+    // No stale overlap from the previous stream may appear after reset.
+    for (float value : zero) assert(std::fabs(value) < 2e-6f);
+    std::printf("  PASS: persistent_frontend_matches_batch\n");
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +244,7 @@ int main() {
     test_streaming_roundtrip_non_aligned();
     test_feature_normalization_and_layout();
     test_immutable_deep_filter_and_fusion();
+    test_persistent_frontend_matches_batch();
     std::printf("All DeepFilterNet3 DSP tests passed.\n");
     return 0;
 }
