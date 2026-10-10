@@ -43,6 +43,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -773,6 +774,155 @@ void test_deepfilter_streaming(const std::string& dir) {
 
 // ---------------------------------------------------------------------------
 
+void test_deepfilter_rust_streaming(const std::string& dir) {
+    const auto model_directory = std::filesystem::u8path(dir) / "deepfilter-rust";
+    if (!std::filesystem::exists(model_directory / "enc.onnx")) {
+        std::printf("  [skip] official Rust bundle not in %s/deepfilter-rust\n", dir.c_str());
+        return;
+    }
+    const auto fixture_directory = std::filesystem::u8path(test_audio_path()).parent_path() / "deepfilter_rust";
+    auto read_pcm = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) throw std::runtime_error("Missing Rust PCM fixture: " + path.u8string());
+        const std::streamoff bytes = file.tellg();
+        if (bytes <= 0 || bytes % 4 != 0) throw std::runtime_error("Invalid Rust PCM fixture size");
+        std::vector<unsigned char> data(static_cast<size_t>(bytes));
+        file.seekg(0);
+        file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        if (!file.good()) throw std::runtime_error("Truncated Rust PCM fixture");
+        std::vector<float> pcm(data.size() / 4);
+        for (size_t i = 0; i < pcm.size(); ++i) {
+            const uint32_t bits = static_cast<uint32_t>(data[4*i]) | (static_cast<uint32_t>(data[4*i+1]) << 8) |
+                                  (static_cast<uint32_t>(data[4*i+2]) << 16) | (static_cast<uint32_t>(data[4*i+3]) << 24);
+            std::memcpy(&pcm[i], &bits, 4);
+            if (!std::isfinite(pcm[i])) throw std::runtime_error("Non-finite Rust PCM fixture");
+        }
+        return pcm;
+    };
+    const auto input = read_pcm(fixture_directory / "input.f32");
+    REQUIRE(input.size() == 50477);
+    speech_core::DeepFilterEnhancer enh(dir + "/deepfilter.onnx", {}, false);
+    auto render_pcm = [&](const std::vector<float>& source, const std::vector<size_t>& packets, bool in_place) {
+        enh.reset();
+        auto output = in_place ? source : std::vector<float>(source.size());
+        size_t offset = 0, packet = 0;
+        while (offset < source.size()) {
+            const size_t count = (std::min)(packets[packet++ % packets.size()], source.size() - offset);
+            enh.enhance_stream(in_place ? output.data() + offset : source.data() + offset,
+                               count, 48000, output.data() + offset);
+            offset += count;
+        }
+        const auto tail = enh.flush_stream();
+        if (tail.size() != enh.stream_latency_samples()) throw std::runtime_error("Incorrect Rust tail length");
+        output.insert(output.end(), tail.begin(), tail.end());
+        return output;
+    };
+    auto render = [&](const std::vector<size_t>& packets, bool in_place) {
+        return render_pcm(input, packets, in_place);
+    };
+    std::vector<float> offline(input.size());
+    enh.enhance(input.data(), input.size(), 48000, offline.data());
+    const auto compatible = render({512}, false);
+    struct Case { const char* name; speech_core::DeepFilterRustStreamingOptions options; };
+    const Case cases[] = {
+        {"default", {}}, {"cli", {-15,35,35,0,100}}, {"post_filter", {-10,30,20,0.02f,100}},
+        {"limited", {-10,30,20,0.02f,12}}, {"passthrough", {-10,30,20,0,0}},
+        {"erb_only", {-100,100,-100,0,100}}, {"clean", {-100,-100,-100,0.02f,100}},
+        {"zero_mask", {100,100,100,0.02f,100}},
+    };
+    float worst = 0.0f;
+    std::vector<float> limited;
+    for (const auto& test : cases) {
+        enh.enable_rust_streaming(model_directory.u8string(), test.options);
+        REQUIRE(enh.stream_latency_samples() == (std::fabs(test.options.attenuation_limit_db) < 0.01f ? 480 : 1920));
+        REQUIRE(enh.flush_stream().empty());
+        const auto expected = read_pcm(fixture_directory / (std::string(test.name) + ".f32"));
+        const auto whole = render({input.size()}, false);
+        if (std::string(test.name) == "limited") limited = whole;
+        const auto packets = render({1,161,480,512,7,1001}, true);
+        REQUIRE(whole == packets);
+        REQUIRE(whole.size() == expected.size());
+        float error = 0.0f;
+        for (size_t i = 0; i < whole.size(); ++i) {
+            REQUIRE(std::isfinite(whole[i]));
+            error = (std::max)(error, std::fabs(whole[i] - expected[i]));
+        }
+        REQUIRE(error < 2e-5f);
+        worst = (std::max)(worst, error);
+        REQUIRE(enh.flush_stream().empty());
+        float sample = 0.1f;
+        bool closed = false;
+        try { enh.enhance_stream(&sample, 1, 48000, &sample); }
+        catch (const std::logic_error&) { closed = true; }
+        REQUIRE(closed);
+        enh.reset();
+        std::vector<float> discarded(1001);
+        enh.enhance_stream(input.data(), discarded.size(), 48000, discarded.data());
+        REQUIRE(render({97,512}, false) == whole);  // reset partially filled hops and all histories
+        std::printf("  Rust parity %s: max error %.3g\n", test.name, error);
+    }
+    // Both signs of attenuation dB have the same meaning upstream.
+    enh.enable_rust_streaming(model_directory.u8string(), {-10,30,20,0.02f,-12});
+    REQUIRE(render({512}, false) == limited);
+    enh.enable_rust_streaming(model_directory.u8string(), {-15,35,35,0,100});
+    const auto short_input = read_pcm(fixture_directory / "short_input.f32");
+    REQUIRE(short_input.size() == 481);
+    for (size_t length : {size_t(1), size_t(479), size_t(480), size_t(481)}) {
+        const std::vector<float> source(short_input.begin(), short_input.begin() + length);
+        const auto expected = read_pcm(fixture_directory / ("short_" + std::to_string(length) + ".f32"));
+        const auto actual = render_pcm(source, {1,97,512}, true);
+        REQUIRE(actual.size() == expected.size());
+        for (size_t i = 0; i < actual.size(); ++i) {
+            REQUIRE(std::isfinite(actual[i]) && std::fabs(actual[i] - expected[i]) < 2e-5f);
+        }
+    }
+
+    // Rejected calls and configurations must not discard an active stream.
+    enh.enable_rust_streaming(model_directory.u8string());
+    const auto reference = render({input.size()}, false);
+    enh.reset();
+    std::vector<float> interleaved(input.size());
+    enh.enhance_stream(input.data(), 1001, 48000, interleaved.data());
+    std::vector<float> independent(input.size());
+    enh.enhance(input.data(), input.size(), 48000, independent.data());
+    REQUIRE(independent == offline);
+    bool rejected = false;
+    auto invalid = speech_core::DeepFilterRustStreamingOptions{};
+    invalid.post_filter_beta = -0.02f;
+    try { enh.enable_rust_streaming(model_directory.u8string(), invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    REQUIRE(rejected);
+    rejected = false;
+    const float nonfinite[] = {0.1f, std::numeric_limits<float>::quiet_NaN()};
+    float temporary_output[2];
+    try { enh.enhance_stream(nonfinite, 2, 48000, temporary_output); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    REQUIRE(rejected);
+    wav_test::TemporaryDirectory temporary("deepfilter-rust");
+    const auto unicode_directory = temporary.path / std::filesystem::u8path(u8"models-\u97f3\u58f0");
+    std::filesystem::create_directory(unicode_directory);
+    for (const char* filename : {"enc.onnx", "erb_dec.onnx", "df_dec.onnx"}) {
+        std::filesystem::copy_file(model_directory / filename, unicode_directory / filename);
+    }
+    const auto changed_path = unicode_directory / "df_dec.onnx";
+    { std::ofstream changed(changed_path, std::ios::binary | std::ios::app); changed.put('\0'); }
+    rejected = false;
+    try { enh.enable_rust_streaming(unicode_directory.u8string()); }
+    catch (const std::runtime_error&) { rejected = true; }
+    REQUIRE(rejected);  // a later graph failure must release earlier sessions and preserve the active stream
+    enh.enhance_stream(input.data() + 1001, input.size() - 1001, 48000, interleaved.data() + 1001);
+    const auto tail = enh.flush_stream();
+    interleaved.insert(interleaved.end(), tail.begin(), tail.end());
+    REQUIRE(interleaved == reference);
+    std::filesystem::copy_file(model_directory / "df_dec.onnx", changed_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    enh.enable_rust_streaming(unicode_directory.u8string());
+    REQUIRE(render({512}, false) == reference);
+    enh.disable_rust_streaming();
+    REQUIRE(render({512}, false) == compatible);
+    std::printf("  test_deepfilter_rust_streaming ... ok (Rust max error=%.3g, packet invariance exact)\n", worst);
+}
+
 void test_sidon_restorer(const std::string& dir) {
     std::string predictor = dir + "/sidon-predictor.onnx";
     std::string vocoder = dir + "/sidon-vocoder.onnx";
@@ -1466,6 +1616,7 @@ int main() {
     RUN(test_kokoro_short_turn_profile);
     RUN(test_deepfilter);
     RUN(test_deepfilter_streaming);
+    RUN(test_deepfilter_rust_streaming);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
     RUN(test_voxcpm2_tokenizer);

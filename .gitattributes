@@ -5,3 +5,5 @@
 
 # Generated ONNX graph structure; review the generator and native integration.
 src/models/deepfilter/deepfilter_streaming_graph.inc linguist-generated=true
+src/models/deepfilter/deepfilter_rust_graphs.inc linguist-generated=true
+tests/data/deepfilter_rust/*.f32 binary
