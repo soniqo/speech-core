@@ -90,9 +90,10 @@ are downloaded separately by the user at runtime (see
 `docs/models.md`) and are governed by their own licenses as published on
 their respective HuggingFace repositories.
 
-The optional ONNX backend includes a weight-free streaming graph template derived
-from DeepFilterNet3 v0.5.6 (`src/models/deepfilter/deepfilter_streaming_graph.inc`).
-Its weights are loaded from the separately downloaded source model. DeepFilterNet
+The optional ONNX backend includes weight-free streaming graph templates derived
+from DeepFilterNet3 v0.5.6 (`src/models/deepfilter/deepfilter_streaming_graph.inc`
+and `src/models/deepfilter/deepfilter_rust_graphs.inc`). Their weights are loaded
+from the separately downloaded source models. DeepFilterNet
 is Copyright (c) 2021 Hendrik Schröter, distributed here under its MIT license
 option (see `third_party/deepfilter/LICENSE-MIT`). Source:
 https://github.com/Rikorose/DeepFilterNet.

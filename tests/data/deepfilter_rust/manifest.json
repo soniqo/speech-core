@@ -1,0 +1,148 @@
+{
+  "upstream_commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+  "source": "DfTract::process, mono Float32 at 48000 Hz",
+  "input_samples": 50477,
+  "input_sha256": "ba83304ac4adc58a5e6acaa2f758a91429fda10f3e0e65e98c88fda3f732a8bb",
+  "tract_version": "0.21.4",
+  "cargo_lock_sha256": "d0b3c01ba87394a85669ebac4b82346e04bac13a06e6c3c71640927ebd9f147b",
+  "cases": {
+    "default": {
+      "options": [
+        -10,
+        30,
+        20,
+        0,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [28, 8, 32, 41]",
+      "sha256": "196399456f06691efec9dbe7e14bd35b66f5d34d071906ea836f0b7f4ecf677f"
+    },
+    "cli": {
+      "options": [
+        -15,
+        35,
+        35,
+        0,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [0, 0, 0, 109]",
+      "sha256": "c6157295b2eabb4340b9aad8268b1713ab77b5f30a78b3000721b7bd66e234a1"
+    },
+    "post_filter": {
+      "options": [
+        -10,
+        30,
+        20,
+        0.02,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [28, 8, 32, 41]",
+      "sha256": "4145230b20777fad2732aa70e3ad8d25a9f9546fc2284d5d48d97873b280a136"
+    },
+    "limited": {
+      "options": [
+        -10,
+        30,
+        20,
+        0.02,
+        12
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [28, 8, 32, 41]",
+      "sha256": "d98c482feaf4cda34b1ac28164ca017b332ac3c62bb2fb4e557d323a67784217"
+    },
+    "passthrough": {
+      "options": [
+        -10,
+        30,
+        20,
+        0,
+        0
+      ],
+      "samples": 50957,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [7, 99, 0, 0]",
+      "sha256": "4e8c4b3a9ac60e5e8c645505f2f7fca4b0716366674692a9f73e771f6757ee79"
+    },
+    "erb_only": {
+      "options": [
+        -100,
+        100,
+        -100,
+        0,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [0, 0, 109, 0]",
+      "sha256": "33cc8b8a03657bf0b77bf28050d939471d014ae6ae83a244bf0942768a1f0457"
+    },
+    "clean": {
+      "options": [
+        -100,
+        -100,
+        -100,
+        0.02,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [0, 109, 0, 0]",
+      "sha256": "0242b451b154abfc68a9ca8683f5beef4de1c529bc6845c30e1b8cb1e0467750"
+    },
+    "zero_mask": {
+      "options": [
+        100,
+        100,
+        100,
+        0.02,
+        100
+      ],
+      "samples": 52397,
+      "stages": "Rust stages [zero mask, bypass, ERB only, ERB+DF]: [109, 0, 0, 0]",
+      "sha256": "ad903f6575b0a6fd4d39863f89bad6b4a41889888bb939711c79153cd9c7ea74"
+    }
+  },
+  "short_cases": {
+    "1": {
+      "options": [
+        -15,
+        35,
+        35,
+        0,
+        100
+      ],
+      "sha256": "cc7e44fa85c200a95637dcdeee46b6af74a3e93ce0afbdfe85f0fc7debac72ac"
+    },
+    "479": {
+      "options": [
+        -15,
+        35,
+        35,
+        0,
+        100
+      ],
+      "sha256": "7c2e8713d78e43e5e92a677064c18f2053807b4a43db214d8d61f54a2f6a5078"
+    },
+    "480": {
+      "options": [
+        -15,
+        35,
+        35,
+        0,
+        100
+      ],
+      "sha256": "377cb0b8083922998b46f968301e3d6096ebd2b31fbb2e1e1ebc3c21449ed64c"
+    },
+    "481": {
+      "options": [
+        -15,
+        35,
+        35,
+        0,
+        100
+      ],
+      "sha256": "b5c91b9617ad476bbf79d4f64b0f3883a711c07ed80d326222a7f2b5698a7b79"
+    }
+  }
+}

@@ -164,10 +164,11 @@ jobs:
             "https://huggingface.co/soniqo/DeepFilterNet3-ONNX/resolve/63d8ba442ba900143c468b798e94a04009b2f0c9/deepfilter.onnx"
           echo "e1157049059434ae0d5857e32c812abea227b975e946b2eb64d001abbce156d3  build/deepfilter-model/deepfilter.onnx" \
             | sha256sum -c -
+          bash scripts/fetch_deepfilter_rust.sh build/deepfilter-model/deepfilter-rust
 
       - name: Test
-        # The 8.2 MiB DeepFilter model exercises real streaming/offline parity
-        # on every PR. Other model integrations skip when their bundles are absent.
+        # Pinned DeepFilter bundles exercise offline/streaming and actual Rust
+        # waveform parity. Other integrations skip when their bundles are absent.
         env:
           DEEPFILTER_TEST_MODEL_DIR: ${{ github.workspace }}/build/deepfilter-model
         run: |
@@ -236,6 +237,7 @@ jobs:
             "https://huggingface.co/soniqo/DeepFilterNet3-ONNX/resolve/63d8ba442ba900143c468b798e94a04009b2f0c9/deepfilter.onnx"
           echo "e1157049059434ae0d5857e32c812abea227b975e946b2eb64d001abbce156d3  build-windows/deepfilter-model/deepfilter.onnx" \
             | sha256sum -c -
+          bash scripts/fetch_deepfilter_rust.sh build-windows/deepfilter-model/deepfilter-rust
 
       - name: Test
         shell: bash

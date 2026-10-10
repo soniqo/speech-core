@@ -1409,9 +1409,61 @@ exports remain supported by `enhance()` but fail explicitly in streaming mode.
 `scripts/generate_deepfilter_streaming_graph.py` regenerates the template and
 checks neural output parity using `onnx`, `numpy`, and `onnxruntime`.
 
-This path preserves the existing Python-style offline model behavior. The upstream
-Rust runtime additionally selects stages using local-SNR thresholds and offers
-optional post-filter/attenuation controls; those policies are not enabled here.
+### Rust streaming parity
+
+The default path above preserves the existing offline model behavior. To match
+the mono Rust `DfTract` runtime, opt into the official three-stage bundle. The
+batch `deepfilter.onnx` omits the local-SNR head used by Rust; the extra bundle
+contains `enc.onnx`, `erb_dec.onnx`, and `df_dec.onnx` (~8.2 MiB total). Download
+the pinned upstream bundle with checksum verification:
+
+```bash
+bash scripts/fetch_deepfilter_rust.sh /models/deepfilter-rust
+```
+
+```cpp
+speech_core::DeepFilterEnhancer enh("/models/deepfilter.onnx");
+speech_core::DeepFilterRustStreamingOptions options;
+// Defaults match Rust RuntimeParams::default(): -10 / 30 / 20 dB,
+// post-filter disabled, and unlimited attenuation (100 dB).
+// To match the upstream CLI instead, use -15 / 35 / 35 dB thresholds.
+options.post_filter_beta = 0.02f;       // optional; zero disables it
+options.attenuation_limit_db = 12.0f;  // optional; abs(db) >= 100 is unlimited
+enh.enable_rust_streaming("/models/deepfilter-rust", options);
+// Call enhance_stream(), flush_stream(), and reset() as above.
+```
+
+This mode follows upstream [revision d375b2d](https://github.com/Rikorose/DeepFilterNet/blob/d375b2d8309e0935d165700c91da9de862a99c31/libDF/src/tract.rs):
+encoder updates begin with the first analyzed frame; local-SNR thresholds choose
+zero masking, clean-signal bypass, ERB-only, or ERB+DF processing. A skipped
+decoder retains its GRU and convolution state. The quiet-frame policy, spectral
+post-filter (including upstream's final-bin handling), and attenuation mixing
+also follow that revision. Separate weight-free graph templates reuse the
+unchanged official files. Sessions initialize when enabling the mode; no Rust
+runtime is linked into speech-core.
+
+The alignment delay is 40 ms: Rust's 30 ms STFT/lookahead delay plus one 10 ms
+hop for arbitrary microphone packets. At an attenuation limit below 0.01 dB,
+Rust passes audio through directly, so only the 10 ms packet-buffer delay remains.
+Query `stream_latency_samples()` for the active mode. Rust's startup spectrum and
+tail handling differ from the default offline-compatible path; only the packet
+adapter's initial 480 samples are explicitly zero. Flushing feeds ordinary
+zero-audio hops through Rust's policy rather than padding normalized features.
+
+`enable_rust_streaming()` starts a fresh stream. Invalid settings or incompatible
+files leave an existing stream intact. `disable_rust_streaming()` starts a fresh
+offline-compatible stream. `enhance()` remains unchanged in either mode, and
+`VoicePipeline` uses the configured mode automatically. Calls require external
+serialization.
+
+Waveform goldens in `tests/data/deepfilter_rust` are produced by the actual
+upstream Rust runtime, with default and CLI thresholds, post-filtering,
+attenuation, every stage-selection branch, silence, resumed speech, and a partial
+final hop. The C++ comparison uses an absolute Float32 tolerance of `2e-5` and
+checks exact invariance across microphone packet sizes. Parity is numerical;
+different FFT/inference backends can change the last floating-point bits.
+See the fixture README for regeneration. The original offline and streaming
+compatibility tests continue to run in the same Linux/Windows CI lanes.
 
 ## OnnxSidonRestorer
 

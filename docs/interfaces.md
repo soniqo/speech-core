@@ -187,6 +187,10 @@ pipeline uses persistent resamplers before and after enhancement. The C enhancer
 vtable is unchanged: its existing callback is used by the default streaming method.
 
 **Reference implementation:** `DeepFilterEnhancer` (DeepFilterNet3 via ONNX Runtime, 48 kHz).
+Its optional Rust streaming mode is configured on the concrete model with
+`enable_rust_streaming()`; the generic enhancement interface and C vtable are
+unchanged. See [DeepFilterEnhancer](models.md#deepfilterenhancer) for its bundle,
+stage-selection options, and latency.
 
 **Swift counterpart:** `SpeechEnhancementModel`.
 

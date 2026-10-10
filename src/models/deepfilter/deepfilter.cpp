@@ -84,25 +84,31 @@ bool approximately_equal(float a, float b, float tolerance = 1e-5f) {
 }
 
 #include "deepfilter_streaming_graph.inc"
+#include "deepfilter_rust_graphs.inc"
 
-OrtSession* load_streaming_session(const std::string& model_path) {
+OrtSession* load_stateful_session(const std::string& model_path, size_t source_bytes,
+                                 uint64_t source_fingerprint, const unsigned char* graph,
+                                 size_t graph_bytes, const char* external_filename,
+                                 const char* model_description = nullptr) {
 #if ORT_API_VERSION >= 18
     // The graph's external tensors point into the validated batch ONNX file.
     // Read-only reuse keeps existing downloads and offline inference intact.
     std::ifstream file(std::filesystem::u8path(model_path), std::ios::binary | std::ios::ate);
-    if (!file || file.tellg() != static_cast<std::streamoff>(kSourceModelBytes)) {
-        throw std::runtime_error("DeepFilterNet3 streaming requires the published v0.5.6 FP32 model");
+    const std::string required = std::string("DeepFilterNet3 streaming requires the published ") +
+                                 (model_description ? model_description : external_filename);
+    if (!file || file.tellg() != static_cast<std::streamoff>(source_bytes)) {
+        throw std::runtime_error(required);
     }
     file.seekg(0);
-    std::vector<char> source(kSourceModelBytes);
+    std::vector<char> source(source_bytes);
     file.read(source.data(), static_cast<std::streamsize>(source.size()));
     if (!file) throw std::runtime_error("DeepFilterNet3: truncated source model");
     uint64_t fingerprint = UINT64_C(14695981039346656037);
     for (unsigned char byte : source) {
         fingerprint = (fingerprint ^ byte) * UINT64_C(1099511628211);
     }
-    if (fingerprint != kSourceModelFingerprint) {
-        throw std::runtime_error("DeepFilterNet3 streaming requires the published v0.5.6 FP32 model");
+    if (fingerprint != source_fingerprint) {
+        throw std::runtime_error(required);
     }
 
     auto& engine = OnnxEngine::get();
@@ -115,18 +121,21 @@ OrtSession* load_streaming_session(const std::string& model_path) {
     // Single-hop inference has small GEMMs; a CPU session avoids transfer and
     // thread-pool overhead for every 10 ms frame and its feedback tensors.
     ort_check(api, api->SetIntraOpNumThreads(options.get(), 1));
-    const auto external_path = to_ort_path("deepfilter_source.onnx");
+    const auto external_path = to_ort_path(external_filename);
     const ORTCHAR_T* external_names[] = {external_path.c_str()};
     char* external_buffers[] = {source.data()};
     const size_t external_lengths[] = {source.size()};
     ort_check(api, api->AddExternalInitializersFromFilesInMemory(
         options.get(), external_names, external_buffers, external_lengths, 1));
     OrtSession* session = nullptr;
-    ort_check(api, api->CreateSessionFromArray(engine.env(), kStreamingGraph,
-                                              sizeof(kStreamingGraph), options.get(), &session));
+    ort_check(api, api->CreateSessionFromArray(engine.env(), graph,
+                                              graph_bytes, options.get(), &session));
     return session;
 #else
     (void)model_path;
+    (void)source_bytes; (void)source_fingerprint; (void)graph;
+    (void)graph_bytes; (void)external_filename;
+    (void)model_description;
     throw std::runtime_error("DeepFilterNet3 streaming requires ONNX Runtime >= 1.18");
 #endif
 }
@@ -139,6 +148,72 @@ struct OrtValues {
     }
     const OrtApi* api;
     std::array<OrtValue*, N> values{};
+};
+
+// Independent encoder/decoder sessions are essential: skipping a stage in
+// Rust also freezes that stage's GRUs and convolution history.
+class RustGraph {
+public:
+    template <size_t States, size_t Bytes>
+    RustGraph(const std::string& directory, const char* filename, size_t source_bytes,
+              uint64_t fingerprint, const unsigned char (&graph)[Bytes],
+              const char* const (&state_inputs)[States], const char* const (&state_outputs)[States],
+              const size_t (&state_sizes)[States], const std::array<int64_t, 4> (&state_shapes)[States],
+              const size_t (&state_ranks)[States], std::vector<const char*> input_names,
+              std::vector<const char*> output_names, std::vector<std::vector<int64_t>> output_shapes)
+        : api_(OnnxEngine::get().api()), input_names_(std::move(input_names)),
+          output_names_(std::move(output_names)), output_shapes_(std::move(output_shapes)),
+          state_count_(States) {
+        for (size_t i = 0; i < States; ++i) {
+            state_.emplace_back(state_sizes[i], 0.0f);
+            state_shapes_.emplace_back(state_shapes[i].begin(), state_shapes[i].begin() + state_ranks[i]);
+            input_names_.push_back(state_inputs[i]);
+            output_names_.push_back(state_outputs[i]);
+            output_shapes_.push_back(state_shapes_.back());
+        }
+        const auto path = std::filesystem::u8path(directory) / filename;
+        session_ = load_stateful_session(path.u8string(), source_bytes, fingerprint,
+                                         graph, Bytes, filename);
+    }
+
+    ~RustGraph() { if (session_) api_->ReleaseSession(session_); }
+    RustGraph(const RustGraph&) = delete;
+    RustGraph& operator=(const RustGraph&) = delete;
+
+    void reset() {
+        for (auto& state : state_) std::fill(state.begin(), state.end(), 0.0f);
+    }
+
+    void run(std::vector<const OrtValue*> inputs, OrtValues<10>& outputs) {
+        OrtValues<10> feedback(api_);
+        for (size_t i = 0; i < state_count_; ++i) {
+            ort_check(api_, api_->CreateTensorWithDataAsOrtValue(
+                OnnxEngine::get().cpu_memory(), state_[i].data(), state_[i].size() * sizeof(float),
+                state_shapes_[i].data(), state_shapes_[i].size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                &feedback.values[i]));
+            inputs.push_back(feedback.values[i]);
+        }
+        ort_check(api_, api_->Run(session_, nullptr, input_names_.data(), inputs.data(), inputs.size(),
+                                  output_names_.data(), output_names_.size(), outputs.values.data()));
+        for (size_t i = 0; i < output_names_.size(); ++i) {
+            if (!outputs.values[i]) throw std::runtime_error("DeepFilterNet3: null Rust graph output");
+            require_shape(api_, outputs.values[i], output_shapes_[i], output_names_[i]);
+        }
+        const size_t offset = output_names_.size() - state_count_;
+        for (size_t i = 0; i < state_count_; ++i) {
+            float* data = nullptr;
+            ort_check(api_, api_->GetTensorMutableData(outputs.values[offset + i], reinterpret_cast<void**>(&data)));
+            std::copy_n(data, state_[i].size(), state_[i].data());
+        }
+    }
+
+private:
+    const OrtApi* api_;
+    OrtSession* session_ = nullptr;
+    std::vector<const char*> input_names_, output_names_;
+    std::vector<std::vector<int64_t>> output_shapes_, state_shapes_;
+    std::vector<std::vector<float>> state_;
+    size_t state_count_;
 };
 
 }  // namespace
@@ -154,7 +229,9 @@ struct DeepFilterEnhancer::StreamState {
         for (auto& frame : real) frame.resize(static_cast<size_t>(cfg.freq_bins));
         for (auto& frame : imag) frame.resize(static_cast<size_t>(cfg.freq_bins));
         reset();
-        session = load_streaming_session(path);
+        session = load_stateful_session(path, kSourceModelBytes, kSourceModelFingerprint,
+                                        kStreamingGraph, sizeof(kStreamingGraph), "deepfilter_source.onnx",
+                                        "v0.5.6 FP32 model");
     }
 
     ~StreamState() { if (session) api->ReleaseSession(session); }
@@ -271,6 +348,188 @@ struct DeepFilterEnhancer::StreamState {
     uint64_t input_samples = 0;
     uint64_t frames = 0;
     uint64_t synthesized = 0;
+    bool flushed = false;
+};
+
+struct DeepFilterEnhancer::RustStreamState {
+    RustStreamState(const std::string& directory, const DeepFilterRustStreamingOptions& settings,
+                    const Config& config)
+        : options(settings), cfg(config), dsp(to_dsp_config(cfg)),
+          widths(deepfilter_dsp::make_erb_widths(to_dsp_config(cfg))),
+          enc(directory, "enc.onnx", kRustEncSourceBytes, kRustEncFingerprint, kRustEncGraph,
+              kRustEncStateInputs, kRustEncStateOutputs, kRustEncStateSizes, kRustEncStateShapes,
+              kRustEncStateRanks, {"feat_erb", "feat_spec"}, {"e0", "e1", "e2", "e3", "emb", "c0", "lsnr"},
+              {{1,64,1,32}, {1,64,1,16}, {1,64,1,8}, {1,64,1,8}, {1,1,512}, {1,64,1,96}, {1,1,1}}),
+          erb(directory, "erb_dec.onnx", kRustErbSourceBytes, kRustErbFingerprint, kRustErbGraph,
+              kRustErbStateInputs, kRustErbStateOutputs, kRustErbStateSizes, kRustErbStateShapes,
+              kRustErbStateRanks, {"emb", "e3", "e2", "e1", "e0"}, {"m"}, {{1,1,1,32}}),
+          df(directory, "df_dec.onnx", kRustDfSourceBytes, kRustDfFingerprint, kRustDfGraph,
+             kRustDfStateInputs, kRustDfStateOutputs, kRustDfStateSizes, kRustDfStateShapes,
+             kRustDfStateRanks, {"emb", "c0"}, {"coefs"}, {{1,1,96,10}}),
+          hop(static_cast<size_t>(cfg.hop_size)), raw_hop(hop.size()),
+          enhanced_real(static_cast<size_t>(cfg.freq_bins)), enhanced_imag(enhanced_real.size()) {
+        const float db = std::fabs(options.attenuation_limit_db);
+        attenuation = db >= 100.0f ? 0.0f : db < 0.01f ? 1.0f : std::pow(10.0f, -db / 20.0f);
+        for (auto& frame : real) frame.resize(static_cast<size_t>(cfg.freq_bins));
+        for (auto& frame : imag) frame.resize(static_cast<size_t>(cfg.freq_bins));
+        reset();
+    }
+
+    size_t latency() const {
+        // Rust bypasses synthesis at a zero-dB attenuation limit. Only our
+        // one-hop arbitrary-packet adapter then contributes latency.
+        return (attenuation == 1.0f ? 1 : 4) * hop.size();
+    }
+
+    void reset() {
+        dsp.reset(); enc.reset(); erb.reset(); df.reset();
+        for (auto& frame : real) std::fill(frame.begin(), frame.end(), 0.0f);
+        for (auto& frame : imag) std::fill(frame.begin(), frame.end(), 0.0f);
+        std::fill(hop.begin(), hop.end(), 0.0f);
+        output.assign(hop.size(), 0.0f);
+        pending = 0; input_samples = 0; frames = 0; quiet_frames = 0; flushed = false;
+    }
+
+    void process_hop() {
+        float energy = 0.0f;
+        for (float sample : hop) energy += sample * sample;
+        if (energy / static_cast<float>(hop.size()) < 1e-7f) {
+            quiet_frames = std::min(quiet_frames + 1, size_t(6));
+        } else {
+            quiet_frames = 0;
+        }
+        if (quiet_frames > 5) {
+            output.insert(output.end(), hop.size(), 0.0f);
+            return;  // upstream skips analysis, networks, and synthesis too
+        }
+        const uint64_t current = frames++;
+        const size_t slot = static_cast<size_t>(current % real.size());
+        dsp.analyze_hop(hop.data(), real[slot], imag[slot], feat_erb, feat_spec);
+        if (attenuation == 1.0f) {
+            output.insert(output.end(), hop.begin(), hop.end());
+            return;
+        }
+        const auto* api = OnnxEngine::get().api();
+        OrtValues<10> features(api), encoded(api), gains(api), coefficients(api);
+        const int64_t erb_shape[] = {1,1,1,cfg.erb_bands}, spec_shape[] = {1,2,1,cfg.df_bins};
+        ort_check(api, api->CreateTensorWithDataAsOrtValue(
+            OnnxEngine::get().cpu_memory(), feat_erb.data(), feat_erb.size() * sizeof(float),
+            erb_shape, 4, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &features.values[0]));
+        ort_check(api, api->CreateTensorWithDataAsOrtValue(
+            OnnxEngine::get().cpu_memory(), feat_spec.data(), feat_spec.size() * sizeof(float),
+            spec_shape, 4, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &features.values[1]));
+        enc.run({features.values[0], features.values[1]}, encoded);
+        auto data = [api](OrtValue* value) {
+            float* result = nullptr;
+            ort_check(api, api->GetTensorMutableData(value, reinterpret_cast<void**>(&result)));
+            return result;
+        };
+        const float snr = data(encoded.values[6])[0];
+        const bool zero_mask = snr < options.min_snr_db;
+        const bool apply_erb = !zero_mask && !(snr > options.max_erb_snr_db);
+        const bool apply_df = apply_erb && !(snr > options.max_df_snr_db);
+        if (apply_erb) erb.run({encoded.values[4], encoded.values[3], encoded.values[2],
+                               encoded.values[1], encoded.values[0]}, gains);
+        if (apply_df) df.run({encoded.values[4], encoded.values[5]}, coefficients);
+        quiet_frames = (apply_erb || zero_mask) ? 0 : std::min(quiet_frames + 1, size_t(6));
+        const size_t target = static_cast<size_t>((current + real.size() - cfg.df_lookahead) % real.size());
+        const float* mask = apply_erb ? data(gains.values[0]) : nullptr;
+        int frequency = 0;
+        for (int band = 0; band < cfg.erb_bands; ++band) {
+            const float gain = zero_mask ? 0.0f : mask ? mask[band] : 1.0f;
+            for (int j = 0; j < widths[static_cast<size_t>(band)]; ++j, ++frequency) {
+                const size_t f = static_cast<size_t>(frequency);
+                enhanced_real[f] = real[target][f] * gain;
+                enhanced_imag[f] = imag[target][f] * gain;
+            }
+        }
+        if (apply_df) {
+            const float* coefs = data(coefficients.values[0]);
+            for (int f = 0; f < cfg.df_bins; ++f) {
+                float re = 0.0f, im = 0.0f;
+                for (int tap = 0; tap < cfg.df_order; ++tap) {
+                    if (current + tap < static_cast<uint64_t>(cfg.df_order - 1)) continue;
+                    const size_t source = static_cast<size_t>((current + tap - (cfg.df_order - 1)) % real.size());
+                    const size_t coefficient = (static_cast<size_t>(f) * cfg.df_order + tap) * 2;
+                    re += real[source][static_cast<size_t>(f)] * coefs[coefficient] -
+                          imag[source][static_cast<size_t>(f)] * coefs[coefficient + 1];
+                    im += real[source][static_cast<size_t>(f)] * coefs[coefficient + 1] +
+                          imag[source][static_cast<size_t>(f)] * coefs[coefficient];
+                }
+                enhanced_real[static_cast<size_t>(f)] = re;
+                enhanced_imag[static_cast<size_t>(f)] = im;
+            }
+        }
+        if (apply_erb && options.post_filter_beta > 0.0f) {
+            const float beta = options.post_filter_beta;
+            // Upstream operates on chunks_exact(4), leaving the final bin.
+            for (size_t f = 0; f < enhanced_real.size() / 4 * 4; ++f) {
+                const float noisy = std::sqrt(real[target][f] * real[target][f] + imag[target][f] * imag[target][f]);
+                const float clean = std::sqrt(enhanced_real[f] * enhanced_real[f] + enhanced_imag[f] * enhanced_imag[f]);
+                const float gain = std::max(1e-12f, std::min(1.0f, clean / (noisy + 1e-12f)));
+                const float gain_sin = gain * std::sin(gain * 3.14159265358979323846f / 2.0f);
+                const float ratio = gain / gain_sin;
+                const float factor = ((beta + 1.0f) * gain / (1.0f + beta * ratio * ratio)) / gain;
+                enhanced_real[f] *= factor; enhanced_imag[f] *= factor;
+            }
+        }
+        if (attenuation > 0.0f) {
+            for (size_t f = 0; f < enhanced_real.size(); ++f) {
+                enhanced_real[f] *= 1.0f - attenuation;
+                enhanced_imag[f] *= 1.0f - attenuation;
+                enhanced_real[f] += attenuation * real[target][f];
+                enhanced_imag[f] += attenuation * imag[target][f];
+            }
+        }
+        dsp.synthesize_hop(enhanced_real, enhanced_imag, raw_hop.data());
+        output.insert(output.end(), raw_hop.begin(), raw_hop.end());
+    }
+
+    void enhance(const float* audio, size_t length, float* result) {
+        if (flushed) throw std::logic_error("DeepFilterNet3: reset() required after flush_stream()");
+        if (length > std::numeric_limits<uint64_t>::max() - input_samples) {
+            throw std::overflow_error("DeepFilterNet3: stream sample count overflow");
+        }
+        for (size_t i = 0; i < length; ++i) {
+            if (!std::isfinite(audio[i])) throw std::invalid_argument("DeepFilterNet3: non-finite stream input");
+        }
+        try {
+            for (size_t i = 0; i < length; ++i) {
+                hop[pending++] = audio[i]; ++input_samples;
+                if (pending == hop.size()) { pending = 0; process_hop(); }
+                if (output.empty()) throw std::logic_error("DeepFilterNet3: Rust stream output underrun");
+                result[i] = output.front(); output.pop_front();
+            }
+        } catch (...) { reset(); throw; }
+    }
+
+    std::vector<float> flush() {
+        if (input_samples == 0 || flushed) return {};
+        try {
+            if (pending > 0) {
+                std::fill(hop.begin() + pending, hop.end(), 0.0f);
+                pending = 0; process_hop();
+            }
+            std::fill(hop.begin(), hop.end(), 0.0f);
+            while (output.size() < latency()) process_hop();
+            std::vector<float> tail(latency());
+            for (auto& sample : tail) { sample = output.front(); output.pop_front(); }
+            output.clear(); flushed = true;
+            return tail;
+        } catch (...) { reset(); throw; }
+    }
+
+    DeepFilterRustStreamingOptions options;
+    Config cfg;
+    deepfilter_dsp::StreamingDSP dsp;
+    std::vector<int> widths;
+    RustGraph enc, erb, df;
+    std::array<std::vector<float>, 5> real, imag;
+    std::vector<float> hop, raw_hop, feat_erb, feat_spec, enhanced_real, enhanced_imag;
+    std::deque<float> output;
+    float attenuation = 0.0f;
+    size_t pending = 0, quiet_frames = 0;
+    uint64_t input_samples = 0, frames = 0;
     bool flushed = false;
 };
 
@@ -441,6 +700,7 @@ void DeepFilterEnhancer::enhance_stream(
     if (sample_rate != cfg_.sample_rate) throw std::invalid_argument("DeepFilterNet3 requires 48000 Hz input");
     if (length == 0) return;
     if (!audio || !output) throw std::invalid_argument("DeepFilterNet3 received a null audio buffer");
+    if (rust_stream_) { rust_stream_->enhance(audio, length, output); return; }
     if (!stream_) stream_ = std::make_unique<StreamState>(model_path_, cfg_);
     auto& s = *stream_;
     if (s.flushed) throw std::logic_error("DeepFilterNet3: reset() required after flush_stream()");
@@ -466,6 +726,7 @@ void DeepFilterEnhancer::enhance_stream(
 }
 
 std::vector<float> DeepFilterEnhancer::flush_stream() {
+    if (rust_stream_) return rust_stream_->flush();
     if (!stream_ || stream_->input_samples == 0 || stream_->flushed) return {};
     auto& s = *stream_;
     try {
@@ -496,6 +757,28 @@ std::vector<float> DeepFilterEnhancer::flush_stream() {
 
 void DeepFilterEnhancer::reset() {
     if (stream_) stream_->reset();
+    if (rust_stream_) rust_stream_->reset();
+}
+
+size_t DeepFilterEnhancer::stream_latency_samples() const {
+    return rust_stream_ ? rust_stream_->latency() : 4 * static_cast<size_t>(cfg_.hop_size);
+}
+
+void DeepFilterEnhancer::enable_rust_streaming(
+    const std::string& model_directory, const DeepFilterRustStreamingOptions& options) {
+    if (!std::isfinite(options.min_snr_db) || !std::isfinite(options.max_erb_snr_db) ||
+        !std::isfinite(options.max_df_snr_db) || !std::isfinite(options.post_filter_beta) ||
+        !std::isfinite(options.attenuation_limit_db) || options.post_filter_beta < 0.0f) {
+        throw std::invalid_argument("DeepFilterNet3: invalid Rust streaming options");
+    }
+    auto next = std::make_unique<RustStreamState>(model_directory, options, cfg_);
+    rust_stream_ = std::move(next);
+    stream_.reset();
+}
+
+void DeepFilterEnhancer::disable_rust_streaming() {
+    rust_stream_.reset();
+    stream_.reset();
 }
 
 }  // namespace speech_core
