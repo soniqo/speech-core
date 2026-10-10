@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "speech_core/interfaces.h"
+#include "speech_core/audio/resampler.h"
 #include "speech_core/pipeline/agent_config.h"
 #include "speech_core/pipeline/conversation_context.h"
 #include "speech_core/pipeline/speech_queue.h"
@@ -135,6 +136,8 @@ private:
     LLMInterface* llm_;
     EnhancerInterface* enhancer_;
     EchoCancellerInterface* echo_canceller_ = nullptr;
+    int input_sample_rate_;
+    size_t vad_chunk_size_;
     AgentConfig config_;
     EventCallback on_event_;
 
@@ -150,6 +153,12 @@ private:
     mutable std::mutex mutex_;  // protects turn_detector_ and push_audio
     std::vector<float> enhance_buf_;  // reusable buffer for enhancement output
     std::vector<float> aec_buf_;      // reusable buffer for echo cancellation output
+    std::unique_ptr<StreamingResampler> enhancer_input_resampler_;
+    std::unique_ptr<StreamingResampler> enhancer_output_resampler_;
+    std::vector<float> enhanced_pending_;
+    size_t enhanced_pending_count_ = 0;
+    void reset_enhancer_stream();  // caller holds mutex_; preserves model weights
+    void push_enhanced_audio(const float* samples, size_t count);
 
     // Worker thread for STT/LLM/TTS — keeps push_audio non-blocking
     struct PendingUtterance {

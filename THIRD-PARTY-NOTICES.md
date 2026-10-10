@@ -84,11 +84,42 @@ for the complete texts.
 
 ## Models
 
-No machine-learning models are included in any speech-core package. Models
+No machine-learning model weights are included in any speech-core package. Models
 are downloaded separately by the user at runtime (see
 `scripts/download_models.sh`, `scripts/download_models_litert.sh`, and
 `docs/models.md`) and are governed by their own licenses as published on
 their respective HuggingFace repositories.
+
+The optional ONNX backend includes a weight-free streaming graph template derived
+from DeepFilterNet3 v0.5.6 (`src/models/deepfilter/deepfilter_streaming_graph.inc`).
+Its weights are loaded from the separately downloaded source model. DeepFilterNet
+is Copyright (c) 2021 Hendrik Schröter, distributed here under its MIT license
+option (see `third_party/deepfilter/LICENSE-MIT`). Source:
+https://github.com/Rikorose/DeepFilterNet.
+
+The full license is reproduced here so binary packages retain its notice:
+
+```text
+The MIT License (MIT)
+Copyright (c) 2021 Hendrik Schröter
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
 
 The optional Pocket TTS bundle is published separately at
 https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8 under CC BY 4.0. Its

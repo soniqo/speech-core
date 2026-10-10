@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace speech_core::deepfilter_dsp {
@@ -67,5 +68,29 @@ void synthesize(const std::vector<float>& spec_real,
                 const std::vector<float>& window,
                 float* output,
                 size_t output_length);
+
+// The live frontend advances one hop at a time. FFT overlap and normalization
+// belong to a capture stream, not a network invocation or microphone packet.
+class StreamingDSP {
+public:
+    explicit StreamingDSP(const Config& cfg);
+    ~StreamingDSP();
+    StreamingDSP(const StreamingDSP&) = delete;
+    StreamingDSP& operator=(const StreamingDSP&) = delete;
+
+    void reset();
+    void analyze_hop(const float* audio,
+                     std::vector<float>& spec_real,
+                     std::vector<float>& spec_imag,
+                     std::vector<float>& feat_erb,
+                     std::vector<float>& feat_spec);
+    // Emits the raw delayed hop. The caller handles startup latency and flush.
+    void synthesize_hop(const std::vector<float>& spec_real,
+                        const std::vector<float>& spec_imag, float* output);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace speech_core::deepfilter_dsp
