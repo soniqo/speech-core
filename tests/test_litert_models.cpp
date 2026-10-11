@@ -200,7 +200,7 @@ void test_litert_silero_vad(const std::string& dir) {
 void test_litert_silero_vad_real_speech(const std::string& dir) {
     std::string model = dir + "/silero-vad.tflite";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(model)) {
         std::printf("  [skip] silero-vad.tflite not in %s\n", dir.c_str());
         return;
@@ -281,7 +281,7 @@ void test_litert_parakeet_real_speech(const std::string& dir) {
     std::string dec   = dir + "/parakeet-decoder-joint.tflite";
     std::string vocab = dir + "/vocab.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(enc) || !file_exists(dec) || !file_exists(vocab)) {
         std::printf("  [skip] parakeet files not in %s\n", dir.c_str());
         return;
@@ -322,7 +322,7 @@ void test_litert_parakeet_streaming(const std::string& dir) {
     std::string dec   = dir + "/parakeet-decoder-joint.tflite";
     std::string vocab = dir + "/vocab.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(enc) || !file_exists(dec) || !file_exists(vocab)) {
         std::printf("  [skip] parakeet files not in %s\n", dir.c_str());
         return;
@@ -372,7 +372,7 @@ void test_litert_vad_to_stt_pipeline(const std::string& dir) {
     std::string dec       = dir + "/parakeet-decoder-joint.tflite";
     std::string vocab     = dir + "/vocab.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(vad_model) || !file_exists(enc) || !file_exists(dec) || !file_exists(vocab)) {
         std::printf("  [skip] pipeline needs both silero and parakeet files in %s\n", dir.c_str());
         return;
@@ -641,7 +641,7 @@ void test_litert_voxcpm2_clone(const std::string& dir) {
     std::string dec  = dir + "/voxcpm2-audio-decoder.tflite";
     std::string tok  = dir + "/tokenizer.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(pref) || !file_exists(step) || !file_exists(enc)
         || !file_exists(dec) || !file_exists(tok)) {
         std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
@@ -804,7 +804,7 @@ void test_litert_voxcpm2_clone_parakeet_roundtrip(const std::string& dir) {
     std::string par_dec = dir + "/parakeet-decoder-joint.tflite";
     std::string vocab   = dir + "/vocab.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(pref) || !file_exists(step) || !file_exists(vox_enc)
         || !file_exists(vox_dec) || !file_exists(tok)) {
         std::printf("  [skip] voxcpm2 files not in %s\n", dir.c_str());
@@ -866,7 +866,7 @@ void test_voxcpm2_c_api(const std::string& dir) {
     std::string pref = dir + "/voxcpm2-text-prefill.tflite";
     std::string tok  = dir + "/tokenizer.json";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(pref) || !file_exists(tok) || wav.samples.empty()) {
         std::printf("  [skip] voxcpm2 files/fixture not in %s\n", dir.c_str());
         return;
@@ -952,7 +952,7 @@ void test_litert_pyannote_segmentation(const std::string& dir) {
     REQUIRE(seg.max_local_speakers() == 3);
 
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     std::vector<float> audio;
     if (!wav.samples.empty()) {
         audio = wav.sample_rate == 16000
@@ -997,7 +997,7 @@ void test_litert_omnilingual_stt(const std::string& dir) {
     REQUIRE(stt.input_sample_rate() == 16000);
 
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     bool real_speech = !wav.samples.empty();
     std::vector<float> audio;
     if (real_speech) {
@@ -1025,7 +1025,7 @@ void test_litert_diarization(const std::string& dir) {
     std::string seg_model = dir + "/pyannote-segmentation.tflite";
     std::string emb_model = dir + "/wespeaker-resnet34.tflite";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(seg_model) || !file_exists(emb_model)) {
         std::printf("  [skip] diarization needs pyannote + wespeaker in %s\n", dir.c_str());
         return;
@@ -1082,7 +1082,7 @@ void test_litert_nemotron_streaming_stt(const std::string& dir) {
         return;
     }
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (wav.samples.empty()) {
         std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
         return;
@@ -1124,7 +1124,7 @@ void test_litert_nemotron_multilingual_stt(const std::string& dir) {
         return;
     }
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (wav.samples.empty()) {
         std::printf("  [skip] could not load %s\n", test_audio_path().c_str());
         return;
@@ -1214,11 +1214,11 @@ void test_litert_voxcpm2_hindi_cloning(const std::string& dir) {
     // English test fixture so the test still runs in CI without the bundle.
     std::string ref_path = test_hindi_ref_path();
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(ref_path, &wav);
+    wav.load_mono(ref_path);
     bool used_hindi_ref = !wav.samples.empty();
     if (!used_hindi_ref) {
         ref_path = test_audio_path();
-        speech_core::load_wav_mono_pcm16(ref_path, &wav);
+        wav.load_mono(ref_path);
     }
     if (!file_exists(pref) || !file_exists(step) || !file_exists(venc)
         || !file_exists(vdec) || !file_exists(vtok) || wav.samples.empty()) {

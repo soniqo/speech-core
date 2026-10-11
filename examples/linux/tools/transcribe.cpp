@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
     const std::string wav_path  = (argc == 3) ? args[2] : args[1];
 
     speech_core::WavData wav;
-    if (!speech_core::load_wav_mono_pcm16(wav_path, &wav)) {
+    if (!wav.load_mono(wav_path)) {
         std::fprintf(stderr, "could not read WAV: %s\n", wav_path.c_str());
         return 1;
     }

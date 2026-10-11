@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     if (model_path.empty()) model_path = default_model_path();
 
     speech_core::WavData in;
-    if (!speech_core::load_wav_mono_pcm16(in_wav, &in)) {
+    if (!in.load_mono(in_wav)) {
         std::fprintf(stderr, "could not read WAV: %s\n", in_wav.c_str());
         return 1;
     }
