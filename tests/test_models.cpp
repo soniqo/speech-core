@@ -1056,32 +1056,43 @@ void test_kokoro_parakeet_roundtrip(const std::string& dir) {
     speech_core::KokoroTts tts(kokoro_model, dir + "/voices", dir, /*hw_accel=*/false);
     speech_core::ParakeetStt stt(parakeet_enc, parakeet_dec, parakeet_vocab, /*hw_accel=*/false);
 
-    const std::string input = "Hello world.";
-    std::vector<float> audio_24k;
-    tts.synthesize(input, "en",
-        [&](const float* samples, size_t len, bool /*is_final*/) {
-            audio_24k.insert(audio_24k.end(), samples, samples + len);
-        });
-    REQUIRE(!audio_24k.empty());
+    // Full sentences rather than a two-word greeting: "Hello world." is too
+    // short to transcribe reliably and flips between the right words and
+    // unrelated ones on small audio differences. Three keywords carry the /eI/
+    // diphthong (today, name, play), which the phonemizer writes as "A" and
+    // which a wrong token table garbles first.
+    struct Sentence { const char* text; const char* keyword_a; const char* keyword_b; };
+    const Sentence sentences[] = {
+        {"The weather is nice today, so we will take a walk in the park.", "today", "park"},
+        {"Please set a timer for ten minutes.", "timer", "minutes"},
+        {"My name is Kate and I live in a small apartment.", "name", "apartment"},
+        {"Can you play some music?", "play", "music"},
+    };
+    int matched = 0;
+    for (const auto& s : sentences) {
+        std::vector<float> audio_24k;
+        tts.synthesize(s.text, "en",
+            [&](const float* samples, size_t len, bool /*is_final*/) {
+                audio_24k.insert(audio_24k.end(), samples, samples + len);
+            });
+        REQUIRE(!audio_24k.empty());
 
-    // Kokoro outputs 24 kHz, Parakeet expects 16 kHz.
-    auto audio_16k = speech_core::Resampler::resample(
-        audio_24k.data(), audio_24k.size(), 24000, 16000);
-    REQUIRE(!audio_16k.empty());
+        // Kokoro outputs 24 kHz, Parakeet expects 16 kHz.
+        auto audio_16k = speech_core::Resampler::resample(
+            audio_24k.data(), audio_24k.size(), 24000, 16000);
+        REQUIRE(!audio_16k.empty());
 
-    auto result = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
-    std::string transcript = to_lower(result.text);
-
-    // Content-word check: at least one of "hello"/"world" should appear.
-    // Strict equality is too brittle (TTS adds pauses, STT may insert filler).
-    bool has_hello = transcript.find("hello") != std::string::npos;
-    bool has_world = transcript.find("world") != std::string::npos;
-    int matched = (has_hello ? 1 : 0) + (has_world ? 1 : 0);
-
-    std::printf("input=\"%s\" transcript=\"%s\" matched=%d/2 ",
-                input.c_str(), result.text.c_str(), matched);
-
-    REQUIRE(matched >= 1);
+        auto result = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+        std::string transcript = to_lower(result.text);
+        matched += (transcript.find(s.keyword_a) != std::string::npos ? 1 : 0)
+                 + (transcript.find(s.keyword_b) != std::string::npos ? 1 : 0);
+        std::printf("\n    \"%s\" -> \"%s\"", s.text, result.text.c_str());
+    }
+    std::printf("\n    matched=%d/8 ", matched);
+    // Content-word check; strict equality is too brittle (TTS adds pauses,
+    // STT writes numbers as digits). Six of eight tolerates two misses; a
+    // broken model, voice or token table loses most of the keywords.
+    REQUIRE(matched >= 6);
     std::printf("ok\n");
 }
 

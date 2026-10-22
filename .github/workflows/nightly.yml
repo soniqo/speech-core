@@ -1,12 +1,12 @@
 name: Nightly integration
 
-# Runs the heavy end-to-end tests that need real model files (~1.2 GB ORT,
+# Runs the heavy end-to-end tests that need real model files (~1.6 GB ORT,
 # ~700 MB LiteRT). PR CI proves the build links; this lane proves inference
 # still produces sane output. Linux only for cost — most regressions surface
 # on Linux first; we can add macOS/Windows once a Linux-specific gap shows up.
 #
 # Models and backend prebuilds are cached via actions/cache keyed on the
-# download script's contents, so daily runs hit cache and finish in ~5 min.
+# download scripts' contents, so daily runs hit cache and finish in ~5 min.
 # First run after a model-list change re-downloads (~2 min from HuggingFace).
 #
 # Failures email the repo admin by default. We can wire a Slack/Discord
@@ -37,7 +37,9 @@ jobs:
           path: |
             ort-linux
             scripts/models
-          key: ort-models-${{ hashFiles('examples/linux/setup_linux.sh', 'scripts/download_models.sh') }}
+          # The helper scripts are part of the key, so this lane never shares a
+          # cache with weekly-voxcpm2.yml, which stores only the default set.
+          key: ort-models-${{ hashFiles('examples/linux/setup_linux.sh', 'scripts/download_models.sh', 'scripts/download_canary_onnx.sh', 'scripts/download_kokoro_german_onnx.sh') }}
 
       - name: Download ONNX Runtime (if not cached)
         run: |
@@ -51,8 +53,19 @@ jobs:
           if [ ! -f scripts/models/parakeet-encoder-int8.onnx ]; then
               ./scripts/download_models.sh
           fi
+          # test_kokoro_german_roundtrip skips silently without these bundles,
+          # so they come from their own helpers and are checked explicitly.
+          if [ ! -f scripts/models/kokoro-german/kokoro-e2e-realtime.onnx ]; then
+              ./scripts/download_kokoro_german_onnx.sh martin
+          fi
+          if [ ! -f scripts/models/canary-180m-flash/canary-decoder-int8.onnx ]; then
+              ./scripts/download_canary_onnx.sh int8
+          fi
           test -f scripts/models/silero-vad.onnx
           test -f scripts/models/parakeet-encoder-int8.onnx
+          test -f scripts/models/kokoro-german/kokoro-e2e-realtime.onnx
+          test -f scripts/models/canary-180m-flash/canary-encoder-int8.onnx
+          test -f scripts/models/canary-180m-flash/canary-decoder-int8.onnx
 
       - name: Configure
         run: |
@@ -68,7 +81,11 @@ jobs:
       - name: Test (with models)
         env:
           SPEECH_MODEL_DIR: ${{ github.workspace }}/scripts/models
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          # test_models prints which model tests ran and which skipped; keep
+          # that in the log even when every test passes.
+          ctest --test-dir build -V -R '^test_models$'
+          ctest --test-dir build --output-on-failure -E '^test_models$'
 
   # LiteRT lane runs Linux + Windows. Windows catches platform-specific bugs
   # that the Linux-only lane misses (e.g. the LiteRT v2.1 file-size overflow

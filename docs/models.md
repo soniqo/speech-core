@@ -1367,7 +1367,16 @@ a German bundle keeps its single voice.
 `test_models --` `test_kokoro_german_roundtrip` synthesizes three sentences
 from `$SPEECH_KOKORO_GERMAN_DIR` (default `$SPEECH_MODEL_DIR/kokoro-german`)
 and, when the Canary 180M Flash bundle is present, transcribes them back in
-German.
+German. The nightly integration lane downloads the Martin bundle and the
+Canary INT8 pair, so the round trip runs there every day. The helpers fetch
+each bundle at a pinned revision into its own directory; an optional last
+argument overrides the destination:
+
+```bash
+scripts/download_kokoro_german_onnx.sh            # -> scripts/models/kokoro-german
+scripts/download_kokoro_german_onnx.sh victoria   # -> scripts/models/kokoro-german-victoria
+scripts/download_canary_onnx.sh int8              # -> scripts/models/canary-180m-flash
+```
 
 ### Voice files
 
