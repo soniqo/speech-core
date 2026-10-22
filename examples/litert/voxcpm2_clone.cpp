@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     const bool no_ref = (ref_wav == "none");
     speech_core::WavData wav;
     if (!no_ref) {
-        if (!speech_core::load_wav_mono_pcm16(ref_wav, &wav)) {
+        if (!wav.load_mono(ref_wav)) {
             std::fprintf(stderr, "could not read reference WAV: %s\n", ref_wav.c_str());
             return 1;
         }

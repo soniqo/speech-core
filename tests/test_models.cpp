@@ -197,7 +197,7 @@ void test_silero_vad(const std::string& dir) {
 void test_silero_vad_real_speech(const std::string& dir) {
     std::string model = dir + "/silero-vad.onnx";
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (!file_exists(model)) {
         std::printf("  [skip] silero-vad.onnx not in %s\n", dir.c_str());
         return;
@@ -686,7 +686,7 @@ void test_deepfilter_streaming(const std::string& dir) {
     }
 
     speech_core::WavData wav;
-    REQUIRE(speech_core::load_wav_mono_pcm16(test_audio_path(), &wav));
+    REQUIRE(wav.load_mono(test_audio_path()));
     REQUIRE(wav.sample_rate > 0 && wav.samples.size() >= static_cast<size_t>(9 * wav.sample_rate));
     auto noisy = speech_core::Resampler::resample(wav.samples.data() + 5 * wav.sample_rate,
         static_cast<size_t>(4 * wav.sample_rate), wav.sample_rate, 48000);

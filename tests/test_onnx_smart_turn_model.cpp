@@ -87,7 +87,7 @@ int main() {
     const char* fixture = std::getenv("SPEECH_CORE_TEST_AUDIO");
     std::string wav = fixture && *fixture ? fixture : "tests/data/test_audio.wav";
     speech_core::WavData in;
-    if (speech_core::load_wav_mono_pcm16(wav, &in)) {
+    if (in.load_mono(wav)) {
         // The fixture trails off into 11 s of silence; keep the sentence plus
         // three seconds of pause, which is what a VAD hand-off looks like.
         in.samples.resize(std::min(in.samples.size(), static_cast<size_t>(12) * static_cast<size_t>(in.sample_rate)));

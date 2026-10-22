@@ -304,8 +304,8 @@ SampleResult process_one_sample(
     SampleResult r;
 
     speech_core::WavData wav;
-    if (!speech_core::load_wav_mono_pcm16(s.input_wav_path, &wav)) {
-        r.error = "load_wav_mono_pcm16 failed: " + s.input_wav_path;
+    if (!wav.load_mono(s.input_wav_path)) {
+        r.error = "wav load failed: " + s.input_wav_path;
         return r;
     }
     std::vector<float> audio16k;
@@ -559,7 +559,7 @@ int main(int argc, char** argv) {
         // the helper's signature minimal.
         speech_core::WavData wav;
         double in_dur = 0.0;
-        if (speech_core::load_wav_mono_pcm16(s.input_wav_path, &wav)) {
+        if (wav.load_mono(s.input_wav_path)) {
             in_dur = wav.duration();
         }
 

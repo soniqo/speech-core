@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     const std::string out_wav = args[3];
 
     speech_core::WavData in;
-    if (!speech_core::load_wav_mono_pcm16(in_wav, &in)) {
+    if (!in.load_mono(in_wav)) {
         std::fprintf(stderr, "could not read WAV: %s\n", in_wav.c_str());
         return 1;
     }

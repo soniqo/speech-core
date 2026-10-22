@@ -187,7 +187,7 @@ void test_wav_io_roundtrip() {
     bool wrote = speech_core::write_wav_mono_pcm16(tmp.u8string(), in, sr);
     if (!wrote) { std::fprintf(stderr, "write failed\n"); std::abort(); }
     speech_core::WavData out;
-    bool loaded = speech_core::load_wav_mono_pcm16(tmp.u8string(), &out);
+    bool loaded = out.load_mono(tmp);
     if (!loaded || out.sample_rate != sr ||
         static_cast<int>(out.samples.size()) < n - 1 ||
         static_cast<int>(out.samples.size()) > n + 1) {
@@ -219,7 +219,7 @@ void test_corpus_iterator_against_fdb_mini() {
         seen.insert(s.category);
         // Every sample must have a loadable input.wav.
         speech_core::WavData wav;
-        assert(speech_core::load_wav_mono_pcm16(s.input_wav_path, &wav));
+        assert(wav.load_mono(s.input_wav_path));
         assert(wav.sample_rate == 16000);
         if (s.category == fdb_bench::FdbCategory::Backchannel) {
             backchannel_no_annotation = s.annotation_path.empty();
@@ -280,7 +280,7 @@ void test_corpus_iterator_resilient_to_missing_aux_files() {
         assert(s.transcription_path.empty());
         assert(s.annotation_path.empty());
         speech_core::WavData wav;
-        assert(speech_core::load_wav_mono_pcm16(s.input_wav_path, &wav));
+        assert(wav.load_mono(s.input_wav_path));
         assert(wav.sample_rate == 16000 && wav.samples.size() == 16);
     }
 
@@ -302,7 +302,7 @@ void test_wav_io_loads_ieee_float32() {
     }
 
     // Hand-write a mono float32 WAV (IEEE float, audio_format=3). We
-    // can't reuse write_wav_mono_pcm16 because it always emits PCM16.
+    // can't reuse WavData::write_mono because it always emits PCM16.
     auto tmp = fs::temp_directory_path() / "fdb_smoke_float32.wav";
     {
         std::ofstream os(tmp, std::ios::binary);
@@ -330,7 +330,7 @@ void test_wav_io_loads_ieee_float32() {
     }
 
     speech_core::WavData out;
-    bool loaded = speech_core::load_wav_mono_pcm16(tmp.u8string(), &out);
+    bool loaded = out.load_mono(tmp);
     assert(loaded && "loader must accept IEEE Float 32-bit WAVs");
     assert(out.sample_rate == sr);
     assert(out.samples.size() == static_cast<size_t>(n));
@@ -415,7 +415,7 @@ void test_smoke_driver_with_mock_ollama() {
     for (const auto& s : samples) {
         // Load + resample
         speech_core::WavData wav;
-        assert(speech_core::load_wav_mono_pcm16(s.input_wav_path, &wav));
+        assert(wav.load_mono(s.input_wav_path));
         std::vector<float> audio16k = (wav.sample_rate == 16000)
             ? wav.samples
             : Resampler::resample(wav.samples.data(), wav.samples.size(),
@@ -570,7 +570,7 @@ void test_real_models_integration() {
     ScriptedVAD vad;
 
     speech_core::WavData wav;
-    assert(speech_core::load_wav_mono_pcm16(sample_wav, &wav));
+    assert(wav.load_mono(sample_wav));
     std::vector<float> audio16k = (wav.sample_rate == 16000)
         ? wav.samples
         : Resampler::resample(wav.samples.data(), wav.samples.size(),

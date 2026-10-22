@@ -469,7 +469,7 @@ void test_cli_clone_roundtrip(const std::string& dir) {
         }
 
         speech_core::WavData wav;
-        REQUIRE(speech_core::load_wav_mono_pcm16(out_wav, &wav));
+        REQUIRE(wav.load_mono(out_wav));
         const std::vector<float>& audio = wav.samples;
         const int rate = wav.sample_rate;
         REQUIRE(rate == 48000);

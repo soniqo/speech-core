@@ -141,7 +141,7 @@ static_assert(classic_rtf(2000.0, 4.0) == 0.5,
 
 std::vector<float> load_audio_16k() {
     speech_core::WavData wav;
-    speech_core::load_wav_mono_pcm16(test_audio_path(), &wav);
+    wav.load_mono(test_audio_path());
     if (wav.samples.empty()) return {};
     if (wav.sample_rate == 16000) return wav.samples;
     return speech_core::Resampler::resample(wav.samples.data(), wav.samples.size(),
@@ -675,7 +675,7 @@ void bench_voxcpm2(const std::string& /*dir*/) {
 
 speech_core::WavData read_wav(const std::string& path) {
     speech_core::WavData in;
-    speech_core::load_wav_mono_pcm16(path, &in);
+    in.load_mono(path);
     return in;
 }
 
