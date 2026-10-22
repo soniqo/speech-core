@@ -71,6 +71,7 @@ add_library(speech_core
     src/models/kws/kws_decoder.cpp
     src/models/kokoro/kokoro_phonemizer.cpp
     src/models/kokoro/kokoro_multilingual.cpp
+    src/models/kokoro/kokoro_german.cpp
     src/models/moss/moss_prompt_processor.cpp
     src/models/moss/moss_whisper_features.cpp
     src/tools/tool_registry.cpp

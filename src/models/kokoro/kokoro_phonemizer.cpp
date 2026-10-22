@@ -196,6 +196,11 @@ std::string KokoroPhonemizer::text_to_phonemes(const std::string& text) {
         static const std::unordered_map<std::string, std::string> empty;
         return multilingual::hindi_phonemize(text, it != lang_dicts_.end() ? it->second : empty);
     }
+    if (language_ == "de") {
+        auto it = lang_dicts_.find("de");
+        static const std::unordered_map<std::string, std::string> empty;
+        return multilingual::german_phonemize(text, it != lang_dicts_.end() ? it->second : empty);
+    }
     if (language_ == "ja") {
         return multilingual::japanese_phonemize(text);
     }

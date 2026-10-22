@@ -1085,6 +1085,79 @@ void test_kokoro_parakeet_roundtrip(const std::string& dir) {
     std::printf("ok\n");
 }
 
+// German Kokoro voice (soniqo/Kokoro-82M-German-*-ONNX) -> Canary 180M Flash
+// (German) round-trip. The German bundle ships its own vocab_index.json,
+// dict_de.json and a single voice; SPEECH_KOKORO_GERMAN_DIR overrides the
+// default <dir>/kokoro-german location.
+void test_kokoro_german_roundtrip(const std::string& dir) {
+    const char* override_dir = std::getenv("SPEECH_KOKORO_GERMAN_DIR");
+    const std::string de_dir = override_dir ? override_dir : dir + "/kokoro-german";
+    const std::string kokoro_model = de_dir + "/kokoro-e2e-realtime.onnx";
+    const std::string canary_root = dir + "/canary-180m-flash";
+    const std::string canary_enc = canary_root + "/canary-encoder-int8.onnx";
+    const std::string canary_dec = canary_root + "/canary-decoder-int8.onnx";
+    const std::string canary_vocab = canary_root + "/vocab.json";
+    if (!file_exists(kokoro_model) || !file_exists(de_dir + "/vocab_index.json")
+        || !file_exists(de_dir + "/dict_de.json")) {
+        std::printf("  [skip] German Kokoro bundle not in %s\n", de_dir.c_str());
+        return;
+    }
+    std::printf("  test_kokoro_german_roundtrip ... ");
+
+    // A German-only bundle has no af_heart: the constructor must settle on
+    // the bundle's single voice, and "de" must keep it.
+    speech_core::KokoroTts tts(kokoro_model, de_dir + "/voices", de_dir, /*hw_accel=*/false);
+    REQUIRE(tts.output_sample_rate() == 24000);
+
+    struct Sentence { const char* text; const char* keyword_a; const char* keyword_b; };
+    const Sentence sentences[] = {
+        {"Guten Tag, wie geht es Ihnen?", "guten", "tag"},
+        {"Die Bücher liegen auf dem großen Tisch.", "bücher", "tisch"},
+        {"Am 3. Oktober fahren wir um 18:30 Uhr nach Berlin.", "oktober", "berlin"},
+    };
+    std::vector<std::vector<float>> clips;
+    for (const auto& s : sentences) {
+        std::vector<float> audio_24k;
+        bool got_final = false;
+        tts.synthesize(s.text, "de", [&](const float* samples, size_t len, bool is_final) {
+            audio_24k.insert(audio_24k.end(), samples, samples + len);
+            if (is_final) got_final = true;
+        });
+        REQUIRE(got_final);
+        // Each sentence is a short reply: at least half a second of speech,
+        // finite and within the fixed-point range.
+        REQUIRE(audio_24k.size() > 12000);
+        for (float v : audio_24k) REQUIRE(std::isfinite(v) && std::abs(v) <= 1.0f);
+        clips.push_back(std::move(audio_24k));
+    }
+
+    if (!file_exists(canary_enc) || !file_exists(canary_dec) || !file_exists(canary_vocab)) {
+        std::printf("ok (synthesis only; canary ONNX bundle not in %s)\n", canary_root.c_str());
+        return;
+    }
+
+    speech_core::OnnxCanaryStt::Config cfg;
+    cfg.language = "de";
+    cfg.target_language = "de";
+    speech_core::OnnxCanaryStt stt(canary_enc, canary_dec, canary_vocab, cfg, /*hw_accel=*/false);
+    int matched = 0;
+    for (size_t i = 0; i < clips.size(); ++i) {
+        auto audio_16k = speech_core::Resampler::resample(
+            clips[i].data(), clips[i].size(), 24000, 16000);
+        auto result = stt.transcribe(audio_16k.data(), audio_16k.size(), 16000);
+        std::string transcript = to_lower(result.text);
+        const bool a = transcript.find(sentences[i].keyword_a) != std::string::npos;
+        const bool b = transcript.find(sentences[i].keyword_b) != std::string::npos;
+        matched += (a ? 1 : 0) + (b ? 1 : 0);
+        std::printf("\n    \"%s\" -> \"%s\"", sentences[i].text, result.text.c_str());
+    }
+    std::printf("\n    matched=%d/6 ", matched);
+    // Content-word check, as in the English round-trip: each sentence should
+    // surface at least one of its two keywords on average.
+    REQUIRE(matched >= 3);
+    std::printf("ok\n");
+}
+
 void test_onnx_engine_provider_resolution(const std::string& /*dir*/) {
     std::printf("  test_onnx_engine_provider_resolution ... ");
     auto& engine = OnnxEngine::get();
@@ -1619,6 +1692,7 @@ int main() {
     RUN(test_deepfilter_rust_streaming);
     RUN(test_sidon_restorer);
     RUN(test_kokoro_parakeet_roundtrip);
+    RUN(test_kokoro_german_roundtrip);
     RUN(test_voxcpm2_tokenizer);
     RUN(test_onnx_voxcpm2_load);
     RUN(test_onnx_cosyvoice3_load);

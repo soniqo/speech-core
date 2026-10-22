@@ -44,7 +44,7 @@ public:
     bool load_language_dict(const std::string& lang, const std::string& path);
 
     /// Set the active language for phonemization.
-    /// Supported: "en" (default), "fr", "es", "it", "pt", "hi", "ja", "zh".
+    /// Supported: "en" (default), "de", "fr", "es", "it", "pt", "hi", "ja", "zh".
     void set_language(const std::string& lang);
 
     /// Convert text → phoneme token IDs (with BOS/EOS, max 510).
