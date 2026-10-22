@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    # Sources are UTF-8 without a BOM. MSVC otherwise decodes them in the
+    # active code page, which rejects non-ASCII char32_t literals (C2015) and
+    # silently mis-encodes u8 and narrow string literals.
+    add_compile_options(/utf-8)
+endif()
+
 # Options
 option(SPEECH_CORE_BUILD_TESTS "Build tests" ON)
 option(SPEECH_CORE_WITH_ONNX "Build the speech_core_models target with ONNX Runtime reference implementations (Silero VAD, Parakeet STT, Kokoro TTS, DeepFilter)." OFF)
