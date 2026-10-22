@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -115,6 +116,40 @@ namespace {
 // Voice selected at construction and by set_voice(""); also the auto-switch
 // target for English.
 constexpr const char* kDefaultVoice = "af_heart";
+
+/// Preferred voice per language. The published multilingual bundle ships the
+/// first eight; the German entries are the single-voice kikiri-tts bundles
+/// (one voice per weight set), so whichever one is installed is found by its
+/// `d?_` prefix when the named file is absent.
+struct LangVoice { const char* lang; const char* voice; char prefix; };
+constexpr LangVoice kLanguageVoices[] = {
+    {"en", "af_heart", 'a'},
+    {"de", "dm_martin", 'd'},
+    {"fr", "ff_siwis", 'f'},
+    {"es", "ef_dora", 'e'},
+    {"it", "if_sara", 'i'},
+    {"pt", "pf_dora", 'p'},
+    {"hi", "hf_alpha", 'h'},
+    {"ja", "jf_alpha", 'j'},
+    {"zh", "zf_xiaobei", 'z'},
+};
+
+/// Alphabetically first `voices/<prefix>?_*.bin` in [dir], or "" when none.
+/// A prefix of 0 accepts any voice file: the fallback for a bundle without
+/// the engine default (a German-only bundle has no af_heart.bin).
+std::string find_voice_with_prefix(const std::string& dir, char prefix) {
+    std::string best;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        const std::string name = entry.path().filename().string();
+        if (name.size() <= 4 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
+        if (prefix != 0 && !(name.size() > 2 && name[0] == prefix && name[2] == '_')) continue;
+        const std::string stem = name.substr(0, name.size() - 4);
+        if (best.empty() || stem < best) best = stem;
+    }
+    return best;
+}
 }  // namespace
 
 KokoroTts::KokoroTts(
@@ -150,8 +185,9 @@ KokoroTts::KokoroTts(
     phonemizer_.load_vocab(data_dir + "/vocab_index.json");
     phonemizer_.load_dictionaries(data_dir);
 
-    // Load optional non-English pronunciation dictionaries
-    for (const char* lang : {"fr", "es", "it", "pt", "hi"}) {
+    // Load optional non-English pronunciation dictionaries. dict_de.json
+    // ships with the German voice bundles (soniqo/Kokoro-82M-German-*-ONNX).
+    for (const char* lang : {"de", "fr", "es", "it", "pt", "hi"}) {
         phonemizer_.load_language_dict(lang,
             data_dir + "/dict_" + lang + ".json");
     }
@@ -171,7 +207,14 @@ void KokoroTts::set_voice(const std::string& name) {
         // synthesize() re-run the language auto-switch, so a language other
         // than English picks up its mapped voice again.
         if (!load_voice_embedding(kDefaultVoice, voice_embedding_)) {
-            voice_embedding_.assign(256, 0.0f);
+            // A single-voice bundle (the German fine-tunes) has no af_heart:
+            // its one voice is the engine default.
+            const std::string any = find_voice_with_prefix(voices_dir_, 0);
+            if (any.empty() || !load_voice_embedding(any, voice_embedding_)) {
+                voice_embedding_.assign(256, 0.0f);
+            } else {
+                LOGI("TTS: default voice %s (bundle has no %s)", any.c_str(), kDefaultVoice);
+            }
         }
         voice_overridden_ = false;
         current_lang_.clear();
@@ -212,28 +255,19 @@ void KokoroTts::auto_switch_voice(const std::string& lang) {
     current_lang_ = lang;
     if (voice_overridden_) return;
 
-    // Map language to default voice
-    struct LangVoice { const char* lang; const char* voice; };
-    static const LangVoice map[] = {
-        {"en", "af_heart"},
-        {"fr", "ff_siwis"},
-        {"es", "ef_dora"},
-        {"it", "if_sara"},
-        {"pt", "pf_dora"},
-        {"hi", "hf_alpha"},
-        {"ja", "jf_alpha"},
-        {"zh", "zf_xiaobei"},
-    };
-
-    for (auto& entry : map) {
-        if (lang == entry.lang) {
-            std::vector<float> emb;
-            if (load_voice_embedding(entry.voice, emb)) {
-                voice_embedding_ = std::move(emb);
-                LOGI("TTS: auto-switched voice to %s for language %s", entry.voice, entry.lang);
-            }
-            return;
+    for (const auto& entry : kLanguageVoices) {
+        if (lang != entry.lang) continue;
+        std::vector<float> emb;
+        std::string chosen = entry.voice;
+        if (!load_voice_embedding(chosen, emb)) {
+            // The named default is not installed: take the bundle's first
+            // voice for this language (df_victoria for "de", for instance).
+            chosen = find_voice_with_prefix(voices_dir_, entry.prefix);
+            if (chosen.empty() || !load_voice_embedding(chosen, emb)) return;
         }
+        voice_embedding_ = std::move(emb);
+        LOGI("TTS: auto-switched voice to %s for language %s", chosen.c_str(), entry.lang);
+        return;
     }
     // Unknown language — keep current voice
 }

@@ -1313,17 +1313,61 @@ fewer split/retries are more important than the shorter graph's latency.
 - Kokoro 82M, non-autoregressive synthesis; long input is sentence/chunk split
 - 24 kHz Float32 output
 - One callback per safe internal text chunk; `is_final=true` marks the final one
-- Auto-switches voice on language change (en → af_heart, fr → ff_siwis, …)
-  until `set_voice()` selects an explicit persistent voice; `set_voice("")`
-  restores `af_heart` and re-arms the auto-switch, and unknown voices throw
-  `std::invalid_argument`
-- Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`.
+- Auto-switches voice on language change (en → af_heart, de → dm_martin,
+  fr → ff_siwis, …) until `set_voice()` selects an explicit persistent voice;
+  `set_voice("")` restores `af_heart` and re-arms the auto-switch, and
+  unknown voices throw `std::invalid_argument`. When the mapped voice file is
+  missing, the first `voices/<language letter>?_*.bin` in the bundle is used
+  (so `df_victoria` serves "de" in the Victoria bundle), and a bundle without
+  `af_heart.bin` starts on its first voice.
+- Phonemizer: GPL-free three-tier (dict + suffix stemming + rule-based G2P), no eSpeak dependency. See `kokoro_phonemizer.h` + `kokoro_multilingual.h`. German (`"de"`) goes through `kokoro_german.h`: number/date/currency/abbreviation normalization, `dict_de.json`, inflected and compound forms of dictionary words, then rule-based G2P — all in the espeak-ng convention the German voices were trained on.
 - Unsafe length, non-finite PCM, or numerical instability triggers bounded split/retry; output is never clamped or silently dropped
 - Output post-processing: trailing-silence trim, 5 ms fade-in / 10 ms fade-out at the speech boundary
 - Kokoro CPU sessions use four intra-op threads by default for its large
   inference run in each internal chunk. `SPEECH_CORE_KOKORO_ORT_THREADS` overrides the
   global `SPEECH_CORE_ORT_THREADS` setting when a device needs separate tuning.
 - Default public bundle files: [soniqo/Kokoro-82M-ONNX](https://huggingface.co/soniqo/Kokoro-82M-ONNX) — `kokoro-e2e-realtime.onnx` (the Android default) or `kokoro-e2e.onnx`, one shared `kokoro-e2e.onnx.data` weight file (~310 MiB), plus `vocab_index.json`, `us_gold.json`, `us_silver.json`, `dict_{fr,es,it,pt,hi}.json`, and `voices/*.bin`.
+
+### German voices
+
+German is not a voice of the multilingual bundle: the German voices are
+separate Kokoro-architecture checkpoints fine-tuned by
+[kikiri-tts](https://huggingface.co/kikiri-tts) (StyleTTS2 stage 2, Apache
+2.0), one voice per weight set. Each is published in the same layout as the
+multilingual bundle, so `KokoroTts` loads it from its own directory without
+any code change:
+
+| Bundle | Voice | Files |
+|---|---|---|
+| [soniqo/Kokoro-82M-German-Martin-ONNX](https://huggingface.co/soniqo/Kokoro-82M-German-Martin-ONNX) | `dm_martin` (male) | `kokoro-e2e.onnx`, `kokoro-e2e-realtime.onnx`, shared `kokoro-e2e.onnx.data` (162 MB, FP16 storage), `vocab_index.json`, `dict_de.json`, `voices/dm_martin.bin` |
+| [soniqo/Kokoro-82M-German-Victoria-ONNX](https://huggingface.co/soniqo/Kokoro-82M-German-Victoria-ONNX) | `df_victoria` (female) | same layout, `voices/df_victoria.bin` |
+
+```cpp
+speech_core::KokoroTts tts(
+    "/models/kokoro-de/kokoro-e2e-realtime.onnx",
+    "/models/kokoro-de/voices", "/models/kokoro-de");
+tts.synthesize("Guten Tag, wie geht es Ihnen?", "de", on_chunk);
+```
+
+The German bundles ship the upstream hexgrad `vocab_index.json` (space = 16,
+`ʦ` = 20, `A` = 24): the voices were trained with inter-word spaces and the
+`ʦ` affricate, so their bundle must not be mixed with the multilingual
+bundle's `vocab_index.json`. `dict_de.json` holds the 50k most frequent German
+words in the voices' phoneme convention (espeak-ng 1.52 as post-processed by
+misaki, short ü written `y`) plus the brand/tech overrides of the kikiri
+front-end; words outside it are derived from dictionary stems (inflection,
+compounds) or spelled out by the rules in `kokoro_german.cpp`. The text
+normalizer expands numbers, ordinals, dates (`14.05.2026`), times (`18:20`),
+currency (`12,80 €`), units (`1,5 kg`), percentages and common abbreviations
+(`z.B.`, `Prof.`, `Nr.`). Passing `"de"` to the multilingual bundle still
+works (German phonemes through an English voice); passing another language to
+a German bundle keeps its single voice.
+
+`test_kokoro_german` covers the front-end without models;
+`test_models --` `test_kokoro_german_roundtrip` synthesizes three sentences
+from `$SPEECH_KOKORO_GERMAN_DIR` (default `$SPEECH_MODEL_DIR/kokoro-german`)
+and, when the Canary 180M Flash bundle is present, transcribes them back in
+German.
 
 ### Voice files
 
@@ -1332,6 +1376,7 @@ Voice embeddings are 256-float `.bin` files in `voices_dir`. Default voice is `a
 | Language | Voice |
 |---|---|
 | `en` | af_heart |
+| `de` | dm_martin, else the bundle's `d?_*.bin` (df_victoria) |
 | `fr` | ff_siwis |
 | `es` | ef_dora |
 | `it` | if_sara |

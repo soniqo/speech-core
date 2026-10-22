@@ -15,6 +15,9 @@ namespace speech_core::multilingual {
 ///
 /// Languages:
 /// - French, Spanish, Portuguese, Italian, Hindi — dictionary + rule-based
+/// - German — number/abbreviation normalization + dictionary (dict_de.json)
+///   + inflection/compound fallbacks + rule-based G2P in the espeak-ng
+///   convention of the Kokoro German voices (see kokoro_german.h)
 /// - Japanese — Katakana/Hiragana tables, kanji passthrough
 /// - Chinese — Pinyin->IPA conversion (requires pre-segmented pinyin input)
 
@@ -33,6 +36,13 @@ std::string portuguese_phonemize(const std::string& text,
     const std::unordered_map<std::string, std::string>& dict);
 
 std::string hindi_phonemize(const std::string& text,
+    const std::unordered_map<std::string, std::string>& dict);
+
+/// German: normalizes numbers, dates and abbreviations first, then resolves
+/// each word through the dictionary, its inflected and compound forms, and
+/// finally the rule-based G2P. Never applies the ʁ -> ɹ post-processing the
+/// Romance languages use: the German voices were trained with espeak's r/ɾ.
+std::string german_phonemize(const std::string& text,
     const std::unordered_map<std::string, std::string>& dict);
 
 std::string japanese_phonemize(const std::string& text);

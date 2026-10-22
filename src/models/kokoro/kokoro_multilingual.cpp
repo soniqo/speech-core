@@ -1,5 +1,7 @@
 #include "speech_core/models/kokoro_multilingual.h"
 
+#include "speech_core/models/kokoro_german.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -1833,6 +1835,13 @@ std::string hindi_phonemize(
     const std::unordered_map<std::string, std::string>& dict)
 {
     return dict_first_phonemize(text, dict, hindi_g2p);
+}
+
+std::string german_phonemize(
+    const std::string& text,
+    const std::unordered_map<std::string, std::string>& dict)
+{
+    return german::phonemize(german::normalize_text(text), dict);
 }
 
 std::string japanese_phonemize(const std::string& text) {
