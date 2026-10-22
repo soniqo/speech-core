@@ -75,21 +75,32 @@ void test_utf8_write_and_read(const std::filesystem::path& directory) {
 }
 
 void test_invalid_input(const std::filesystem::path& path) {
+    // Every rejected load must clear stale audio, so the object is re-seeded
+    // before each attempt instead of staying empty from the previous one.
     WavData wav{{1}, 16000};
     assert(!wav.load_mono((path.u8string() + ".missing")));
+    assert(wav.samples.empty() && wav.sample_rate == 0);
 
+    wav = WavData{{1}, 16000};
     wav_test::write_fixture(path, 1, 8, 1, 16000, {128});
     assert(!wav.load_mono(path));
+    assert(wav.samples.empty() && wav.sample_rate == 0);
 
+    wav = WavData{{1}, 16000};
     wav_test::write_fixture(path, 1, 16, 1, 0, {0});
     assert(!wav.load_mono(path));
-    
+    assert(wav.samples.empty() && wav.sample_rate == 0);
+
+    wav = WavData{{1}, 16000};
     wav_test::write_fixture(path, 1, 16, 2, 16000, {0, 0, 0});
     assert(!wav.load_mono(path));
+    assert(wav.samples.empty() && wav.sample_rate == 0);
 
+    wav = WavData{{1}, 16000};
     wav_test::write_fixture(path, 1, 16, 1, 16000, {0, 1});
     std::filesystem::resize_file(path, std::filesystem::file_size(path) - 2);
     assert(!wav.load_mono(path));
+    assert(wav.samples.empty() && wav.sample_rate == 0);
 }
 
 void test_path_overloads_and_legacy_api(const std::filesystem::path& directory) {
@@ -99,17 +110,30 @@ void test_path_overloads_and_legacy_api(const std::filesystem::path& directory) 
     // Independently encoded fixture pins the existing PCM16 clipping and rounding.
     wav_test::write_fixture(path, 1, 16, 1, 24000, {0x8001, 0xc001, 0, 0x3fff, 0x7fff});
     const auto expected = read_bytes(path);
-    auto check_write = [&](bool wrote) {
-        assert(wrote);
+    // Each writer must create the file at the UTF-8 path itself, so the
+    // destination is removed first rather than inherited from an earlier write.
+    auto check_write = [&](auto write) {
+        std::filesystem::remove(path);
+        assert(write());
+        assert(std::filesystem::exists(path));
         assert(read_bytes(path) == expected);
     };
-    check_write(input.save(utf8_path));
-    check_write(input.save(utf8_path.c_str()));
-    check_write(input.save(path));
-    check_write(WavData::write_mono(utf8_path, input.samples, input.sample_rate));
-    check_write(speech_core::write_wav_mono_pcm16(utf8_path, input.samples, input.sample_rate));
-    check_write(speech_core::write_wav_mono_pcm16(
-        utf8_path, input.samples.data(), input.samples.size(), input.sample_rate));
+    check_write([&] { return input.save(utf8_path); });
+    check_write([&] { return input.save(utf8_path.c_str()); });
+    check_write([&] { return input.save(path); });
+    check_write([&] { return WavData::write_mono(utf8_path, input.samples, input.sample_rate); });
+    check_write([&] {
+        return WavData::write_mono(utf8_path.c_str(), input.samples, input.sample_rate);
+    });
+    check_write([&] { return WavData::write_mono(path, input.samples, input.sample_rate); });
+    check_write([&] { return speech_core::write_wav_mono_pcm16(utf8_path, input); });
+    check_write([&] {
+        return speech_core::write_wav_mono_pcm16(utf8_path, input.samples, input.sample_rate);
+    });
+    check_write([&] {
+        return speech_core::write_wav_mono_pcm16(
+            utf8_path, input.samples.data(), input.samples.size(), input.sample_rate);
+    });
 
     WavData output;
     assert(output.load_mono(utf8_path.c_str()));
@@ -122,15 +146,21 @@ void test_path_overloads_and_legacy_api(const std::filesystem::path& directory) 
     assert(output.samples == decoded && output.sample_rate == input.sample_rate);
     assert(!speech_core::load_wav_mono_pcm16(utf8_path, nullptr));
     assert(!output.load(utf8_path + ".missing"));
+    assert(output.samples.empty() && output.sample_rate == 0);
     output = input;
     assert(!speech_core::load_wav_mono_pcm16(utf8_path + ".missing", &output));
+    assert(output.samples.empty() && output.sample_rate == 0);
 
     // Literal calls must remain unambiguous alongside string and path overloads.
     assert(!WavData{}.save("unused-invalid-output.wav"));
+    assert(!WavData::write_mono("unused-invalid-output.wav", input.samples, 0));
     assert(!output.load_mono("unused-missing-input.wav"));
     output = input;
     assert(!output.load_mono(static_cast<const char*>(nullptr)));
+    assert(output.samples.empty() && output.sample_rate == 0);
     assert(!input.save(static_cast<const char*>(nullptr)));
+    assert(!WavData::write_mono(static_cast<const char*>(nullptr),
+                                input.samples, input.sample_rate));
 }
 
 template <typename Write>
@@ -155,6 +185,16 @@ void test_rejected_writes_preserve_destination(const std::filesystem::path& dire
         });
         check_rejected_write(directory, [&](const std::string& path) {
             return WavData::write_mono(path, invalid.samples, invalid.sample_rate);
+        });
+        check_rejected_write(directory, [&](const std::string& path) {
+            return WavData::write_mono(path.c_str(), invalid.samples, invalid.sample_rate);
+        });
+        check_rejected_write(directory, [&](const std::string& path) {
+            return WavData::write_mono(std::filesystem::u8path(path), invalid.samples,
+                                       invalid.sample_rate);
+        });
+        check_rejected_write(directory, [&](const std::string& path) {
+            return speech_core::write_wav_mono_pcm16(path, invalid);
         });
         check_rejected_write(directory, [&](const std::string& path) {
             return speech_core::write_wav_mono_pcm16(path, invalid.samples, invalid.sample_rate);
@@ -199,9 +239,11 @@ void test_stream_save_and_errors(const std::filesystem::path& path) {
     std::istringstream failed_input(expected);
     failed_input.setstate(std::ios::badbit);
     assert(!decoded.load_mono(failed_input));
+    assert(decoded.samples.empty() && decoded.sample_rate == 0);
     decoded = input;
     std::istringstream truncated(expected.substr(0, expected.size() - 2));
     assert(!decoded.load_mono(truncated));
+    assert(decoded.samples.empty() && decoded.sample_rate == 0);
 }
 
 }  // namespace

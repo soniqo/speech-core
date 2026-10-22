@@ -24,7 +24,7 @@ struct WavData {
 
     /// Load PCM16/24/32 or IEEE float32 WAV audio, averaging channels to mono.
     /// The native sample rate is preserved; callers resample when needed.
-    /// Paths are UTF-8. Returns false on I/O or format errors and keep object unchanged.
+    /// Paths are UTF-8. Returns false on I/O or format errors and clears the object.
     bool load_mono(const char* path);
     bool load_mono(const std::string& path);
     bool load_mono(const std::filesystem::path& path);
@@ -44,6 +44,10 @@ struct WavData {
     /// Write mono PCM16 RIFF/WAVE audio, clamping float samples to [-1, 1].
     /// Paths are UTF-8. Returns false on I/O errors or invalid arguments.
     /// Invalid arguments leave the destination untouched.
+    static bool write_mono(const char* path,
+                           const std::vector<float>& data, int sample_rate);
+    static bool write_mono(const std::string& path,
+                           const std::vector<float>& data, int sample_rate);
     static bool write_mono(const std::filesystem::path& path,
                            const std::vector<float>& data, int sample_rate);
     static bool write_mono(std::ostream& os,
@@ -54,11 +58,13 @@ struct WavData {
 /// Load PCM16/24/32 or IEEE float32 WAV audio, averaging channels to mono.
 /// The native sample rate is preserved; callers resample when needed.
 /// The historical pcm16 name also covers the other supported encodings.
-/// Paths are UTF-8. Returns false on I/O or format errors.
+/// Paths are UTF-8. Returns false on I/O or format errors and clears *out.
 bool load_wav_mono_pcm16(const std::string& path, WavData* out);
 
 /// Write mono PCM16 RIFF/WAVE audio, clamping float samples to [-1, 1].
 /// Paths are UTF-8. Returns false on I/O errors or invalid arguments.
+/// Invalid arguments leave the destination untouched.
+bool write_wav_mono_pcm16(const std::string& path, const WavData& data);
 bool write_wav_mono_pcm16(const std::string& path,
                           const std::vector<float>& data, int sample_rate);
 bool write_wav_mono_pcm16(const std::string& path,

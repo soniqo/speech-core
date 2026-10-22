@@ -64,9 +64,13 @@ bool load_wav_mono_pcm16(const std::string& path, WavData* out) {
     return out && out->load_mono(path);
 }
 
+bool write_wav_mono_pcm16(const std::string& path, const WavData& data) {
+    return data.save(path);
+}
+
 bool write_wav_mono_pcm16(const std::string& path,
                           const std::vector<float>& data, int sample_rate) {
-    return WavData::write_mono(std::filesystem::u8path(path), data, sample_rate);
+    return WavData::write_mono(path, data, sample_rate);
 }
 
 bool write_wav_mono_pcm16(const std::string& path,
@@ -77,7 +81,11 @@ bool write_wav_mono_pcm16(const std::string& path,
 }
 
 bool WavData::load_mono(const char* path) {
-    return path && load_mono(std::string(path));
+    if (!path) {
+        clear();
+        return false;
+    }
+    return load_mono(std::string(path));
 }
 
 bool WavData::load_mono(const std::string& path) {
@@ -90,6 +98,7 @@ bool WavData::load_mono(const std::filesystem::path& path) {
 }
 
 bool WavData::load_mono(std::istream& is) {
+    clear();
     if (!is) return false;
 
     // Keep the file buffer alive while walking and decoding its chunks.
@@ -176,8 +185,19 @@ bool WavData::save(std::ostream& os) const {
     return write_mono(os, samples.data(), samples.size(), sample_rate);
 }
 
+bool WavData::write_mono(const char* path,
+                         const std::vector<float>& data, int sample_rate) {
+    return path && write_mono(std::string(path), data, sample_rate);
+}
+
+bool WavData::write_mono(const std::string& path,
+                         const std::vector<float>& data, int sample_rate) {
+    return write_mono(std::filesystem::u8path(path), data, sample_rate);
+}
+
 bool WavData::write_mono(const std::filesystem::path& path,
                          const std::vector<float>& data, int sample_rate) {
+    // Validate before opening: ofstream truncates an existing file immediately.
     if (data.empty() || sample_rate <= 0) return false;
     std::ofstream os(path, std::ios::binary);
     return write_mono(os, data.data(), data.size(), sample_rate);
