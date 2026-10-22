@@ -1349,6 +1349,14 @@ speech_core::KokoroTts tts(
 tts.synthesize("Guten Tag, wie geht es Ihnen?", "de", on_chunk);
 ```
 
+```bash
+scripts/download_kokoro_german_onnx.sh            # -> scripts/models/kokoro-german
+scripts/download_kokoro_german_onnx.sh victoria   # -> scripts/models/kokoro-german-victoria
+```
+
+The helper fetches one bundle at a pinned revision into its own directory;
+an optional second argument overrides the destination.
+
 The German bundles ship the upstream hexgrad `vocab_index.json` (space = 16,
 `ʦ` = 20, `A` = 24): the voices were trained with inter-word spaces and the
 `ʦ` affricate, so their bundle must not be mixed with the multilingual
@@ -1367,7 +1375,8 @@ a German bundle keeps its single voice.
 `test_models --` `test_kokoro_german_roundtrip` synthesizes three sentences
 from `$SPEECH_KOKORO_GERMAN_DIR` (default `$SPEECH_MODEL_DIR/kokoro-german`)
 and, when the Canary 180M Flash bundle is present, transcribes them back in
-German.
+German. The nightly integration lane downloads the Martin bundle and the
+Canary INT8 pair, so the round trip runs there every day.
 
 ### Voice files
 
