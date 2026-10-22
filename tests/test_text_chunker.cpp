@@ -181,6 +181,37 @@ void test_newlines_are_boundaries() {
     printf("  PASS: newlines_are_boundaries\n");
 }
 
+void test_inner_punctuation_is_not_a_boundary() {
+    // Decimals, versions, domains, times, dates and German number formats
+    // reach the phonemizer exactly as written. Splitting after every '.'
+    // used to rejoin the halves with a space: "3.5" became "3. 5".
+    const char* texts[] = {
+        "It costs 3.5 euros.",
+        "Version 1.2.3 is live at soniqo.audio today.",
+        "Der Zug kommt um 18:30 Uhr, nicht um 19.15 Uhr.",
+        "Es kostet 1.000 Euro, z.B. heute.",
+        "Am 03.10.2026 kostet es 12,80 Euro.",
+    };
+    for (const char* text : texts) {
+        auto chunks = chunk(text, 72);
+        assert(chunks.size() == 1);
+        assert(chunks[0] == text);
+    }
+    printf("  PASS: inner_punctuation_is_not_a_boundary\n");
+}
+
+void test_clause_split_keeps_numbers_whole() {
+    // Too long for one chunk and without a sentence end, so the clause
+    // fallback runs; it may cut at ", " but not inside "18:30" or "12,80".
+    auto chunks = chunk(
+        "Um 18:30 Uhr kostet das Ticket 12,80 Euro, danach kostet es 15,20 Euro",
+        40);
+    assert(chunks.size() == 2);
+    assert(chunks[0] == "Um 18:30 Uhr kostet das Ticket 12,80 Euro,");
+    assert(chunks[1] == "danach kostet es 15,20 Euro");
+    printf("  PASS: clause_split_keeps_numbers_whole\n");
+}
+
 void test_retry_split_progress_for_13_to_42_tokens() {
     for (size_t parent_tokens = 13; parent_tokens <= 42; ++parent_tokens) {
         std::string word(parent_tokens - 2, 'x');
@@ -268,6 +299,14 @@ void test_retry_split_keeps_full_sentence_ender_run() {
     printf("  PASS: retry_split_keeps_full_sentence_ender_run\n");
 }
 
+void test_retry_split_does_not_cut_inside_a_number() {
+    auto pieces = split_text_for_synthesis_retry(
+        "aaaaa 3.5 bbbbb", fake_count, /*min_tokens=*/6, /*max_tokens=*/13);
+    assert(pieces.size() == 2);
+    assert(pieces[0] + " " + pieces[1] == "aaaaa 3.5 bbbbb");
+    printf("  PASS: retry_split_does_not_cut_inside_a_number\n");
+}
+
 void test_retry_split_impossible_returns_empty() {
     auto pieces = split_text_for_synthesis_retry(
         "tiny", fake_count, /*min_tokens=*/6, /*max_tokens=*/6);
@@ -290,6 +329,8 @@ int main() {
     test_tiny_tail_merges();
     test_newlines_are_boundaries();
     test_tiny_tail_kept_when_hard_cap_blocks();
+    test_inner_punctuation_is_not_a_boundary();
+    test_clause_split_keeps_numbers_whole();
     test_retry_split_progress_for_13_to_42_tokens();
     test_retry_split_utf8_is_balanced_and_intact();
     test_retry_split_prefers_word_boundary_when_balanced();
@@ -297,6 +338,7 @@ int main() {
     test_retry_split_keeps_punctuation_on_left();
     test_retry_split_keeps_closing_quote_with_sentence();
     test_retry_split_keeps_full_sentence_ender_run();
+    test_retry_split_does_not_cut_inside_a_number();
     test_retry_split_impossible_returns_empty();
     printf("All text_chunker tests passed.\n");
     return 0;

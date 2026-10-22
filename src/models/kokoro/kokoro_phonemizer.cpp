@@ -133,15 +133,14 @@ std::vector<int64_t> KokoroPhonemizer::tokenize(
     auto phonemes = text_to_phonemes(text);
     std::vector<int64_t> ids = {BOS_ID};
 
-    // Tokenize IPA string character by character
-    // Spaces dropped (not in vocab) — matches iOS behavior
+    // Tokenize IPA string character by character. hexgrad's table maps the
+    // word boundary (space) to 16; symbols outside the table are dropped.
     auto chars = utf8_chars(phonemes);
     for (auto& ch : chars) {
         auto it = vocab_.find(ch);
         if (it != vocab_.end()) {
             ids.push_back(it->second);
         }
-        // Unknown chars (including spaces) silently dropped
     }
 
     ids.push_back(EOS_ID);
