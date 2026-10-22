@@ -1349,10 +1349,10 @@ speech_core::KokoroTts tts(
 tts.synthesize("Guten Tag, wie geht es Ihnen?", "de", on_chunk);
 ```
 
-The German bundles ship the upstream hexgrad `vocab_index.json` (space = 16,
-`ʦ` = 20, `A` = 24): the voices were trained with inter-word spaces and the
-`ʦ` affricate, so their bundle must not be mixed with the multilingual
-bundle's `vocab_index.json`. `dict_de.json` holds the 50k most frequent German
+Every Kokoro bundle ships hexgrad's `vocab_index.json` (space = 16, `ʦ` = 20,
+`A` = 24), the table the weights were trained with. Until 2026-10-22 the
+multilingual bundle shipped a hand-made table without the space token and with
+`A` at 17, which garbled English. `dict_de.json` holds the 50k most frequent German
 words in the voices' phoneme convention (espeak-ng 1.52 as post-processed by
 misaki, short ü written `y`) plus the brand/tech overrides of the kikiri
 front-end; words outside it are derived from dictionary stems (inflection,
