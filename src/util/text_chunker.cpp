@@ -10,6 +10,7 @@ namespace {
 
 bool is_sentence_end(char c) { return c == '.' || c == '!' || c == '?'; }
 bool is_clause_end(char c) { return c == ',' || c == ';' || c == ':'; }
+bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
 std::string trimmed(const std::string& s) {
     const char* ws = " \t\r\n";
@@ -21,6 +22,10 @@ std::string trimmed(const std::string& s) {
 
 // Split into units, keeping end-punctuation attached to the preceding unit.
 // Newlines are treated as boundaries too, so list-style text splits cleanly.
+// Punctuation is a boundary only when whitespace or the end of the text
+// follows it: "3.5", "1.000", "z.B.", "soniqo.audio", "18:30" and "12,80"
+// stay whole. Packing rejoins units with a space, so a cut inside such a
+// token reached the phonemizer as "3. 5" even when the text fit one chunk.
 std::vector<std::string> split_units(const std::string& text,
                                      bool (*is_end)(char)) {
     std::vector<std::string> units;
@@ -42,6 +47,7 @@ std::vector<std::string> split_units(const std::string& text,
                     text[i + 1] == '\'')) {
                 current.push_back(text[++i]);
             }
+            if (i + 1 < text.size() && !is_space(text[i + 1])) continue;
             auto t = trimmed(current);
             if (!t.empty()) units.push_back(t);
             current.clear();
@@ -225,7 +231,9 @@ std::vector<std::string> split_text_for_synthesis_retry(
                 after == '\'' || after == '"') {
                 continue;
             }
-            boundary_rank = saw_sentence_end ? 0 : 1;
+            // Like split_units: "3.|5" or "18:|30" is a cut inside a token,
+            // not a sentence or clause boundary.
+            if (is_space(after)) boundary_rank = saw_sentence_end ? 0 : 1;
         } else if (before == ' ' || before == '\t' ||
                    after == ' ' || after == '\t') {
             boundary_rank = 2;
