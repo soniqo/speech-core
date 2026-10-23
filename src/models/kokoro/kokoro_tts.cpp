@@ -83,11 +83,14 @@ int resolve_kokoro_threads() {
 
 }  // namespace
 
+// Chunk budgets assume upstream Kokoro's speech rate, about 10.5 phoneme tokens
+// per second, which the packed-LSTM graphs reproduce. Graphs exported before
+// them spoke ~1.5x faster; smaller chunks are still safe for those.
 KokoroTts::Config KokoroTts::Config::short_turn_3s(bool hw_accel) {
     Config config;
     config.hw_accel = hw_accel;
-    config.chunk_token_budget = 44;
-    config.chunk_token_hard_cap = 49;
+    config.chunk_token_budget = 28;
+    config.chunk_token_hard_cap = 33;
     config.max_safe_output_samples = 67200;
     return config;
 }
@@ -100,14 +103,14 @@ KokoroTts::Config KokoroTts::Config::default_for_model_path(
         ? model_path
         : model_path.substr(slash + 1);
     if (filename == kRealtimeGraph) return short_turn_3s(hw_accel);
-    return Config{hw_accel, 72, MAX_PHONEMES, 0};
+    return Config{hw_accel, 56, 64, 0};
 }
 
 KokoroTts::Config KokoroTts::Config::short_turn_3p5s(bool hw_accel) {
     Config config;
     config.hw_accel = hw_accel;
-    config.chunk_token_budget = 44;
-    config.chunk_token_hard_cap = 49;
+    config.chunk_token_budget = 33;
+    config.chunk_token_hard_cap = 38;
     config.max_safe_output_samples = 79200;
     return config;
 }
@@ -500,7 +503,9 @@ KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
         // Trim trailing artifacts — Kokoro's E2E model often emits 100-300 ms
         // of low-energy noise + occasional loud spike past the real speech.
         constexpr int sample_rate = 24000;
-        constexpr float silence_rms = 0.030f;
+        // Low enough to keep soft word endings (German "Tisch", "Hamburg"),
+        // which fell under 0.030; lower values only keep more tail.
+        constexpr float silence_rms = 0.015f;
         const size_t win = std::max<size_t>(1, sample_rate / 20);  // 50 ms
         size_t speech_end = valid_samples;
         if (valid_samples > win) {
@@ -535,6 +540,14 @@ KokoroTts::ChunkResult KokoroTts::synthesize_chunk(
         const size_t fade_in = std::min<size_t>(120, speech_end);
         for (size_t i = 0; i < fade_in; i++) {
             audio[i] *= static_cast<float>(i) / static_cast<float>(fade_in);
+        }
+
+        // The vocoder is not bounded to +-1: graphs with upstream durations
+        // occasionally overshoot by a few percent (German "großen Tisch." peaks
+        // at 1.016). Clamp so callers always get valid float PCM, as the PCM16
+        // converters do; the log keeps the raw peak.
+        for (size_t i = 0; i < speech_end; i++) {
+            audio[i] = std::max(-1.0f, std::min(1.0f, audio[i]));
         }
 
         LOGI("TTS: valid=%zu speech_end=%zu peak=%.4f final=%d",

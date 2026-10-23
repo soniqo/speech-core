@@ -6,6 +6,9 @@
 #
 # Usage: ./download_kokoro_german_onnx.sh [martin|victoria] [dest]
 #
+# The pinned revisions are the packed-lstm branch of each repository, whose
+# graphs match upstream Kokoro's durations; main keeps the earlier graphs.
+#
 # test_models reads $SPEECH_KOKORO_GERMAN_DIR, defaulting to
 # $SPEECH_MODEL_DIR/kokoro-german, which is where the Martin bundle lands.
 set -euo pipefail
@@ -14,13 +17,13 @@ VOICE="${1:-martin}"
 case "$VOICE" in
   martin)
     REPO="soniqo/Kokoro-82M-German-Martin-ONNX"
-    REVISION="${SPEECH_KOKORO_GERMAN_MARTIN_REVISION:-49f599acf5a38bc4c597ee4b95d2ba91f351ddb2}"
+    REVISION="${SPEECH_KOKORO_GERMAN_MARTIN_REVISION:-2f930df2e95cfc4a785e708eeea029a8e4f484d0}"
     VOICE_FILE="dm_martin.bin"
     DEFAULT_DEST="scripts/models/kokoro-german"
     ;;
   victoria)
     REPO="soniqo/Kokoro-82M-German-Victoria-ONNX"
-    REVISION="${SPEECH_KOKORO_GERMAN_VICTORIA_REVISION:-8460b38c20467f01e192fb6782022964affdd30b}"
+    REVISION="${SPEECH_KOKORO_GERMAN_VICTORIA_REVISION:-7a6c7a111aa2b45ee8a8d902c9a1eb17d5d52d06}"
     VOICE_FILE="df_victoria.bin"
     DEFAULT_DEST="scripts/models/kokoro-german-victoria"
     ;;
