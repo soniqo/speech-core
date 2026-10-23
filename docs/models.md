@@ -1310,8 +1310,8 @@ speech_core::KokoroTts tts(
 `short_turn_3p5s()` remains available for a compatible 140-frame graph when
 fewer split/retries are more important than the shorter graph's latency.
 
-The graphs that `scripts/download_models.sh` pins, the `packed-lstm` branch of
-each Kokoro repository, run their token LSTMs over the valid phonemes only, as
+The graphs that `scripts/download_models.sh` pins, now also on `main` of each
+Kokoro repository, run their token LSTMs over the valid phonemes only, as
 upstream Kokoro's packed sequences do, so predicted durations match upstream
 and short replies are no longer rushed. They speak at about 10.5 phoneme tokens
 per second, and the runtime sizes each run to fit: 28 tokens on the 3.0 s graph

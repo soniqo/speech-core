@@ -32,10 +32,10 @@ $parakeetRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_PARAKEET_ONNX_R
 } else {
     $env:SPEECH_PARAKEET_ONNX_REVISION
 }
-# packed-lstm branch: graphs whose token LSTMs ignore padding, so durations
-# match upstream Kokoro. main keeps the earlier graphs for installs that follow it.
+# A main commit with the packed-LSTM graphs, whose token LSTMs ignore padding so
+# durations match upstream Kokoro, and every voice at style row 128.
 $kokoroRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_KOKORO_ONNX_REVISION)) {
-    "b561586381f1b212a8d6bd2a46483e04f54f4ebf"
+    "a49a07fb772d5281a42570e8645bf238f7f73bf2"
 } else {
     $env:SPEECH_KOKORO_ONNX_REVISION
 }
