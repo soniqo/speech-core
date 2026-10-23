@@ -10,9 +10,9 @@ set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo"
 PARAKEET_REVISION="${SPEECH_PARAKEET_ONNX_REVISION:-c1652ab21826e26dfc2be5273fe69edc7f9cc938}"
-# packed-lstm branch: graphs whose token LSTMs ignore padding, so durations
-# match upstream Kokoro. main keeps the earlier graphs for installs that follow it.
-KOKORO_REVISION="${SPEECH_KOKORO_ONNX_REVISION:-b561586381f1b212a8d6bd2a46483e04f54f4ebf}"
+# A main commit with the packed-LSTM graphs, whose token LSTMs ignore padding so
+# durations match upstream Kokoro, and every voice at style row 128.
+KOKORO_REVISION="${SPEECH_KOKORO_ONNX_REVISION:-a49a07fb772d5281a42570e8645bf238f7f73bf2}"
 # Default output: repo-relative scripts/models from a source checkout; the
 # same per-user cache used by the CLIs when CPack installs this script as
 # `speech_download_models`. The name check also covers writable extracted TGZ
