@@ -10,6 +10,9 @@ set -euo pipefail
 
 BASE_URL="https://huggingface.co/soniqo"
 PARAKEET_REVISION="${SPEECH_PARAKEET_ONNX_REVISION:-c1652ab21826e26dfc2be5273fe69edc7f9cc938}"
+# packed-lstm branch: graphs whose token LSTMs ignore padding, so durations
+# match upstream Kokoro. main keeps the earlier graphs for installs that follow it.
+KOKORO_REVISION="${SPEECH_KOKORO_ONNX_REVISION:-b561586381f1b212a8d6bd2a46483e04f54f4ebf}"
 # Default output: repo-relative scripts/models from a source checkout; the
 # same per-user cache used by the CLIs when CPack installs this script as
 # `speech_download_models`. The name check also covers writable extracted TGZ
@@ -32,8 +35,10 @@ FILES=(
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx.data"
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx"
     "Parakeet-TDT-0.6B-ONNX/vocab.json"
-    "Kokoro-82M-ONNX/kokoro-e2e.onnx"
+    # The graph and its weights sidecar change together; fetch the sidecar
+    # first so an interrupted run never pairs a new graph with an old sidecar.
     "Kokoro-82M-ONNX/kokoro-e2e.onnx.data"
+    "Kokoro-82M-ONNX/kokoro-e2e.onnx"
     "Kokoro-82M-ONNX/vocab_index.json"
     "Kokoro-82M-ONNX/us_gold.json"
     "Kokoro-82M-ONNX/us_silver.json"
@@ -68,6 +73,8 @@ for entry in "${FILES[@]}"; do
     required=0
     if [[ "$repo" == "Parakeet-TDT-0.6B-ONNX" ]]; then
         revision="$PARAKEET_REVISION"
+    elif [[ "$repo" == "Kokoro-82M-ONNX" ]]; then
+        revision="$KOKORO_REVISION"
     fi
     case "$repo/$rel" in
         Parakeet-TDT-0.6B-ONNX/parakeet-encoder-int8.onnx*|\

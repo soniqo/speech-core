@@ -32,6 +32,13 @@ $parakeetRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_PARAKEET_ONNX_R
 } else {
     $env:SPEECH_PARAKEET_ONNX_REVISION
 }
+# packed-lstm branch: graphs whose token LSTMs ignore padding, so durations
+# match upstream Kokoro. main keeps the earlier graphs for installs that follow it.
+$kokoroRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_KOKORO_ONNX_REVISION)) {
+    "b561586381f1b212a8d6bd2a46483e04f54f4ebf"
+} else {
+    $env:SPEECH_KOKORO_ONNX_REVISION
+}
 $redimnetRevision = if ([string]::IsNullOrWhiteSpace($env:SPEECH_REDIMNET_ONNX_REVISION)) {
     "e911e3f063899805f3d94ee5d1db53fff8e9f3e8"
 } else {
@@ -50,8 +57,9 @@ $defaultFiles = @(
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx.data",
     "Parakeet-TDT-0.6B-ONNX/parakeet-decoder-joint-int8.onnx",
     "Parakeet-TDT-0.6B-ONNX/vocab.json",
-    "Kokoro-82M-ONNX/kokoro-e2e.onnx",
+    # Sidecar first: the graph and its weights change together.
     "Kokoro-82M-ONNX/kokoro-e2e.onnx.data",
+    "Kokoro-82M-ONNX/kokoro-e2e.onnx",
     "Kokoro-82M-ONNX/vocab_index.json",
     "Kokoro-82M-ONNX/us_gold.json",
     "Kokoro-82M-ONNX/us_silver.json",
@@ -119,6 +127,8 @@ foreach ($entry in $files) {
     $forceGraph = $false
     if ($repository -eq "Parakeet-TDT-0.6B-ONNX") {
         $revision = $parakeetRevision
+    } elseif ($repository -eq "Kokoro-82M-ONNX") {
+        $revision = $kokoroRevision
     } elseif ($repository -eq "ReDimNet2-B6-ONNX-FP32") {
         $revision = $redimnetRevision
     } elseif ($repository -eq "Sortformer-Diarization-4spk-ONNX") {

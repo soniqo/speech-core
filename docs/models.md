@@ -1310,6 +1310,15 @@ speech_core::KokoroTts tts(
 `short_turn_3p5s()` remains available for a compatible 140-frame graph when
 fewer split/retries are more important than the shorter graph's latency.
 
+The graphs that `scripts/download_models.sh` pins, the `packed-lstm` branch of
+each Kokoro repository, run their token LSTMs over the valid phonemes only, as
+upstream Kokoro's packed sequences do, so predicted durations match upstream
+and short replies are no longer rushed. They speak at about 10.5 phoneme tokens
+per second, and the runtime sizes each run to fit: 28 tokens on the 3.0 s graph
+(`short_turn_3s()`), 33 on the 140-frame profile and 56 on the 5.0 s graph.
+Graphs on `main`, exported before that fix, speak about 1.5 times faster and
+simply use more, smaller runs.
+
 - Kokoro 82M, non-autoregressive synthesis; long input is sentence/chunk split
 - 24 kHz Float32 output
 - One callback per safe internal text chunk; `is_final=true` marks the final one
@@ -1369,8 +1378,9 @@ from `$SPEECH_KOKORO_GERMAN_DIR` (default `$SPEECH_MODEL_DIR/kokoro-german`)
 and, when the Canary 180M Flash bundle is present, transcribes them back in
 German. The nightly integration lane downloads the Martin bundle and the
 Canary INT8 pair, so the round trip runs there every day. The helpers fetch
-each bundle at a pinned revision into its own directory; an optional last
-argument overrides the destination:
+each bundle at a pinned revision, the German helper from each repository's
+`packed-lstm` branch, into its own directory; an optional last argument
+overrides the destination:
 
 ```bash
 scripts/download_kokoro_german_onnx.sh            # -> scripts/models/kokoro-german

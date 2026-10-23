@@ -516,22 +516,22 @@ void test_kokoro_short_turn_profile(const std::string& dir) {
 
     auto fast_config = speech_core::KokoroTts::Config::short_turn_3s(
         /*hw_accel=*/false);
-    REQUIRE(fast_config.chunk_token_budget == 44);
-    REQUIRE(fast_config.chunk_token_hard_cap == 49);
+    REQUIRE(fast_config.chunk_token_budget == 28);
+    REQUIRE(fast_config.chunk_token_hard_cap == 33);
     REQUIRE(fast_config.max_safe_output_samples == 67200);
 
     auto inferred_short =
         speech_core::KokoroTts::Config::default_for_model_path(
             "/models/kokoro-e2e-realtime.onnx", /*hw_accel=*/false);
-    REQUIRE(inferred_short.chunk_token_budget == 44);
-    REQUIRE(inferred_short.chunk_token_hard_cap == 49);
+    REQUIRE(inferred_short.chunk_token_budget == 28);
+    REQUIRE(inferred_short.chunk_token_hard_cap == 33);
     REQUIRE(inferred_short.max_safe_output_samples == 67200);
 
     auto inferred_full =
         speech_core::KokoroTts::Config::default_for_model_path(
             "/models/kokoro-e2e.onnx", /*hw_accel=*/false);
-    REQUIRE(inferred_full.chunk_token_budget == 72);
-    REQUIRE(inferred_full.chunk_token_hard_cap == 128);
+    REQUIRE(inferred_full.chunk_token_budget == 56);
+    REQUIRE(inferred_full.chunk_token_hard_cap == 64);
     REQUIRE(inferred_full.max_safe_output_samples == 0);
 
     // The bool constructor is the public default path. With the official
@@ -553,8 +553,8 @@ void test_kokoro_short_turn_profile(const std::string& dir) {
 
     auto config = speech_core::KokoroTts::Config::short_turn_3p5s(
         /*hw_accel=*/false);
-    REQUIRE(config.chunk_token_budget == 44);
-    REQUIRE(config.chunk_token_hard_cap == 49);
+    REQUIRE(config.chunk_token_budget == 33);
+    REQUIRE(config.chunk_token_hard_cap == 38);
     REQUIRE(config.max_safe_output_samples == 79200);
 
     speech_core::KokoroTts tts(
