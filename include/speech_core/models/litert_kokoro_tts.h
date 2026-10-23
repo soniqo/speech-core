@@ -92,7 +92,7 @@ private:
 
     static constexpr int kInputPhonemes = 128;
     static constexpr int kActivePhonemes = 32;
-    static constexpr int kPreferredPhonemes = 14;
+    static constexpr int kPreferredPhonemes = 11;
     static constexpr int kMaxFrames = 60;
     static constexpr int kSafeFrames = 56;
     static constexpr int kSamplesPerFrame = 600;

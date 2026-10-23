@@ -118,7 +118,7 @@ Options parse_args(int argc, char** argv) {
             "usage: speech_kokoro_litert_bench BUNDLE_DIR "
             "[--threads 1,2,4,8] [--warmup N] [--runs N] [--text TEXT] "
             "[--speed FACTOR] [--output AUDIO_F32] "
-            "[--variant monolithic|equivalent32]");
+            "[--variant monolithic|equivalent32|packed32]");
     }
     Options options;
     options.bundle = argv[1];
@@ -152,9 +152,10 @@ Options parse_args(int argc, char** argv) {
     if (!std::isfinite(options.speed) || options.speed <= 0.0f) {
         throw std::invalid_argument("--speed must be finite and positive");
     }
-    if (options.variant != "monolithic" && options.variant != "equivalent32") {
+    if (options.variant != "monolithic" && options.variant != "equivalent32" &&
+        options.variant != "packed32") {
         throw std::invalid_argument(
-            "--variant must be monolithic or equivalent32");
+            "--variant must be monolithic, equivalent32 or packed32");
     }
     return options;
 }
@@ -166,8 +167,11 @@ int main(int argc, char** argv) {
         const Options options = parse_args(argc, argv);
         const auto model = options.bundle / "kokoro-e2e-fp32.tflite";
         const auto encoder = options.bundle / "kokoro-encoder.tflite";
-        const auto recurrent =
-            options.bundle / "kokoro-recurrent-equivalent32.tflite";
+        // equivalent32 is the v1.0.0 zero-tail recurrence, packed32 the
+        // packed-LSTM one; both share the encoder and vocoder.
+        const bool staged = options.variant != "monolithic";
+        const auto recurrent = options.bundle /
+            ("kokoro-recurrent-" + options.variant + ".tflite");
         const auto vocoder = options.bundle / "kokoro-vocoder.tflite";
         const auto voices = options.bundle / "voices";
         const size_t phonemes = count_phonemes(options.bundle, options.text);
@@ -192,7 +196,7 @@ int main(int argc, char** argv) {
         for (int threads : options.threads) {
             const auto load_start = std::chrono::steady_clock::now();
             std::unique_ptr<speech_core::LiteRTKokoroTts> tts;
-            if (options.variant == "equivalent32") {
+            if (staged) {
                 tts = std::make_unique<speech_core::LiteRTKokoroTts>(
                     encoder.string(), recurrent.string(), vocoder.string(),
                     voices.string(), options.bundle.string(), false, threads);
@@ -231,7 +235,7 @@ int main(int argc, char** argv) {
                 synthesize();
                 const auto stop = std::chrono::steady_clock::now();
                 elapsed.push_back(std::chrono::duration<double>(stop - start).count());
-                if (options.variant == "equivalent32") {
+                if (staged) {
                     const auto stages = tts->last_stage_ms();
                     for (size_t stage = 0; stage < stages.size(); ++stage) {
                         stage_elapsed[stage].push_back(stages[stage]);

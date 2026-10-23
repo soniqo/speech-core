@@ -461,10 +461,14 @@ std::vector<std::string> LiteRTKokoroTts::split_for_phoneme_limit(
     for (std::string word; input >> word;) words.push_back(std::move(word));
     if (words.empty()) return {};
 
-    // Fourteen active tokens at speed=1 is the proactive target established by
-    // the accepted 60-frame profile (the parity fixture uses 14 tokens / 41
-    // frames). Scale it for slower/faster speech, retain the hard 32-token
-    // ALBERT ceiling, and keep the post-invoke 56-frame guard authoritative.
+    // Eleven active tokens at speed=1 is the proactive target for the
+    // packed-LSTM recurrence, which keeps upstream Kokoro's pacing: the 14-token
+    // parity fixture now predicts 70 frames (it was 41). Replaying this chunking
+    // over 74 English replies, 11 gave the lowest estimated cost and as few
+    // pieces as any target; about one invocation in six overflows and is
+    // retried below without its vocoder run. Scale
+    // it for slower/faster speech, retain the hard 32-token ALBERT ceiling, and
+    // keep the post-invoke 56-frame guard authoritative.
     const double scaled = static_cast<double>(kPreferredPhonemes) * speed_;
     const size_t preferred = static_cast<size_t>(
         scaled >= kActivePhonemes
@@ -671,6 +675,19 @@ LiteRTKokoroTts::InferenceResult LiteRTKokoroTts::invoke_staged_tokens(
         recurrent, {1, 1}, &total_frames, sizeof(total_frames),
         "recurrent total frames output");
 
+    // synthesize_piece discards a piece predicted past the safe frames and
+    // retries it as smaller text, so skip the vocoder (most of an invocation)
+    // for audio that would be thrown away. The length matches the vocoder's.
+    const int64_t predicted_samples = static_cast<int64_t>(
+        total_frames * static_cast<float>(kSamplesPerFrame));
+    if (predicted_samples >
+        static_cast<int64_t>(kSafeFrames) * kSamplesPerFrame) {
+        last_stage_ms_[2] = 0.0;
+        InferenceResult overflow;
+        overflow.valid_samples = predicted_samples;
+        return overflow;
+    }
+
     TfLiteInterpreter* vocoder = staged_interpreters_[2];
     copy_input(
         vocoder, {1, 512, kMaxFrames}, aligned_text_.data(),
@@ -730,7 +747,9 @@ std::vector<float> LiteRTKokoroTts::finish_audio(
     }
 
     constexpr int sample_rate = 24000;
-    constexpr float silence_rms = 0.030f;
+    // Low enough to keep soft word endings at upstream pacing, as the ONNX
+    // wrapper does; 0.030 cut them. Lower values only keep more tail.
+    constexpr float silence_rms = 0.015f;
     const size_t window = sample_rate / 20;  // 50 ms
     size_t speech_end = valid_samples;
     if (valid_samples > window) {
@@ -767,6 +786,9 @@ std::vector<float> LiteRTKokoroTts::finish_audio(
             audio[i] *= static_cast<float>(i) / denominator;
         }
     }
+    // The vocoder is not bounded to +-1 and overshoots by a few percent on
+    // some inputs; clamp so callers always get valid float PCM.
+    for (float& value : audio) value = std::max(-1.0f, std::min(1.0f, value));
     return audio;
 }
 
@@ -794,7 +816,8 @@ std::vector<float> LiteRTKokoroTts::synthesize_piece(
     }
 
     // Outputs in frames 57-60 are inside the tensor but outside the validated
-    // right-context guard band. Discard this waveform and retry smaller text.
+    // right-context guard band. Discard this piece and retry smaller text; the
+    // staged path has already skipped its vocoder.
     const auto halves = split_in_half(text);
     if (halves.size() != 2 || halves[0] == text || halves[1] == text ||
         halves[0].empty() || halves[1].empty()) {

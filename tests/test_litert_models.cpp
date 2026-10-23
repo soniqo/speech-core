@@ -109,8 +109,7 @@ std::string to_lower(std::string s) {
 #ifdef SPEECH_CORE_HAS_LITERT_KOKORO
 void test_litert_kokoro_tts(const std::string& dir) {
     const std::string encoder = dir + "/kokoro-encoder.tflite";
-    const std::string recurrent =
-        dir + "/kokoro-recurrent-equivalent32.tflite";
+    const std::string recurrent = dir + "/kokoro-recurrent-packed32.tflite";
     const std::string vocoder = dir + "/kokoro-vocoder.tflite";
     const std::string vocab = dir + "/vocab_index.json";
     const std::string gold = dir + "/us_gold.json";
@@ -129,7 +128,7 @@ void test_litert_kokoro_tts(const std::string& dir) {
         /*hw_accel=*/false, /*num_threads=*/4);
     REQUIRE(tts.output_sample_rate() == 24000);
     REQUIRE(tts.max_active_phonemes() == 32);
-    REQUIRE(tts.preferred_chunk_phonemes() == 14);
+    REQUIRE(tts.preferred_chunk_phonemes() == 11);
     REQUIRE(tts.max_safe_frames() == 56);
     tts.set_seed(1234);
     tts.set_speed(1.0f);
@@ -142,9 +141,11 @@ void test_litert_kokoro_tts(const std::string& dir) {
             final = final || is_final;
         });
     REQUIRE(final);
+    // "Hello world." is 15 tokens: two pieces, "Hello" and "world.", each
+    // inside the 56-frame guard.
+    REQUIRE(tts.model_runs_last_synthesis() == 2);
     REQUIRE(audio.size() >= 6000);
-    REQUIRE(audio.size() <= 56 * 600);
-    REQUIRE(tts.model_runs_last_synthesis() == 1);
+    REQUIRE(audio.size() <= 2 * 56 * 600);
     float peak = 0.0f;
     double energy = 0.0;
     for (float sample : audio) {
@@ -152,7 +153,7 @@ void test_litert_kokoro_tts(const std::string& dir) {
         peak = std::max(peak, std::abs(sample));
         energy += static_cast<double>(sample) * sample;
     }
-    REQUIRE(peak > 0.01f && peak <= 2.0f);
+    REQUIRE(peak > 0.01f && peak <= 1.0f);
     REQUIRE(energy / audio.size() > 1e-6);
     std::printf("ok (%zu samples, peak=%.3f)\n", audio.size(), peak);
 }

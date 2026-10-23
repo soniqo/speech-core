@@ -500,7 +500,7 @@ that API, so CMake leaves this implementation and its diagnostics disabled there
 
 speech_core::LiteRTKokoroTts tts(
     "/models/kokoro-encoder.tflite",
-    "/models/kokoro-recurrent-equivalent32.tflite",
+    "/models/kokoro-recurrent-packed32.tflite",
     "/models/kokoro-vocoder.tflite",
     "/models/voices",
     "/models",
@@ -515,11 +515,11 @@ tts.synthesize("Hello world.", "en",
     });
 ```
 
-- The release is a fixed-shape, three-stage FP32 bundle: `kokoro-encoder.tflite`, `kokoro-recurrent-equivalent32.tflite`, and `kokoro-vocoder.tflite` (333,529,644 bytes total). The recurrent graph preserves the accepted 128-slot result by precomputing the state of the guaranteed 96-slot zero tail, then evaluating only 32 recurrent slots.
-- The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. The wrapper proactively chunks around 14 active tokens at speed 1.0.
-- The final convolutional stack needs unused right context. A model-reported duration above 56 frames (33,600 samples) is discarded and retried as smaller text; frames 57–60 are never accepted merely because they fit the 36,000-sample tensor.
-- Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, and short fades at chunk boundaries.
-- `num_threads` configures each XNNPACK interpreter directly. On a physical Galaxy S23 Ultra (`SM-S918B`), 8 threads was the best tested setting: 0.5502 warmed p50 RTF, 0.5807 p90 RTF, and 1,017.5 MiB peak RSS for `Hello world.` (one warm-up + ten measured runs). Android and Windows wrapper outputs correlated at 0.999795. Use `speech_kokoro_litert_bench <bundle-dir> --variant equivalent32 --threads 8 --warmup 1 --runs 10` to reproduce it.
+- The release is a fixed-shape, three-stage FP32 bundle: `kokoro-encoder.tflite`, `kokoro-recurrent-packed32.tflite`, and `kokoro-vocoder.tflite` (333,521,020 bytes total). The recurrent graph runs every token LSTM over its valid prefix, as upstream Kokoro's packed sequences do, and evaluates only 32 recurrent slots. The v1.0.0 graph, `kokoro-recurrent-equivalent32.tflite`, walked the zero padding in the backward direction and predicted short durations, most for short input.
+- The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. The wrapper proactively chunks around 11 active tokens at speed 1.0.
+- The final convolutional stack needs unused right context. A model-reported duration above 56 frames (33,600 samples) is discarded and retried as smaller text without running the vocoder; frames 57–60 are never accepted merely because they fit the 36,000-sample tensor.
+- Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, a ±1 clamp, and short fades at chunk boundaries.
+- `num_threads` configures each XNNPACK interpreter directly. On a physical Galaxy S23 Ultra (`SM-S918B`), 8 threads was the best tested setting for the v1.0.0 bundle: 0.5502 warmed p50 RTF, 0.5807 p90 RTF, and 1,017.5 MiB peak RSS for `Hello world.` (one warm-up + ten measured runs). Android and Windows wrapper outputs correlated at 0.999795. Use `speech_kokoro_litert_bench <bundle-dir> --variant packed32 --threads 8 --warmup 1 --runs 10` to measure the packed graph, or `--variant equivalent32` for v1.0.0.
 - The physical-device GPU audit was rejected; this wrapper is CPU/XNNPACK-only.
 - Use the staged bundle when `.tflite` format compatibility is required; the ONNX backend has separate full-graph and guarded short-turn profiles documented below.
 - Model files: [soniqo/Kokoro-82M-LiteRT](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) — the three graphs, `vocab_index.json`, `us_gold.json`, `us_silver.json`, and `voices/af_heart.bin`.
