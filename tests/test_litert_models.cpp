@@ -109,8 +109,8 @@ std::string to_lower(std::string s) {
 #ifdef SPEECH_CORE_HAS_LITERT_KOKORO
 void test_litert_kokoro_tts(const std::string& dir) {
     const std::string encoder = dir + "/kokoro-encoder.tflite";
-    const std::string recurrent = dir + "/kokoro-recurrent-packed32.tflite";
-    const std::string vocoder = dir + "/kokoro-vocoder.tflite";
+    const std::string recurrent = dir + "/kokoro-recurrent-packed32-120.tflite";
+    const std::string vocoder = dir + "/kokoro-vocoder-120.tflite";
     const std::string vocab = dir + "/vocab_index.json";
     const std::string gold = dir + "/us_gold.json";
     const std::string silver = dir + "/us_silver.json";
@@ -128,8 +128,9 @@ void test_litert_kokoro_tts(const std::string& dir) {
         /*hw_accel=*/false, /*num_threads=*/4);
     REQUIRE(tts.output_sample_rate() == 24000);
     REQUIRE(tts.max_active_phonemes() == 32);
-    REQUIRE(tts.preferred_chunk_phonemes() == 11);
-    REQUIRE(tts.max_safe_frames() == 56);
+    REQUIRE(tts.max_frames() == 120);
+    REQUIRE(tts.preferred_chunk_phonemes() == 32);
+    REQUIRE(tts.max_safe_frames() == 116);
     tts.set_seed(1234);
     tts.set_speed(1.0f);
 
@@ -141,11 +142,10 @@ void test_litert_kokoro_tts(const std::string& dir) {
             final = final || is_final;
         });
     REQUIRE(final);
-    // "Hello world." is 15 tokens: two pieces, "Hello" and "world.", each
-    // inside the 56-frame guard.
-    REQUIRE(tts.model_runs_last_synthesis() == 2);
+    // "Hello world." is 15 tokens and about 66 frames: one piece.
+    REQUIRE(tts.model_runs_last_synthesis() == 1);
     REQUIRE(audio.size() >= 6000);
-    REQUIRE(audio.size() <= 2 * 56 * 600);
+    REQUIRE(audio.size() <= 116 * 600);
     float peak = 0.0f;
     double energy = 0.0;
     for (float sample : audio) {
@@ -155,7 +155,23 @@ void test_litert_kokoro_tts(const std::string& dir) {
     }
     REQUIRE(peak > 0.01f && peak <= 1.0f);
     REQUIRE(energy / audio.size() > 1e-6);
-    std::printf("ok (%zu samples, peak=%.3f)\n", audio.size(), peak);
+    const size_t hello_samples = audio.size();
+
+    // A 24-word reply takes a few pieces at this contract (five on a Galaxy
+    // S23); the 60-frame graphs needed 14 or more, a word or two each.
+    audio.clear();
+    tts.synthesize(
+        "Sure, I can help with that. The meeting has been moved to Friday "
+        "afternoon at two o'clock, and I will remind you an hour before it starts.",
+        "en",
+        [&](const float* samples, size_t length, bool) {
+            if (samples && length) audio.insert(audio.end(), samples, samples + length);
+        });
+    const int reply_runs = tts.model_runs_last_synthesis();
+    REQUIRE(reply_runs >= 2 && reply_runs <= 8);
+    REQUIRE(audio.size() <= static_cast<size_t>(reply_runs) * 116 * 600);
+    std::printf("ok (%zu samples, peak=%.3f, 24-word reply in %d runs)\n",
+                hello_samples, peak, reply_runs);
 }
 #endif
 

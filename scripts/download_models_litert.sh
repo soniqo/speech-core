@@ -34,8 +34,8 @@ FILES=(
     # Kokoro's validated release: three-stage 60-frame FP32 bundle + English
     # phonemizer data + default voice.
     "Kokoro-82M-LiteRT/kokoro-encoder.tflite"
-    "Kokoro-82M-LiteRT/kokoro-recurrent-packed32.tflite"
-    "Kokoro-82M-LiteRT/kokoro-vocoder.tflite"
+    "Kokoro-82M-LiteRT/kokoro-recurrent-packed32-120.tflite"
+    "Kokoro-82M-LiteRT/kokoro-vocoder-120.tflite"
     "Kokoro-82M-LiteRT/vocab_index.json"
     "Kokoro-82M-LiteRT/us_gold.json"
     "Kokoro-82M-LiteRT/us_silver.json"
