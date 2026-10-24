@@ -22,8 +22,8 @@ struct SupertonicPiece {
 /// **NFKD + regex cleanup + `<lang>…</lang>` wrap + codepoint→token-id table lookup.**
 /// No phonemizer, no IPA, no lexicon, no espeak.
 ///
-/// Faithful C++ port of `Supertone/supertonic` `py/helper.py::UnicodeProcessor` (MIT); validated
-/// against it in the Runner repo's `speech-models/stmodels/infer.py`. Two traps it handles:
+/// Faithful C++ port of `Supertone/supertonic` `py/helper.py::UnicodeProcessor` (MIT), validated
+/// against the upstream Python. Two traps it handles:
 ///   - **codepoint (not byte) work** — everything operates on decoded UTF-32, never `std::string`
 ///     byte length.
 ///   - **unknown token = -1** — out-of-range / unmapped codepoints resolve to -1 (never an OOB

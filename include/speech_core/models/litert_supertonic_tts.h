@@ -45,8 +45,8 @@ namespace speech_core {
 /// in one pass (one coherent prosodic contour) and a split only remains for text longer than the
 /// largest bucket. Short pieces keep using the cheap base graph.
 ///
-/// Validated end-to-end against the ONNX reference at 66–82 dB mag-STFT SNR (en/de/ko); see the
-/// Runner repo's `speech-models/stmodels/controlled_ab.py`. Voice is a precomputed style pair
+/// Validated end-to-end against the ONNX reference at 66–82 dB mag-STFT SNR (en/de/ko) in a
+/// controlled A/B run at export time. Voice is a precomputed style pair
 /// (`voice_styles/<id>.json`); on-device voice cloning is out of scope (the style-extractor isn't
 /// released).
 class LiteRTSupertonicTts : public TTSInterface {

@@ -5,7 +5,7 @@
 speech-core — voice agent pipeline engine in C++17. Provides:
 
 1. **Orchestration core** — state machine, turn detection, interruption handling, speech queue, conversation context, streaming VAD state machine, audio utilities. Zero ML dependencies, pure C++17.
-2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `TurnCompletionInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface` (with `SegmentationWindow` / `DiarizedSegment` / `DiarizerConfig` types) in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, speech-cloud, …) implement these with their own model backends.
+2. **Abstract interfaces** — `STTInterface`, `TTSInterface`, `VADInterface`, `TurnCompletionInterface`, `EnhancerInterface`, `EchoCancellerInterface`, `LLMInterface`, plus the batch diarization interfaces `SegmentationInterface`, `EmbeddingInterface`, `DiarizerInterface` (with `SegmentationWindow` / `DiarizedSegment` / `DiarizerConfig` types) in `include/speech_core/interfaces.h`. Consumers (speech-swift, speech-android, …) implement these with their own model backends.
 3. **Optional ONNX reference implementations** — `SileroVad`, `ParakeetStt`, `KokoroTts`, `DeepFilterEnhancer`, `OnnxSmartTurn` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_ONNX=ON`.
 4. **Optional LiteRT reference implementations** — `LiteRTSileroVad`, `LiteRTParakeetStt`, `LiteRTKokoroTts`, `LiteRTVoxCPM2Tts`, `LiteRTChatterboxTts`, `LiteRTWeSpeakerEmbedding`, `LiteRTPyannoteSegmentation`, `LiteRTOmnilingualStt`, `LiteRTNemotronStreamingStt` in `include/speech_core/models/`. Compiled in only when `SPEECH_CORE_WITH_LITERT=ON`. Backed by `libLiteRt` from Google's `ai-edge-litert` package (extracted from the PyPI wheel by `scripts/fetch_litert.sh`). DeepFilter LiteRT does not exist yet. `LiteRTKokoroTts` ships the validated three-stage 60-frame FP32 bundle, enforces a 56-frame right-context guard, and is enabled on Windows and Android where the validated runtimes export the required TensorFlow Lite interpreter C API. `LiteRTChatterboxTts` (multilingual TTS, `soniqo/Chatterbox-LiteRT`, C ABI in `chatterbox_c.h`) defaults to greedy decoding; ship the fp16 T3 bundle for Arabic (int8 is English-quality only).
 5. **Diarization** — `DiarizationPipeline` (`DiarizerInterface`) in `include/speech_core/diarization/`. Pure C++17, no ML-runtime dependency, built into the **core** library; composes a `SegmentationInterface` + `EmbeddingInterface` with constrained agglomerative clustering.
@@ -22,8 +22,8 @@ Sibling repos under `~/repos/`:
 
 - **speech-android** — Android SDK + JNI bridge to speech-core
 - **speech-swift** — Swift Package consuming speech-core as a prebuilt xcframework binary target; CoreML/MLX models implement the same conceptual interfaces (see speech-swift's `docs/shared-protocols.md`)
-- **speech-models** — model artifacts on HuggingFace: ONNX + LiteRT under `soniqo/`, CoreML/MLX (Apple) under `aufklarer/`
-- **speech-cloud** — server-side counterpart
+
+Models are published on HuggingFace: ONNX + LiteRT under `soniqo/`, CoreML/MLX (Apple) under `aufklarer/`.
 
 ## Build
 
@@ -154,4 +154,4 @@ When working across repos, prefer one PR per repo (don't bundle Android + core c
 1. speech-core PR lands first (changes the API or models).
 2. speech-android PR bumps the submodule pointer and updates consumer code.
 3. speech-swift PR re-pins the xcframework binary target to the new release.
-4. soniqo-web docs PR updates link targets last (after the source code paths are finalized).
+4. The docs site updates its link targets last (after the source code paths are finalized).

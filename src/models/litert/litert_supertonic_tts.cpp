@@ -17,8 +17,8 @@ namespace {
 
 // Fixed latent length (frames) of the *base* vector_estimator / vocoder graphs. The published
 // LiteRT bundle is fixed-shape (T=128, L=64). A dynamic-L export is BLOCKED upstream: litert_torch
-// can't lower SupertonicTTS's relpos attention + ConvNeXt with a symbolic L (see
-// speech-models/stmodels/export_litert.py), so longer windows ship as extra fixed-L *buckets*
+// can't lower SupertonicTTS's relpos attention + ConvNeXt with a symbolic L, so longer
+// windows ship as extra fixed-L *buckets*
 // (`*_L{N}.tflite` siblings, discovered in the ctor). SUPERTONIC_LATENT_FRAMES overrides the base
 // only for experiments against a re-exported base graph.
 int graph_latent_frames() {

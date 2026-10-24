@@ -71,7 +71,7 @@ public:
 
 private:
     // Bundle-invariant constants (from PersonaPlex spec; see speech-swift
-    // docs/models/personaplex.md and speech-models ONNX_EXPORT_PLAN.md).
+    // docs/models/personaplex.md).
     static constexpr int kSampleRate      = 24000;
     static constexpr int kFrameRate       = 12;            // 12.5 Hz, kept as int (samples_per_frame is canonical)
     static constexpr int kSamplesPerFrame = 1920;          // 24000 / 12.5

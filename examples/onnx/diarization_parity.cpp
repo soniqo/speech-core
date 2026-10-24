@@ -1,7 +1,7 @@
 // C++ gate for the ONNX diarization models.
 //
-// The Python parity gate (speech-models/benchmarks/parity_diarization_onnx.py)
-// proved the exported GRAPHS match PyTorch. This proves the C++ WRAPPERS match —
+// The Python parity gate run at export time proved the exported GRAPHS
+// match PyTorch. This proves the C++ WRAPPERS match —
 // a different claim, and the one that ships. Two things can only break here:
 //
 //   1. The frame->time mapping. The ONNX graph emits 589 frames per 10 s window;
