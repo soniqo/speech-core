@@ -31,7 +31,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 |---|---|---|---|
 | `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
 | `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
-| `LiteRTKokoroTts` | `TTSInterface` | `speech_core/models/litert_kokoro_tts.h` | full (staged 60-frame FP32) |
+| `LiteRTKokoroTts` | `TTSInterface` | `speech_core/models/litert_kokoro_tts.h` | full (staged 120-frame FP32) |
 | `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | full (text-only) |
 | `LiteRTChatterboxTts` | `TTSInterface` | `speech_core/models/litert_chatterbox_tts.h` | full |
 | `LiteRTSupertonicTts` | `TTSInterface` | `speech_core/models/litert_supertonic_tts.h` | full |
@@ -500,12 +500,12 @@ that API, so CMake leaves this implementation and its diagnostics disabled there
 
 speech_core::LiteRTKokoroTts tts(
     "/models/kokoro-encoder.tflite",
-    "/models/kokoro-recurrent-equivalent32.tflite",
-    "/models/kokoro-vocoder.tflite",
+    "/models/kokoro-recurrent-packed32-120.tflite",
+    "/models/kokoro-vocoder-120.tflite",
     "/models/voices",
     "/models",
     /*hw_accel=*/false,
-    /*num_threads=*/4);
+    /*num_threads=*/8);
 
 tts.set_seed(1234);  // optional deterministic harmonic phases
 tts.set_speed(1.0f);
@@ -515,11 +515,19 @@ tts.synthesize("Hello world.", "en",
     });
 ```
 
-- The release is a fixed-shape, three-stage FP32 bundle: `kokoro-encoder.tflite`, `kokoro-recurrent-equivalent32.tflite`, and `kokoro-vocoder.tflite` (333,529,644 bytes total). The recurrent graph preserves the accepted 128-slot result by precomputing the state of the guaranteed 96-slot zero tail, then evaluating only 32 recurrent slots.
-- The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. The wrapper proactively chunks around 14 active tokens at speed 1.0.
-- The final convolutional stack needs unused right context. A model-reported duration above 56 frames (33,600 samples) is discarded and retried as smaller text; frames 57–60 are never accepted merely because they fit the 36,000-sample tensor.
-- Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, and short fades at chunk boundaries.
-- `num_threads` configures each XNNPACK interpreter directly. On a physical Galaxy S23 Ultra (`SM-S918B`), 8 threads was the best tested setting: 0.5502 warmed p50 RTF, 0.5807 p90 RTF, and 1,017.5 MiB peak RSS for `Hello world.` (one warm-up + ten measured runs). Android and Windows wrapper outputs correlated at 0.999795. Use `speech_kokoro_litert_bench <bundle-dir> --variant equivalent32 --threads 8 --warmup 1 --runs 10` to reproduce it.
+- The release is a fixed-shape, three-stage FP32 bundle with a 120-frame (3 s, 72,000-sample) contract: `kokoro-encoder.tflite`, `kokoro-recurrent-packed32-120.tflite`, and `kokoro-vocoder-120.tflite` (334,176,844 bytes total). The recurrent graph runs every token LSTM over its valid prefix, as upstream Kokoro's packed sequences do, and evaluates only 32 recurrent slots.
+- The wrapper reads the frame contract from the recurrent graph and rejects a vocoder from the other contract. v1.0.0's 60-frame files (`kokoro-recurrent-equivalent32.tflite`, `kokoro-vocoder.tflite`; same encoder) still load. Their recurrence walked the zero padding backwards and predicted durations too short, most for short replies.
+- The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. At speed 1.0 the wrapper chunks at 32 tokens for the 120-frame contract and 14 for v1.0.0's.
+- The final convolutional stack needs four frames of unused right context. A model-reported duration past the contract minus four frames (116 frames, 69,600 samples) is discarded and retried as smaller text without running the vocoder; the last four frames are never accepted merely because they fit the tensor.
+- Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, a ±1 clamp, and short fades at chunk boundaries.
+- `num_threads` configures each XNNPACK interpreter directly; 8 threads was the best tested setting on a physical Galaxy S23 Ultra (`SM-S918B`). Measured there against the v1.0.0 bundle on the same day (one warm-up and ten runs per bundle, each batch started from thermal status 0):
+
+  | Bundle | 24-word reply | Peak RSS | Parakeet, 21 replies exact |
+  |---|---:|---:|---:|
+  | 120-frame packed | 6.7 s | 1,062 MiB | 19 |
+  | v1.0.0, 60 frames | 9.4 s | 1,003 MiB | 15 |
+
+  Use `speech_kokoro_litert_bench <bundle-dir> --variant packed32-120 --threads 8 --warmup 1 --runs 10` to reproduce it, or `--variant equivalent32` for v1.0.0.
 - The physical-device GPU audit was rejected; this wrapper is CPU/XNNPACK-only.
 - Use the staged bundle when `.tflite` format compatibility is required; the ONNX backend has separate full-graph and guarded short-turn profiles documented below.
 - Model files: [soniqo/Kokoro-82M-LiteRT](https://huggingface.co/soniqo/Kokoro-82M-LiteRT) — the three graphs, `vocab_index.json`, `us_gold.json`, `us_silver.json`, and `voices/af_heart.bin`.
@@ -1005,7 +1013,7 @@ the LLM row reports tool-call decode throughput in tokens/s.
 | Kokoro-82M (full graph, published two-thread CPU default) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.81 RTF |
 | Kokoro-82M (full graph, four-thread local tuning) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.16 RTF |
 | Kokoro-82M (realtime 3.0 s short-turn graph) | TTS (preset voice) | ONNX FP32 | ~527 MiB | **0.75–0.88 RTF** |
-| Kokoro-82M (staged 60-frame reference) | TTS (preset voice) | LiteRT FP32 / XNNPACK | ~1.02 GiB | 0.55 p50 RTF |
+| Kokoro-82M (staged 120-frame bundle, 24-word reply) | TTS (preset voice) | LiteRT FP32 / XNNPACK | ~1.04 GiB | 0.60 p50 RTF |
 | FunctionGemma-270M | LLM (tool calls) | LiteRT-LM | ~611 MB | ~118 tok/s |
 
 - Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
@@ -1016,6 +1024,9 @@ the LLM row reports tool-call decode throughput in tokens/s.
   Physical-device runs vary with thermal state (0.75–0.88 RTF here). The short-turn
   result describes an in-profile English reply, not a worst-case long-form result;
   output beyond the 2.8 s guarded limit is split and retried safely.
+- The staged LiteRT Kokoro bundle renders a fixed 3 s vocoder window per piece, so a
+  short line costs about as much as a full piece: "Hello world." took 1.39 s for 1.2 s
+  of audio, while the 24-word reply took 6.7 s for 11.2 s.
 - Disabling the ONNX CPU memory arena (now the default) cut Parakeet-TDT peak RSS
   from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
 - Parakeet-EOU is the lightest STT here while staying multilingual + streaming —

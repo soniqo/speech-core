@@ -18,13 +18,15 @@ struct TfLiteOpaqueDelegate;
 
 namespace speech_core {
 
-/// Kokoro 82M text-to-speech using the validated staged 60-frame FP32 LiteRT bundle.
+/// Kokoro 82M text-to-speech on a staged FP32 LiteRT bundle.
 ///
-/// The exported bundle accepts at most 32 active phonemes and produces a fixed
-/// 36,000-sample buffer. The final convolutional network needs unused right
-/// context, so this wrapper accepts at most 56 predicted frames per invocation.
-/// Longer text is split and an overflowing piece is discarded and retried as
-/// smaller pieces; a merely in-bounds 60-frame output is not treated as safe.
+/// The bundle accepts at most 32 active phonemes. Its frame contract is read
+/// from the graphs: the packed-LSTM bundle produces a fixed 120-frame
+/// (72,000-sample) buffer, v1.0.0's zero-tail bundle a 60-frame one. The final
+/// convolutional network needs four frames of unused right context, so an
+/// invocation is accepted only up to the contract minus four frames. Longer
+/// text is split and an overflowing piece is discarded and retried as smaller
+/// pieces; a merely in-bounds output is not treated as safe.
 class LiteRTKokoroTts : public TTSInterface {
 public:
     LiteRTKokoroTts(const std::string& model_path,
@@ -64,8 +66,10 @@ public:
     std::array<double, 3> last_stage_ms() const { return last_stage_ms_; }
 
     static constexpr int max_active_phonemes() { return kActivePhonemes; }
-    static constexpr int preferred_chunk_phonemes() { return kPreferredPhonemes; }
-    static constexpr int max_safe_frames() { return kSafeFrames; }
+    /// Frame contract of the loaded graphs: 120, or 60 for v1.0.0's bundle.
+    int max_frames() const { return max_frames_; }
+    int preferred_chunk_phonemes() const { return preferred_phonemes_; }
+    int max_safe_frames() const { return safe_frames_; }
 
 private:
     struct InferenceResult {
@@ -86,17 +90,21 @@ private:
     InferenceResult invoke_staged_tokens(const std::vector<int64_t>& tokens,
                                          std::mt19937& rng);
     void load_support_data(const std::string& data_dir);
+    void set_frame_contract(int max_frames);
     static std::vector<float> finish_audio(std::vector<float> audio,
                                            size_t valid_samples,
                                            const std::string& text);
 
     static constexpr int kInputPhonemes = 128;
     static constexpr int kActivePhonemes = 32;
-    static constexpr int kPreferredPhonemes = 14;
-    static constexpr int kMaxFrames = 60;
-    static constexpr int kSafeFrames = 56;
     static constexpr int kSamplesPerFrame = 600;
-    static constexpr int kOutputSamples = kMaxFrames * kSamplesPerFrame;
+    /// Right context the final convolutional network needs after the speech.
+    static constexpr int kGuardFrames = 4;
+
+    int max_frames_ = 0;
+    int safe_frames_ = 0;
+    int preferred_phonemes_ = 0;
+    size_t output_samples_ = 0;
 
     TfLiteModel* model_ = nullptr;
     TfLiteInterpreter* interpreter_ = nullptr;

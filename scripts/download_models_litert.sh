@@ -31,11 +31,11 @@ FILES=(
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/parakeet-decoder-joint.tflite"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/vocab.json"
     "Parakeet-TDT-0.6B-v3-LiteRT-INT8/config.json"
-    # Kokoro's validated release: three-stage 60-frame FP32 bundle + English
+    # Kokoro's v2.0.0 release: three-stage 120-frame FP32 bundle + English
     # phonemizer data + default voice.
     "Kokoro-82M-LiteRT/kokoro-encoder.tflite"
-    "Kokoro-82M-LiteRT/kokoro-recurrent-equivalent32.tflite"
-    "Kokoro-82M-LiteRT/kokoro-vocoder.tflite"
+    "Kokoro-82M-LiteRT/kokoro-recurrent-packed32-120.tflite"
+    "Kokoro-82M-LiteRT/kokoro-vocoder-120.tflite"
     "Kokoro-82M-LiteRT/vocab_index.json"
     "Kokoro-82M-LiteRT/us_gold.json"
     "Kokoro-82M-LiteRT/us_silver.json"

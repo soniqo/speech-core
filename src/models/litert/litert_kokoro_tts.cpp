@@ -99,6 +99,21 @@ const TfLiteTensor* find_output(
     return result;
 }
 
+// The recurrent graph's aligned-text output, [1, 512, frames], carries the
+// bundle's frame contract.
+int aligned_text_frames(TfLiteInterpreter* recurrent) {
+    const int count = TfLiteInterpreterGetOutputTensorCount(recurrent);
+    for (int i = 0; i < count; ++i) {
+        const TfLiteTensor* tensor = TfLiteInterpreterGetOutputTensor(recurrent, i);
+        if (tensor && TfLiteTensorNumDims(tensor) == 3 &&
+            TfLiteTensorDim(tensor, 0) == 1 && TfLiteTensorDim(tensor, 1) == 512) {
+            return TfLiteTensorDim(tensor, 2);
+        }
+    }
+    throw std::runtime_error(
+        "Kokoro LiteRT: recurrent graph has no [1, 512, frames] output");
+}
+
 void create_xnnpack_interpreter(
     const std::string& path,
     int num_threads,
@@ -144,6 +159,8 @@ LiteRTKokoroTts::LiteRTKokoroTts(const std::string& model_path,
     }
 
     try {
+        // The single-graph export exists only for the 60-frame contract.
+        set_frame_contract(60);
         // This fixed 339 MB graph can use the stable Interpreter C API that
         // libLiteRt exports. Unlike LiteRtCompiledModel 2.1.5, this path wires
         // InterpreterOptionsSetNumThreads through to the default XNNPACK
@@ -197,7 +214,7 @@ LiteRTKokoroTts::LiteRTKokoroTts(const std::string& model_path,
                 TfLiteInterpreterGetOutputTensor(interpreter_, i);
             if (!tensor) continue;
             const size_t elements = tensor_element_count(tensor);
-            if (elements == static_cast<size_t>(kOutputSamples)) {
+            if (elements == output_samples_) {
                 audio_output_idx_ = i;
             } else if (elements == 1) {
                 length_output_idx_ = i;
@@ -260,29 +277,43 @@ LiteRTKokoroTts::LiteRTKokoroTts(const std::string& encoder_path,
         find_output(encoder, {1, kInputPhonemes, 512});
 
         auto* recurrent = staged_interpreters_[1];
+        set_frame_contract(aligned_text_frames(recurrent));
         find_input(recurrent, {1, 512, kInputPhonemes});
         find_input(recurrent, {1, kInputPhonemes, 512});
         find_input(recurrent, {1, kInputPhonemes});
         find_input(recurrent, {1, 1, 128});
         find_input(recurrent, {1});
-        find_output(recurrent, {1, 512, kMaxFrames});
-        find_output(recurrent, {1, kMaxFrames, 512});
+        find_output(recurrent, {1, 512, max_frames_});
+        find_output(recurrent, {1, max_frames_, 512});
         find_output(recurrent, {1, 1});
         find_output(recurrent, {1, kInputPhonemes});
 
         auto* vocoder = staged_interpreters_[2];
-        find_input(vocoder, {1, 512, kMaxFrames});
-        find_input(vocoder, {1, kMaxFrames, 512});
+        // Mixing a 60-frame vocoder with a 120-frame recurrence (or the other
+        // way round) would otherwise only surface as a missing shape.
+        bool vocoder_matches = false;
+        for (int i = 0; i < TfLiteInterpreterGetInputTensorCount(vocoder); ++i) {
+            vocoder_matches = vocoder_matches ||
+                tensor_has_shape(TfLiteInterpreterGetInputTensor(vocoder, i),
+                                 {1, 512, max_frames_});
+        }
+        if (!vocoder_matches) {
+            throw std::runtime_error(
+                "Kokoro LiteRT: the vocoder does not match the recurrent graph's " +
+                std::to_string(max_frames_) + "-frame contract");
+        }
+        find_input(vocoder, {1, 512, max_frames_});
+        find_input(vocoder, {1, max_frames_, 512});
         find_input(vocoder, {1, 1});
         find_input(vocoder, {1, 256});
         find_input(vocoder, {1, 9});
-        find_output(vocoder, {1, 1, kOutputSamples});
+        find_output(vocoder, {1, 1, static_cast<int>(output_samples_)});
         find_output(vocoder, {1});
 
         duration_features_.resize(512 * kInputPhonemes);
         text_features_.resize(kInputPhonemes * 512);
-        aligned_text_.resize(512 * kMaxFrames);
-        shared_features_.resize(kMaxFrames * 512);
+        aligned_text_.resize(static_cast<size_t>(512) * max_frames_);
+        shared_features_.resize(static_cast<size_t>(max_frames_) * 512);
         load_support_data(data_dir);
     } catch (...) {
         for (size_t i = 0; i < kStageCount; ++i) {
@@ -312,6 +343,26 @@ LiteRTKokoroTts::~LiteRTKokoroTts() {
         if (staged_delegates_[i]) TfLiteXNNPackDelegateDelete(staged_delegates_[i]);
         if (staged_models_[i]) TfLiteModelDelete(staged_models_[i]);
     }
+}
+
+void LiteRTKokoroTts::set_frame_contract(int max_frames) {
+    // Proactive chunk targets at speed 1.0, per contract. v1.0.0's 60-frame
+    // zero-tail graph keeps its validated 14 tokens. The 120-frame packed graph
+    // keeps upstream pacing, and there the 32-slot ALBERT window binds before
+    // the frames: replaying the chunker over 74 English replies, 3 of 160
+    // invocations at 32 tokens overflowed.
+    if (max_frames == 60) {
+        preferred_phonemes_ = 14;
+    } else if (max_frames == 120) {
+        preferred_phonemes_ = kActivePhonemes;
+    } else {
+        throw std::runtime_error(
+            "Kokoro LiteRT: unsupported frame contract of " +
+            std::to_string(max_frames) + " frames (expected 120 or 60)");
+    }
+    max_frames_ = max_frames;
+    safe_frames_ = max_frames - kGuardFrames;
+    output_samples_ = static_cast<size_t>(max_frames) * kSamplesPerFrame;
 }
 
 void LiteRTKokoroTts::load_support_data(const std::string& data_dir) {
@@ -461,11 +512,10 @@ std::vector<std::string> LiteRTKokoroTts::split_for_phoneme_limit(
     for (std::string word; input >> word;) words.push_back(std::move(word));
     if (words.empty()) return {};
 
-    // Fourteen active tokens at speed=1 is the proactive target established by
-    // the accepted 60-frame profile (the parity fixture uses 14 tokens / 41
-    // frames). Scale it for slower/faster speech, retain the hard 32-token
-    // ALBERT ceiling, and keep the post-invoke 56-frame guard authoritative.
-    const double scaled = static_cast<double>(kPreferredPhonemes) * speed_;
+    // The proactive target at speed=1 comes from the frame contract
+    // (set_frame_contract). Scale it for slower/faster speech, retain the hard
+    // 32-token ALBERT ceiling, and keep the post-invoke guard authoritative.
+    const double scaled = static_cast<double>(preferred_phonemes_) * speed_;
     const size_t preferred = static_cast<size_t>(
         scaled >= kActivePhonemes
             ? kActivePhonemes
@@ -554,7 +604,7 @@ LiteRTKokoroTts::InferenceResult LiteRTKokoroTts::invoke_tokens(
     tflite_check(TfLiteInterpreterInvoke(interpreter_), "Invoke");
 
     InferenceResult result;
-    result.audio.resize(kOutputSamples);
+    result.audio.resize(output_samples_);
     const TfLiteTensor* out_audio =
         TfLiteInterpreterGetOutputTensor(interpreter_, audio_output_idx_);
     const TfLiteTensor* out_length =
@@ -661,22 +711,35 @@ LiteRTKokoroTts::InferenceResult LiteRTKokoroTts::invoke_staged_tokens(
     last_stage_ms_[1] = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - stage_started).count();
     copy_output(
-        recurrent, {1, 512, kMaxFrames}, aligned_text_.data(),
+        recurrent, {1, 512, max_frames_}, aligned_text_.data(),
         aligned_text_.size() * sizeof(float), "recurrent aligned text output");
     copy_output(
-        recurrent, {1, kMaxFrames, 512}, shared_features_.data(),
+        recurrent, {1, max_frames_, 512}, shared_features_.data(),
         shared_features_.size() * sizeof(float), "recurrent shared output");
     float total_frames = 0.0f;
     copy_output(
         recurrent, {1, 1}, &total_frames, sizeof(total_frames),
         "recurrent total frames output");
 
+    // synthesize_piece discards a piece predicted past the safe frames and
+    // retries it as smaller text, so skip the vocoder (most of an invocation)
+    // for audio that would be thrown away. The length matches the vocoder's.
+    const int64_t predicted_samples = static_cast<int64_t>(
+        total_frames * static_cast<float>(kSamplesPerFrame));
+    if (predicted_samples >
+        static_cast<int64_t>(safe_frames_) * kSamplesPerFrame) {
+        last_stage_ms_[2] = 0.0;
+        InferenceResult overflow;
+        overflow.valid_samples = predicted_samples;
+        return overflow;
+    }
+
     TfLiteInterpreter* vocoder = staged_interpreters_[2];
     copy_input(
-        vocoder, {1, 512, kMaxFrames}, aligned_text_.data(),
+        vocoder, {1, 512, max_frames_}, aligned_text_.data(),
         aligned_text_.size() * sizeof(float), "vocoder aligned text input");
     copy_input(
-        vocoder, {1, kMaxFrames, 512}, shared_features_.data(),
+        vocoder, {1, max_frames_, 512}, shared_features_.data(),
         shared_features_.size() * sizeof(float), "vocoder shared input");
     copy_input(
         vocoder, {1, 1}, &total_frames, sizeof(total_frames),
@@ -692,9 +755,9 @@ LiteRTKokoroTts::InferenceResult LiteRTKokoroTts::invoke_staged_tokens(
         std::chrono::steady_clock::now() - stage_started).count();
 
     InferenceResult result;
-    result.audio.resize(kOutputSamples);
+    result.audio.resize(output_samples_);
     copy_output(
-        vocoder, {1, 1, kOutputSamples}, result.audio.data(),
+        vocoder, {1, 1, static_cast<int>(output_samples_)}, result.audio.data(),
         result.audio.size() * sizeof(float), "vocoder audio output");
     copy_output(
         vocoder, {1}, &result.valid_samples, sizeof(result.valid_samples),
@@ -730,7 +793,9 @@ std::vector<float> LiteRTKokoroTts::finish_audio(
     }
 
     constexpr int sample_rate = 24000;
-    constexpr float silence_rms = 0.030f;
+    // Low enough to keep soft word endings at upstream pacing, as the ONNX
+    // wrapper does; 0.030 cut them. Lower values only keep more tail.
+    constexpr float silence_rms = 0.015f;
     const size_t window = sample_rate / 20;  // 50 ms
     size_t speech_end = valid_samples;
     if (valid_samples > window) {
@@ -767,6 +832,9 @@ std::vector<float> LiteRTKokoroTts::finish_audio(
             audio[i] *= static_cast<float>(i) / denominator;
         }
     }
+    // The vocoder is not bounded to +-1 and overshoots by a few percent on
+    // some inputs; clamp so callers always get valid float PCM.
+    for (float& value : audio) value = std::max(-1.0f, std::min(1.0f, value));
     return audio;
 }
 
@@ -787,19 +855,21 @@ std::vector<float> LiteRTKokoroTts::synthesize_piece(
     }
     InferenceResult result = invoke_tokens(tokens, rng);
     const int64_t safe_samples =
-        static_cast<int64_t>(kSafeFrames) * kSamplesPerFrame;
+        static_cast<int64_t>(safe_frames_) * kSamplesPerFrame;
     if (result.valid_samples <= safe_samples) {
         return finish_audio(
             std::move(result.audio), static_cast<size_t>(result.valid_samples), text);
     }
 
-    // Outputs in frames 57-60 are inside the tensor but outside the validated
-    // right-context guard band. Discard this waveform and retry smaller text.
+    // Outputs in the last four frames are inside the tensor but outside the
+    // validated right-context guard band. Discard this piece and retry smaller
+    // text; the staged path has already skipped its vocoder.
     const auto halves = split_in_half(text);
     if (halves.size() != 2 || halves[0] == text || halves[1] == text ||
         halves[0].empty() || halves[1].empty()) {
         throw std::runtime_error(
-            "Kokoro LiteRT: text exceeds the 56-frame safety ceiling and cannot be split");
+            "Kokoro LiteRT: text exceeds the " + std::to_string(safe_frames_) +
+            "-frame safety ceiling and cannot be split");
     }
     KOKORO_LOGI("Kokoro LiteRT: retrying %lld-sample chunk as two guarded chunks",
                 static_cast<long long>(result.valid_samples));
