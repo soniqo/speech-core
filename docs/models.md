@@ -1327,8 +1327,9 @@ upstream Kokoro's packed sequences do, so predicted durations match upstream
 and short replies are no longer rushed. They speak at about 10.5 phoneme tokens
 per second, and the runtime sizes each run to fit: 28 tokens on the 3.0 s graph
 (`short_turn_3s()`), 33 on the 140-frame profile and 56 on the 5.0 s graph.
-Graphs on `main`, exported before that fix, speak about 1.5 times faster and
-simply use more, smaller runs.
+Graphs exported before that fix, which `main` served until 2026-10-23 and an
+older cache may still hold, speak about 1.5 times faster and simply use more,
+smaller runs.
 
 - Kokoro 82M, non-autoregressive synthesis; long input is sentence/chunk split
 - 24 kHz Float32 output
