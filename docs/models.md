@@ -86,7 +86,7 @@ format) and `chat()` (run prefill+decode, parse tool-call markers, populate
 
 `DiarizationPipeline` (`speech_core/diarization/diarization_pipeline.h`, implements `DiarizerInterface`) composes a segmenter + embedder + constrained clustering. It is pure C++ and ships in the **core** library (built always, no LiteRT dependency); pair it with the LiteRT segmenter + embedder above.
 
-DeepFilterNet3 does not yet have a LiteRT export; see `speech-models` for conversion status.
+DeepFilterNet3 does not yet have a LiteRT export.
 
 `SortformerSpeakerCache` (`speech_core/models/sortformer_speaker_cache.h`) is
 the host-side state a streaming Sortformer diarizer needs. The exported graph
@@ -845,7 +845,7 @@ tts.synthesize("Bonjour tout le monde.", "fr", [](const float* samples, size_t l
   that still overflows is trimmed to the window with a log line, as before.
 - **Latent buckets.** A bundle may ship extra fixed-L exports of the two L-dependent graphs
   next to the base ones — `vector_estimator_L128.tflite` + `vocoder_L128.tflite` (≈ 9 s) — produced
-  by `speech-models/stmodels/export_litert.py --latent-frames 64 128`. They are discovered at
+  by the LiteRT export with `--latent-frames 64 128`. They are discovered at
   construction (`latent_buckets()`) and loaded on first use, so memory only grows when a long
   piece actually needs one. Each piece runs on the smallest bucket whose window holds its
   predicted duration (`choose_latent_bucket()`): short sentences keep the cheap L=64 graph, a
@@ -1564,7 +1564,7 @@ std::vector<float> clean = rest.restore(ref.data(), ref.size(), ref_rate);
 - Pipeline: `audio (16 kHz)` → SeamlessM4T log-mel front-end → `input_features [1, T, 160]` → predictor → `features [1, T, 1024]` → DAC vocoder → `audio (48 kHz)`.
 - Front-end (`speech_core/audio/seamless_fbank.h`, pure C++17, in the core lib): Kaldi-compatible 80-bin log-mel (povey window, pre-emphasis 0.97, per-frame DC removal, power spectrum, kaldi mel scale, natural log) + per-mel-bin CMVN + ×2 frame stacking (80 → 160). Validated against `transformers.SeamlessM4TFeatureExtractor` (`facebook/w2v-bert-2.0`): cosine ≈ 1.0, golden-value parity in `test_seamless_fbank`.
 - **Not an `EnhancerInterface`** natively: restoration changes both sample rate (16 → 48 kHz) and length, while `EnhancerInterface` is fixed-rate, equal-length, in-place. Use `restore()`. `as_enhancer()` provides an adapter (resamples 48 kHz back to the input rate/length) for callers that only hold the abstract handle.
-- **ONNX-only.** The DAC decoder's `ConvTranspose1d` does not legalise to TFLite, so there is no LiteRT vocoder (see speech-models `models/sidon/export/NOTES.md`). ONNX FP32 is bit-exact vs PyTorch; FP16 is near-lossless at half the size.
+- **ONNX-only.** The DAC decoder's `ConvTranspose1d` does not legalise to TFLite, so there is no LiteRT vocoder. ONNX FP32 is bit-exact vs PyTorch; FP16 is near-lossless at half the size.
 - CLI: `speech_sidon_restore <bundle_dir> <in.wav> <out.wav>` (`examples/onnx/sidon_restore.cpp`).
 - Model files (provisional): `aufklarer/Sidon-ONNX` — `sidon-predictor.onnx` + `sidon-vocoder.onnx` (FP32 ~939 MB, FP16 ~470 MB).
 

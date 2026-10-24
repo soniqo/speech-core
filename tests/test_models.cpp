@@ -95,7 +95,7 @@ struct OnnxVoxCPM2Bundle {
 
 OnnxVoxCPM2Bundle onnx_voxcpm2_bundle() {
     // The VoxCPM2 ONNX bundle is independent of $SPEECH_MODEL_DIR — it lives
-    // alongside the speech-models export workspace. Tries a sensible default
+    // in a local export workspace. Tries a sensible default
     // and falls back to the env var $SPEECH_VOXCPM2_ONNX_DIR for CI flexibility.
     const char* override_dir = std::getenv("SPEECH_VOXCPM2_ONNX_DIR");
     std::string vox_dir = override_dir ? override_dir : "/tmp/voxcpm2-onnx";
@@ -1196,8 +1196,8 @@ void test_voxcpm2_tokenizer(const std::string& /*dir*/) {
 
 // ---------------------------------------------------------------------------
 // ONNX VoxCPM2 load smoke — constructs the wrapper from the random-init
-// exported graphs at /tmp/voxcpm2-onnx/ (the tiny-init bundle from
-// speech-models, used until the real-weights text_prefill export lands).
+// exported graphs at /tmp/voxcpm2-onnx/ (the tiny-init export, used
+// until the real-weights text_prefill export lands).
 // Skips cleanly when the bundle isn't present so CI stays green.
 // ---------------------------------------------------------------------------
 
@@ -1223,7 +1223,7 @@ void test_onnx_voxcpm2_load(const std::string& /*dir*/) {
     // Phase 2 (production-config only): exercise the runtime audio paths
     // end-to-end with set_reference + a few AR steps + at least one
     // audio_decoder Run. We gate on max_text_tokens() >= 256 because the
-    // tiny shape-validation bundle from speech-models exports with
+    // tiny shape-validation bundle is exported with
     // max_text=32 (kFeatDim=16, kHidden=128) — those tensor dims would
     // mismatch the C++ wrapper's production constants (kFeatDim=64,
     // kPatchSize=4, kHidden=2048; see litert_voxcpm2_tts.h:139-160).

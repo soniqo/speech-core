@@ -291,7 +291,7 @@ std::vector<TranscriptionResult> ParakeetStt::transcribe_batch(
     }
     // If the encoder export pins batch=1 (which the currently published
     // parakeet-encoder-int8.onnx does), share state but loop sequentially.
-    // The newer convert_onnx.py in speech-models adds dynamic_axes={0:'B'};
+    // A newer export adds dynamic_axes={0:'B'};
     // once re-published, encoder_batch_dynamic_ flips and we take the
     // batched fast path below.
     if (!encoder_batch_dynamic_) {

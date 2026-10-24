@@ -15,7 +15,7 @@
 namespace speech_core {
 
 /// Portable MOSS-Transcribe-Diarize runtime for the validated two-graph ONNX
-/// bundle published by speech-models.
+/// bundle.
 class OnnxMossTranscribeDiarize final
     : public TranscribeDiarizeInterface {
 public:

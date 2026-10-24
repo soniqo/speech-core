@@ -350,7 +350,7 @@ void LiteRTVoxCPM2Tts::set_reference(const float* pcm, size_t length, int sample
 }
 
 // ---------------------------------------------------------------------------
-// synthesize() — mirrors speech-models/.../smoke_litert_roundtrip.py
+// synthesize() — mirrors the export's LiteRT round-trip smoke test
 // ---------------------------------------------------------------------------
 
 void LiteRTVoxCPM2Tts::synthesize(const std::string& text,

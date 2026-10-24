@@ -535,8 +535,8 @@ void OnnxVoxCPM2Tts::synthesize_with_options(const std::string& text,
     // --- 2. prefill mode → initial hiddens + caches.
     //
     // TODO: text_prefill ONNX graph does not yet exist with real weights.
-    // The speech-models export at facca69 only emits a tiny-random-init
-    // version (a parallel sub-agent is implementing the full export). This
+    // The current export only emits a tiny-random-init version (the full
+    // export is in progress). This
     // wrapper will still drive it correctly — the AR loop shape matches the
     // LiteRT contract — but until the real-weights export lands, the audio
     // produced from random-init prefill is meaningless and serves only as a

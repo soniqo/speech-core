@@ -882,7 +882,7 @@ void OnnxPersonaPlex::respond_stream(const float* user_audio, size_t length,
     // — re-seeding it would double-condition the model on the voice (KV +
     // input both voice-flavoured), producing over-energetic / clipped output.
 
-    // Delay layout from PERSONAPLEX_DELAYS in speech-models/convert.py
+    // Delay layout from the exporter's PERSONAPLEX_DELAYS
     static constexpr int kUserDelays[8]  = {0, 1, 1, 1, 1, 1, 1, 1};
     static constexpr int kAgentDelays[8] = {0, 1, 1, 1, 1, 1, 1, 1};
 

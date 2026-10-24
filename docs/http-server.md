@@ -46,8 +46,8 @@ an explicit directory to the downloader and server when a different cache is
 needed:
 
 ```powershell
-.\speech_download_models.ps1 D:\speech-models
-.\speech-server.exe --model-dir D:\speech-models
+.\speech_download_models.ps1 D:\models
+.\speech-server.exe --model-dir D:\models
 ```
 
 ## Speech synthesis

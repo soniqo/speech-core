@@ -23,9 +23,8 @@ namespace speech_core {
 ///             ─► audio (48 kHz) [1, M]
 ///
 /// The predictor's 8-layer `last_hidden_state` IS the cleansed feature (there
-/// is no separate head); the vocoder reconstructs 48 kHz audio from it. See
-/// speech-models `models/sidon/export/NOTES.md` for the export rationale and
-/// parity numbers (ONNX FP32 is bit-exact vs PyTorch; FP16 near-lossless).
+/// is no separate head); the vocoder reconstructs 48 kHz audio from it. ONNX
+/// FP32 is bit-exact vs PyTorch; FP16 is near-lossless.
 ///
 /// Backend note: this ships on ONNX Runtime only. The DAC decoder's
 /// `ConvTranspose1d` does not legalise to TFLite, so there is no LiteRT vocoder
