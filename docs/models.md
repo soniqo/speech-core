@@ -31,7 +31,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 |---|---|---|---|
 | `LiteRTSileroVad` | `VADInterface` | `speech_core/models/litert_silero_vad.h` | full |
 | `LiteRTParakeetStt` | `STTInterface` | `speech_core/models/litert_parakeet_stt.h` | full |
-| `LiteRTKokoroTts` | `TTSInterface` | `speech_core/models/litert_kokoro_tts.h` | full (staged 60-frame FP32) |
+| `LiteRTKokoroTts` | `TTSInterface` | `speech_core/models/litert_kokoro_tts.h` | full (staged 120-frame FP32) |
 | `LiteRTVoxCPM2Tts` | `TTSInterface` | `speech_core/models/litert_voxcpm2_tts.h` | full (text-only) |
 | `LiteRTChatterboxTts` | `TTSInterface` | `speech_core/models/litert_chatterbox_tts.h` | full |
 | `LiteRTSupertonicTts` | `TTSInterface` | `speech_core/models/litert_supertonic_tts.h` | full |
@@ -520,7 +520,7 @@ tts.synthesize("Hello world.", "en",
 - The public tensors retain 128 token slots, while the optimized ALBERT path evaluates 32 active slots. At speed 1.0 the wrapper chunks at 32 tokens for the 120-frame contract and 14 for v1.0.0's.
 - The final convolutional stack needs four frames of unused right context. A model-reported duration past the contract minus four frames (116 frames, 69,600 samples) is discarded and retried as smaller text without running the vocoder; the last four frames are never accepted merely because they fit the tensor.
 - Internal text chunks are combined before the callback. Output is 24 kHz Float32 with finite/peak checks, trailing-noise trim, a ±1 clamp, and short fades at chunk boundaries.
-- `num_threads` configures each XNNPACK interpreter directly; 8 threads was the best tested setting on a physical Galaxy S23 Ultra (`SM-S918B`). Measured there against the v1.0.0 bundle on the same day (one warm-up and ten runs, each from thermal status 0):
+- `num_threads` configures each XNNPACK interpreter directly; 8 threads was the best tested setting on a physical Galaxy S23 Ultra (`SM-S918B`). Measured there against the v1.0.0 bundle on the same day (one warm-up and ten runs per bundle, each batch started from thermal status 0):
 
   | Bundle | 24-word reply | Peak RSS | Parakeet, 21 replies exact |
   |---|---:|---:|---:|
@@ -1013,7 +1013,7 @@ the LLM row reports tool-call decode throughput in tokens/s.
 | Kokoro-82M (full graph, published two-thread CPU default) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.81 RTF |
 | Kokoro-82M (full graph, four-thread local tuning) | TTS (preset voice) | ONNX FP32 | ~604 MiB | 1.16 RTF |
 | Kokoro-82M (realtime 3.0 s short-turn graph) | TTS (preset voice) | ONNX FP32 | ~527 MiB | **0.75–0.88 RTF** |
-| Kokoro-82M (staged 60-frame reference) | TTS (preset voice) | LiteRT FP32 / XNNPACK | ~1.02 GiB | 0.55 p50 RTF |
+| Kokoro-82M (staged 120-frame bundle, 24-word reply) | TTS (preset voice) | LiteRT FP32 / XNNPACK | ~1.04 GiB | 0.60 p50 RTF |
 | FunctionGemma-270M | LLM (tool calls) | LiteRT-LM | ~611 MB | ~118 tok/s |
 
 - Supertonic runs 3 diffusion steps and streams (first audio ~1.1 s while the rest
@@ -1024,6 +1024,9 @@ the LLM row reports tool-call decode throughput in tokens/s.
   Physical-device runs vary with thermal state (0.75–0.88 RTF here). The short-turn
   result describes an in-profile English reply, not a worst-case long-form result;
   output beyond the 2.8 s guarded limit is split and retried safely.
+- The staged LiteRT Kokoro bundle renders a fixed 3 s vocoder window per piece, so a
+  short line costs about as much as a full piece: "Hello world." took 1.39 s for 1.2 s
+  of audio, while the 24-word reply took 6.7 s for 11.2 s.
 - Disabling the ONNX CPU memory arena (now the default) cut Parakeet-TDT peak RSS
   from ~1.34 GB to ~1.15 GB (−15%) for ~1% throughput.
 - Parakeet-EOU is the lightest STT here while staying multilingual + streaming —
