@@ -1,6 +1,6 @@
 # Reference Model Implementations
 
-speech-core ships two parallel sets of model wrappers under `include/speech_core/models/`. Each implements one of the interfaces in `interfaces.h` and is compiled in via a backend-specific CMake flag. The two backends can be enabled simultaneously — consumers link only the targets they need.
+speech-core ships two parallel sets of model wrappers under `include/speech_core/models/`. The voice models implement interfaces in `interfaces.h`; VAP exposes its own stereo forecasting API. Each backend has a CMake flag. The two backends can be enabled simultaneously — consumers link only the targets they need.
 
 ### ONNX Runtime backend (`SPEECH_CORE_WITH_ONNX`)
 
@@ -8,6 +8,7 @@ speech-core ships two parallel sets of model wrappers under `include/speech_core
 |---|---|---|---|
 | `SileroVad` | `VADInterface` | `speech_core/models/silero_vad.h` | full |
 | `OnnxSmartTurn` | `TurnCompletionInterface` | `speech_core/models/onnx_smart_turn.h` | full |
+| `OnnxVap` | Stereo forecasts | `speech_core/models/onnx_vap.h` | see [VAP](models/vap.md) |
 | `ParakeetStt` | `STTInterface` | `speech_core/models/parakeet_stt.h` | full |
 | `OnnxWhisperStt` | `STTInterface` | `speech_core/models/onnx_whisper_stt.h` | full |
 | `OnnxCanaryStt` | `STTInterface` | `speech_core/models/onnx_canary_stt.h` | full (offline, en/de/es/fr) |
