@@ -179,6 +179,7 @@ if(SPEECH_CORE_WITH_ONNX)
         src/models/redimnet/onnx_redimnet_speaker_embedding.cpp
         src/models/wespeaker/onnx_wespeaker_embedding.cpp
         src/models/smartturn/onnx_smart_turn.cpp
+        src/models/vap/onnx_vap.cpp
         src/models/kws/onnx_zipformer_kws.cpp
     )
     # VoxCPM2 tokenizer is pure C++17 and shared with the LiteRT target. To
@@ -713,6 +714,7 @@ if(SPEECH_CORE_BUILD_TESTS)
            OR TEST_NAME STREQUAL "test_onnx_sortformer_model"
            OR TEST_NAME STREQUAL "test_onnx_kws_model"
            OR TEST_NAME STREQUAL "test_onnx_smart_turn_model"
+           OR TEST_NAME STREQUAL "test_onnx_vap_model"
            OR TEST_NAME STREQUAL "test_redimnet_audio_preparation"
            OR TEST_NAME STREQUAL "test_litert_functiongemma_llm"
            OR TEST_NAME STREQUAL "test_openai_tts_server"
@@ -910,6 +912,13 @@ if(SPEECH_CORE_BUILD_TESTS)
             PRIVATE speech_core_models)
         add_test(NAME test_onnx_smart_turn_model
                  COMMAND test_onnx_smart_turn_model)
+    endif()
+
+    if(SPEECH_CORE_WITH_ONNX)
+        add_executable(test_onnx_vap_model tests/test_onnx_vap_model.cpp)
+        target_link_libraries(test_onnx_vap_model PRIVATE speech_core_models)
+        add_test(NAME test_onnx_vap_model COMMAND test_onnx_vap_model)
+        set_tests_properties(test_onnx_vap_model PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
     if(SPEECH_CORE_WITH_ONNX AND

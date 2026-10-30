@@ -44,6 +44,7 @@ speech-core sépare une petite couche d'orchestration indépendante des modèles
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/fr/guides/vad) | Détection d'activité vocale | ✓ | ✓ |
 | [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | Détection de fin de tour de parole | ✓ | — |
+| [VAP (otoSpeech)](docs/models/vap.md) | Prévision vocale sur deux canaux | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/fr/guides/parakeet) | Parole vers texte | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/fr/guides/whisper) | Parole vers texte multilingue | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | Parole vers texte + traduction (en/de/es/fr) | ✓ | — |

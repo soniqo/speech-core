@@ -44,6 +44,7 @@ speech-core tách lớp điều phối nhỏ, độc lập với mô hình khỏ
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/vi/guides/vad) | Phát hiện hoạt động giọng nói | ✓ | ✓ |
 | [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | Phát hiện kết thúc lượt nói | ✓ | — |
+| [VAP (otoSpeech)](docs/models/vap.md) | Dự đoán hoạt động giọng nói hai kênh | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/vi/guides/parakeet) | Giọng nói thành văn bản | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/vi/guides/whisper) | STT đa ngôn ngữ | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | STT + dịch thuật (en/de/es/fr) | ✓ | — |

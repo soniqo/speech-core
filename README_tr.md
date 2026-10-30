@@ -44,6 +44,7 @@ speech-core küçük, modelden bağımsız bir orkestrasyon katmanını isteğe 
 |---|---|:---:|:---:|
 | [Silero VAD v5](https://huggingface.co/soniqo/Silero-VAD-v5-LiteRT) · [soniqo.audio](https://soniqo.audio/tr/guides/vad) | Ses etkinliği algılama | ✓ | ✓ |
 | [Smart Turn v3.2](https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX) · [Pipecat](https://github.com/pipecat-ai/smart-turn) | Söz sırası sonu algılama | ✓ | — |
+| [VAP (otoSpeech)](docs/models/vap.md) | İki kanallı konuşma tahmini | ✓ | — |
 | [Parakeet TDT v3 (0.6B)](https://huggingface.co/soniqo/Parakeet-TDT-0.6B-v3-LiteRT-INT8) · [soniqo.audio](https://soniqo.audio/tr/guides/parakeet) | Konuşmadan metne | ✓ | ✓ |
 | [Whisper v3 / turbo](https://huggingface.co/soniqo/Whisper-Large-v3-Turbo-ONNX) · [soniqo.audio](https://soniqo.audio/tr/guides/whisper) | Çok dilli konuşmadan metne | ✓ | — |
 | [Canary 180M Flash](https://huggingface.co/soniqo/Canary-180M-Flash-ONNX) | Konuşmadan metne + çeviri (en/de/es/fr) | ✓ | — |
