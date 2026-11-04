@@ -357,7 +357,7 @@ private:
         require_io(encoder_io_, 1, 1, "audio", "latents", "encoder");
         require_io(conditioner_io_, 1, 1, "token_ids", "embeddings", "text conditioner");
         require_io(lm_flow_io_, 4, 1, "c", "flow_dir", "flow model");
-        require_io(lm_main_io_, 20, 20, "sequence", "conditioning", "LM main");
+        require_lm_main_io(lm_main_io_);
         require_io(decoder_io_, 57, 57, "latent", "audio_frame", "Mimi decoder");
     }
 
@@ -374,6 +374,19 @@ private:
             names.output_strings.front() != first_output) {
             throw std::runtime_error(
                 std::string("Pocket TTS ") + label + " graph has an incompatible I/O contract");
+        }
+    }
+
+    static void require_lm_main_io(const IoNames& names) {
+        // The flattened recurrent state grows with the transformer depth.
+        // Match each state input to an output while retaining the original
+        // sequence/conditioning contract for 20- and 74-I/O exports.
+        if (names.input_strings.size() < 3 ||
+            names.output_strings.size() != names.input_strings.size() ||
+            names.input_strings[0] != "sequence" ||
+            names.output_strings[0] != "conditioning") {
+            throw std::runtime_error(
+                "Pocket TTS LM main graph has an incompatible I/O contract");
         }
     }
 
