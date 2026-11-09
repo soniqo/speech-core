@@ -3,10 +3,12 @@
 #include "speech_core/audio/mel.h"
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/util/json.h"
+#include "speech_core/transcription/timed_words.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <utility>
 
 namespace speech_core {
@@ -36,14 +38,20 @@ ParakeetStt::ParakeetStt(
 {
     auto& engine = OnnxEngine::get();
     api_ = engine.api();
-    encoder_       = engine.load(encoder_path, hw_accel);
+    const auto release_session = [this](OrtSession* session) {
+        if (session) api_->ReleaseSession(session);
+    };
+    // A constructor that throws has no destructor. Keep both sessions owned
+    // locally until the decoder and vocabulary have also loaded successfully.
+    std::unique_ptr<OrtSession, decltype(release_session)> encoder(
+        engine.load(encoder_path, hw_accel), release_session);
 
     // Query the encoder's audio_signal input shape — if axis 0 is dynamic
     // (symbolic dim) we can drive transcribe_batch() with a real batched
     // Run; otherwise we must sequentialize to honour the static B=1.
     {
         OrtTypeInfo* type_info = nullptr;
-        if (api_->SessionGetInputTypeInfo(encoder_, 0, &type_info) == nullptr) {
+        if (api_->SessionGetInputTypeInfo(encoder.get(), 0, &type_info) == nullptr) {
             const OrtTensorTypeAndShapeInfo* shape = nullptr;
             if (api_->CastTypeInfoToTensorInfo(type_info, &shape) == nullptr && shape) {
                 size_t dims = 0;
@@ -71,9 +79,14 @@ ParakeetStt::ParakeetStt(
     // dispatch + memcpy beats the FP32 LSTM kernel's compute time. Same
     // anti-pattern as Silero VAD on CUDA (the small-chunk overhead win
     // is documented in tests/test_models.cpp:test_silero_vad_cuda).
-    decoder_joint_ = engine.load(decoder_joint_path, false);
+    std::unique_ptr<OrtSession, decltype(release_session)> decoder_joint(
+        engine.load(decoder_joint_path, false), release_session);
 
-    load_vocab(vocab_path);
+    if (!load_vocab(vocab_path)) {
+        throw std::runtime_error("Parakeet: vocabulary is missing or empty");
+    }
+    encoder_ = encoder.release();
+    decoder_joint_ = decoder_joint.release();
 }
 
 ParakeetStt::~ParakeetStt() {
@@ -192,6 +205,7 @@ std::vector<float> ParakeetStt::compute_mel(const float* audio, size_t length) {
 // ---------------------------------------------------------------------------
 
 ParakeetStt::DecodeResult ParakeetStt::decode(const float* audio, size_t length) {
+    if (length == 0) return {};
     auto* mem = OnnxEngine::get().cpu_memory();
 
     // --- mel spectrogram [B, 128, T] ---
@@ -246,7 +260,11 @@ ParakeetStt::DecodeResult ParakeetStt::decode(const float* audio, size_t length)
 
     auto result = tdt_decode(encoded, enc_len, hidden);
 
-    LOGI("STT: text='%.60s' conf=%.4f", result.text.c_str(), result.confidence);
+    // Conversation text never belongs in device diagnostics.
+    LOGI("STT: characters=%zu words=%zu conf=%.4f",
+         result.text.size(), result.words.size(), result.confidence);
+    result.words = transcription::clamp_word_times(std::move(result.words),
+        static_cast<float>(length) / cfg_.sample_rate);
 
     // --- cleanup ---
 
@@ -270,6 +288,7 @@ TranscriptionResult ParakeetStt::transcribe(
     out.text = std::move(r.text);
     out.language = std::move(r.language);
     out.confidence = r.confidence;
+    out.words = std::move(r.words);
     return out;
 }
 
@@ -392,6 +411,8 @@ std::vector<TranscriptionResult> ParakeetStt::transcribe_batch(
         out.text = std::move(r.text);
         out.language = std::move(r.language);
         out.confidence = r.confidence;
+        out.words = transcription::clamp_word_times(std::move(r.words),
+            static_cast<float>(lengths[i]) / cfg_.sample_rate);
         results.push_back(std::move(out));
     }
 
@@ -415,6 +436,10 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
     std::string detected_language;
     float log_prob_sum = 0.0f;
     int log_prob_count = 0;
+    std::vector<TimedWord> words;
+    // The published encoder subsamples 10 ms features by eight. These are
+    // decoder emission positions, not forced alignment or speaker evidence.
+    const float frame_seconds = 8.f * cfg_.hop_length / cfg_.sample_rate;
 
     // LSTM states: [2, 1, 640]
     int64_t state_size = cfg_.decoder_layers * 1 * cfg_.decoder_hidden;
@@ -526,6 +551,9 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
                     }
                 } else {
                     token_ids.push_back(best_token);
+                    std::string piece = vocab_.at(best_token);
+                    replace_sp_marker(piece);
+                    transcription::append_sentencepiece_token(words, piece, t, frame_seconds);
                     log_prob_sum += best_score;
                     log_prob_count++;
                 }
@@ -573,6 +601,8 @@ ParakeetStt::DecodeResult ParakeetStt::tdt_decode(
         result.confidence = 1.0f / (1.0f + std::exp(-mean_logit * 0.1f));
     }
 
+    result.words = std::move(words);
+
     if (!result.language.empty()) {
         LOGI("STT: detected language=%s", result.language.c_str());
     }
@@ -603,6 +633,7 @@ PartialResult ParakeetStt::push_chunk(const float* audio, size_t length) {
     out.text = std::move(r.text);
     out.language = std::move(r.language);
     out.confidence = r.confidence;
+    out.words = std::move(r.words);
     return out;
 }
 
@@ -617,6 +648,7 @@ TranscriptionResult ParakeetStt::end_stream() {
     out.text = std::move(r.text);
     out.language = std::move(r.language);
     out.confidence = r.confidence;
+    out.words = std::move(r.words);
     return out;
 }
 

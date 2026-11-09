@@ -160,6 +160,8 @@ audio::StreamingMelSpectrogram::Config LiteRTNemotronMultilingualStt::mel_config
     mel.slaney_norm = true;
     mel.log_floor = 1.0f / static_cast<float>(1 << 24);  // 2^-24
     mel.pre_emphasis = cfg_.pre_emphasis;
+    mel.torch_stft_layout = true;
+    mel.center_pad_zeros = true;
     return mel;
 }
 
@@ -458,18 +460,12 @@ void LiteRTNemotronMultilingualStt::flush_stream() {
 TranscriptionResult LiteRTNemotronMultilingualStt::end_stream() {
     const float duration = static_cast<float>(samples_pushed_)
                          / static_cast<float>(cfg_.sample_rate);
-    // Decode the remaining tail: pad to a whole number of windows (reflecting
-    // the reference, which zero-pads the utterance to a chunk multiple). The
-    // padding continues the feature stream, so the tail's frames are those of
-    // the padded utterance.
+    // Complete every remaining feature frame with zeros after pre-emphasis.
+    // Centred final windows need right context even at an exact chunk boundary.
     if (stream_init_ && samples_pushed_ > 0) {
         const size_t win_samples = static_cast<size_t>(chunk_samples());
         const size_t total_windows = (samples_pushed_ + win_samples - 1) / win_samples;
-        const size_t padding = total_windows * win_samples - samples_pushed_;
-        if (padding > 0) {
-            const std::vector<float> zeros(padding, 0.0f);
-            mel_stream_->push(zeros.data(), zeros.size(), pending_frames_);
-        }
+        mel_stream_->finish(total_windows * static_cast<size_t>(cfg_.mel_frames), pending_frames_);
         while (decoded_windows_ < total_windows) {
             run_pending_window();
         }

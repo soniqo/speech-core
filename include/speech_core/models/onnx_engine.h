@@ -128,17 +128,20 @@ public:
         ort_check(api_, api_->SetSessionGraphOptimizationLevel(opts, opt_level));
         ort_check(api_, api_->SetIntraOpNumThreads(
             opts, resolve_intra_threads(intra_threads)));
-        // EXPERIMENT: share a single CPU arena across all sessions. Each
-        // session.use_env_allocators=1 routes its CPU allocations through
-        // the env's registered arena instead of creating a per-session one.
-        // VoxCPM2 bundle = 4 sessions; deduplicating arena overhead saves
-        // ~0.5-1 GB. arena_extend_strategy=kSameAsRequested keeps growth
-        // tight (no 1.5x speculative bumps).
+        // A shared CPU arena reduces overhead for large multi-session desktop
+        // models, but retains its activation high-water mark until process
+        // exit, even after every model closes. Android uses session allocators
+        // and the disabled CPU arena below so Stop does not permanently pin
+        // that scratch memory. An explicit environment setting overrides the
+        // platform default in either direction.
         const char* env_alloc = std::getenv("SPEECH_CORE_USE_ENV_ALLOCATORS");
-        if (!env_alloc || env_alloc[0] != '0') {
-            ort_check(api_, api_->AddSessionConfigEntry(
-                opts, "session.use_env_allocators", "1"));
-        }
+#ifdef __ANDROID__
+        const bool use_env_allocators = env_alloc && env_alloc[0] != '0';
+#else
+        const bool use_env_allocators = !env_alloc || env_alloc[0] != '0';
+#endif
+        ort_check(api_, api_->AddSessionConfigEntry(
+            opts, "session.use_env_allocators", use_env_allocators ? "1" : "0"));
         // EXPERIMENT: turn off prepacking (weights re-arranged for faster
         // GEMM). For INT8 dynamic-quant models, prepacking allocates a CPU
         // buffer holding the prepacked weights even after upload. Off by
@@ -266,7 +269,9 @@ public:
             ort_check(api_, api_->SetIntraOpNumThreads(
                 opts, resolve_intra_threads(intra_threads)));
             ort_check(api_, api_->AddSessionConfigEntry(
-                opts, "session.use_env_allocators", "1"));
+                opts, "session.use_env_allocators", use_env_allocators ? "1" : "0"));
+            ort_check(api_, api_->DisableCpuMemArena(opts));
+            ort_check(api_, api_->DisableMemPattern(opts));
             if (const char* skip = std::getenv("SPEECH_CORE_ORT_DISABLE_OPTIMIZERS")) {
                 if (skip[0] != '\0') {
                     ort_check(api_, api_->AddSessionConfigEntry(

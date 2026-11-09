@@ -67,6 +67,7 @@ private:
         std::string text;
         std::string language;
         float confidence = 0.0f;
+        std::vector<TimedWord> words;
     };
 
     bool load_vocab(const std::string& path);

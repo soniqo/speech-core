@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -253,11 +254,13 @@ void StreamingMelSpectrogram::reset() {
     samples_pushed_ = 0;
     next_frame_ = 0;
     previous_sample_ = 0.0f;
+    finished_ = false;
 }
 
 size_t StreamingMelSpectrogram::push(
     const float* samples, size_t length, std::vector<float>& frames)
 {
+    if (finished_) throw std::logic_error("StreamingMelSpectrogram: reset after finish");
     if (samples == nullptr || length == 0) return 0;
 
     buffer_.reserve(buffer_.size() + length);
@@ -272,25 +275,52 @@ size_t StreamingMelSpectrogram::push(
     }
     samples_pushed_ += length;
 
+    return produce_frames(frames, std::numeric_limits<size_t>::max(), false);
+}
+
+size_t StreamingMelSpectrogram::finish(size_t total_frames, std::vector<float>& frames) {
+    if (total_frames < next_frame_ || (samples_pushed_ == 0 && total_frames != 0)) {
+        throw std::invalid_argument("StreamingMelSpectrogram: invalid final frame count");
+    }
+    if (finished_) {
+        if (total_frames != next_frame_)
+            throw std::logic_error("StreamingMelSpectrogram: already finished");
+        return 0;
+    }
+    const size_t produced = produce_frames(frames, total_frames, true);
+    finished_ = true;
+    buffer_.clear();
+    buffer_start_ = samples_pushed_;
+    return produced;
+}
+
+size_t StreamingMelSpectrogram::produce_frames(
+    std::vector<float>& frames, size_t frame_limit, bool final)
+{
+
     const std::int64_t pad = config_.n_fft / 2;
+    const int window_offset = config_.torch_stft_layout
+        ? (config_.n_fft - config_.win_length) / 2 : 0;
     const std::int64_t pushed = static_cast<std::int64_t>(samples_pushed_);
     const std::int64_t base = static_cast<std::int64_t>(buffer_start_);
     size_t produced = 0;
-    for (;;) {
+    while (next_frame_ < frame_limit) {
         // Stream index under the frame's first window tap, in the padded
         // coordinates mel_spectrogram uses: frame t starts t*hop - n_fft/2.
         const std::int64_t origin =
-            static_cast<std::int64_t>(next_frame_) * config_.hop_length - pad;
-        if (origin + config_.win_length > pushed) break;
+            static_cast<std::int64_t>(next_frame_) * config_.hop_length - pad + window_offset;
+        if (!final && origin + config_.win_length > pushed) break;
         // Left of the stream mel_spectrogram reflects, padded[pad-1-k] =
         // x[k+1], which reads up to index -origin.
-        if (origin < 0 && -origin >= pushed) break;
+        if (!final && !config_.center_pad_zeros && origin < 0 && -origin >= pushed) break;
 
         std::fill(frame_.begin(), frame_.end(), 0.0f);
         for (int i = 0; i < config_.win_length; ++i) {
             const std::int64_t index = origin + i;
+            if (index < 0 && config_.center_pad_zeros) continue;
             const std::int64_t source = index < 0 ? -index : index;
-            frame_[static_cast<size_t>(i)] =
+            if (source >= pushed) continue;  // final right padding, after pre-emphasis
+            frame_[static_cast<size_t>(window_offset + i)] =
                 buffer_[static_cast<size_t>(source - base)]
                 * window_[static_cast<size_t>(i)];
         }
@@ -307,9 +337,9 @@ size_t StreamingMelSpectrogram::push(
     // while the reflected head is still needed. Trimming only past n_fft of
     // slack keeps a push from shifting the buffer every time.
     const std::int64_t next_origin =
-        static_cast<std::int64_t>(next_frame_) * config_.hop_length - pad;
-    const std::int64_t keep_from = std::max<std::int64_t>(0, next_origin);
-    if (keep_from - base > config_.n_fft) {
+        static_cast<std::int64_t>(next_frame_) * config_.hop_length - pad + window_offset;
+    const std::int64_t keep_from = std::min(pushed, std::max<std::int64_t>(0, next_origin));
+    if (!final && keep_from - base > config_.n_fft) {
         buffer_.erase(buffer_.begin(),
                       buffer_.begin() + static_cast<std::ptrdiff_t>(keep_from - base));
         buffer_start_ = static_cast<size_t>(keep_from);
