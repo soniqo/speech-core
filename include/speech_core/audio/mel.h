@@ -57,7 +57,10 @@ std::vector<float> mel_spectrogram(
 /// same however long the stream has run.
 ///
 /// The left edge is reflected as mel_spectrogram does, which needs n_fft/2 + 1
-/// samples before the first frame. Not thread-safe.
+/// samples before the first frame. torch_stft_layout and center_pad_zeros
+/// opt into the Nemotron/NeMo centred-window, constant-padding contract.
+/// finish() can complete the right edge of a final encoder window.
+/// Not thread-safe.
 class StreamingMelSpectrogram {
 public:
     struct Config {
@@ -71,6 +74,11 @@ public:
         /// y[n] = x[n] - k * x[n-1], passing the stream's first sample through;
         /// the one-sample memory carries across pushes. 0 disables it.
         float pre_emphasis = 0.0f;
+        /// Centre the symmetric win_length window inside an n_fft frame,
+        /// matching torch.stft. False retains the legacy frame layout.
+        bool torch_stft_layout = false;
+        /// Zero-pad the left edge instead of reflecting the input.
+        bool center_pad_zeros = false;
     };
 
     explicit StreamingMelSpectrogram(const Config& config);
@@ -84,12 +92,18 @@ public:
     /// Returns how many frames were appended.
     size_t push(const float* samples, size_t length, std::vector<float>& frames);
 
+    /// Finish at exactly total_frames, zero-padding the pre-emphasised signal
+    /// on the right. Padding never passes through the pre-emphasis filter or
+    /// counts as captured samples. Reset before pushing more audio.
+    size_t finish(size_t total_frames, std::vector<float>& frames);
+
     size_t samples_pushed() const { return samples_pushed_; }
     size_t frames_produced() const { return next_frame_; }
     /// Samples held for frames still to come.
     size_t buffered_samples() const { return buffer_.size(); }
 
 private:
+    size_t produce_frames(std::vector<float>& frames, size_t frame_limit, bool final);
     Config config_;
     std::vector<float> filterbank_;
     std::vector<float> window_;
@@ -101,6 +115,7 @@ private:
     size_t samples_pushed_ = 0;
     size_t next_frame_ = 0;
     float previous_sample_ = 0.0f;
+    bool finished_ = false;
 };
 
 }  // namespace speech_core::audio
