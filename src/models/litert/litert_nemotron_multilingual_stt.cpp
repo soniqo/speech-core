@@ -1,6 +1,7 @@
 #include "speech_core/models/litert_nemotron_multilingual_stt.h"
 
 #include "speech_core/audio/mel.h"
+#include "speech_core/models/nemotron_language_guide.h"
 #include "speech_core/transcription/timed_words.h"
 #include "speech_core/util/json.h"
 
@@ -132,10 +133,18 @@ void LiteRTNemotronMultilingualStt::load_bundle_config(const std::string& path) 
 }
 
 bool LiteRTNemotronMultilingualStt::set_language(const std::string& locale) {
+    language_guide_mask_.clear();
     auto it = lang2slot_.find(locale);
     if (it != lang2slot_.end()) { lang_slot_ = it->second; return true; }
     if (auto_slot_ >= 0) lang_slot_ = auto_slot_;
     return false;
+}
+
+void LiteRTNemotronMultilingualStt::set_language_guide(const std::vector<std::string>& expected, float weight) {
+    if (stream_init_) throw std::invalid_argument("Set the language guide before begin_stream");
+    auto mask = nemotron_language_guide_mask(expected, weight, cfg_.num_prompts,
+        auto_slot_, lang_slot_, lang2slot_, vocab_);
+    language_guide_mask_ = std::move(mask);
 }
 
 std::string LiteRTNemotronMultilingualStt::token_to_text(int id) const {
@@ -270,7 +279,8 @@ std::string LiteRTNemotronMultilingualStt::run_window(const float* mel_window) {
     auto t_i32  = make_type(kLiteRtElementTypeInt32,   {1});
 
     std::vector<float> lang_mask(static_cast<size_t>(cfg_.num_prompts), 0.0f);
-    if (lang_slot_ >= 0 && lang_slot_ < cfg_.num_prompts) lang_mask[lang_slot_] = 1.0f;
+    if (!language_guide_mask_.empty()) lang_mask = language_guide_mask_;
+    else if (lang_slot_ >= 0 && lang_slot_ < cfg_.num_prompts) lang_mask[lang_slot_] = 1.0f;
     int64_t audio_len = cfg_.mel_frames;
     int64_t ch_len    = cache_last_channel_len_;
 
