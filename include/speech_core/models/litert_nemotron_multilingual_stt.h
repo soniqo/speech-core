@@ -87,6 +87,10 @@ public:
     bool set_language(const std::string& locale);
     int  language_slot() const { return lang_slot_; }
 
+    /// Configure before begin_stream; exact locales, Auto only. An explicit
+    /// set_language call clears the guide. Invalid configuration throws.
+    void set_language_guide(const std::vector<std::string>& expected, float weight = .1f);
+
     // --- STTInterface (batch convenience = begin/push/end) ---
     TranscriptionResult transcribe(const float* audio, size_t length, int sample_rate) override;
     int input_sample_rate() const override { return cfg_.sample_rate; }
@@ -147,6 +151,7 @@ private:
     std::unordered_map<std::string, int> lang2slot_;
     int lang_slot_ = 0;
     int auto_slot_ = -1;
+    std::vector<float> language_guide_mask_;
 
     // ---- per-stream state ----
     std::unique_ptr<audio::StreamingMelSpectrogram> mel_stream_;  // features as audio arrives

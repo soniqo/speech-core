@@ -1,6 +1,7 @@
 #include "speech_core/models/nemotron_multilingual_stt.h"
 
 #include "speech_core/audio/mel.h"
+#include "speech_core/models/nemotron_language_guide.h"
 #include "speech_core/models/onnx_engine.h"
 #include "speech_core/transcription/timed_words.h"
 #include "speech_core/util/json.h"
@@ -69,6 +70,7 @@ NemotronMultilingualStt::NemotronMultilingualStt(
       lang2slot_(other.lang2slot_),
       lang_slot_(other.lang_slot_),
       auto_slot_(other.auto_slot_),
+      language_guide_mask_(other.language_guide_mask_),
       enc_in_(other.enc_in_), enc_out_(other.enc_out_),
       dec_in_(other.dec_in_), dec_out_(other.dec_out_),
       jnt_in_(other.jnt_in_), jnt_out_(other.jnt_out_)
@@ -167,10 +169,18 @@ void NemotronMultilingualStt::load_bundle_config(const std::string& path) {
 }
 
 bool NemotronMultilingualStt::set_language(const std::string& locale) {
+    language_guide_mask_.clear();
     auto it = lang2slot_.find(locale);
     if (it != lang2slot_.end()) { lang_slot_ = it->second; return true; }
     if (auto_slot_ >= 0) { lang_slot_ = auto_slot_; }
     return false;
+}
+
+void NemotronMultilingualStt::set_language_guide(const std::vector<std::string>& expected, float weight) {
+    if (stream_init_) throw std::invalid_argument("Set the language guide before begin_stream");
+    auto mask = nemotron_language_guide_mask(expected, weight, cfg_.num_prompts,
+        auto_slot_, lang_slot_, lang2slot_, vocab_);
+    language_guide_mask_ = std::move(mask);
 }
 
 void NemotronMultilingualStt::query_io_names() {
@@ -283,7 +293,8 @@ std::string NemotronMultilingualStt::run_window(const float* mel_window) {
 
     // --- encoder inputs ---
     std::vector<float> lang_mask(static_cast<size_t>(cfg_.num_prompts), 0.0f);
-    if (lang_slot_ >= 0 && lang_slot_ < cfg_.num_prompts) lang_mask[lang_slot_] = 1.0f;
+    if (!language_guide_mask_.empty()) lang_mask = language_guide_mask_;
+    else if (lang_slot_ >= 0 && lang_slot_ < cfg_.num_prompts) lang_mask[lang_slot_] = 1.0f;
     int32_t audio_len = cfg_.mel_frames;
     int32_t ch_len    = cache_last_channel_len_;
 
