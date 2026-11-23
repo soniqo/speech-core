@@ -212,9 +212,12 @@ jobs:
         run: |
           set -euo pipefail
           ORT_VERSION=1.19.0
-          curl -fL --retry 3 \
+          if ! curl -fL --retry 3 \
             -o ort.zip \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip"
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip"; then
+            bash scripts/fetch_onnxruntime_nuget.sh "$ORT_VERSION" win-x64 ort-windows
+            exit 0
+          fi
           echo "1d796da7001e4843858d0587aa8232976abf9e0ae7fba8deb7fa8156e440efb7  ort.zip" \
             | sha256sum -c -
           unzip -q ort.zip
